@@ -1,0 +1,61 @@
+# ===== .NET 构建产物 =====
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]inaries/
+artifacts/
+
+# ===== ClassIsland 插件打包产物 =====
+cipx/
+*.cipx
+*.cipx.sha256
+
+# ===== NuGet =====
+*.nupkg
+*.snupkg
+packages/
+*.nuget.props
+*.nuget.targets
+project.lock.json
+project.fragment.lock.json
+*.project.json.bak
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# ===== 运行时与日志 =====
+*.log
+*.tmp
+*.temp
+*.cache
+*.pid
+*.seed
+*.pid.lock
+
+# ===== VS Code / IDE =====
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*~
+
+# ===== 用户本地配置 =====
+appsettings.Local.json
+appsettings.*.Local.json
+*.local.json
+
+# ===== 系统文件 =====
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
