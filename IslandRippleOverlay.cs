@@ -11,7 +11,7 @@ namespace ClassIslandInjector;
 /// </summary>
 internal sealed class IslandRippleOverlay : Control
 {
-    private static readonly Lazy<Bitmap?> FireworkTexture = new(() => LoadMaimaiTexture("Firework_new.png"));
+    private static readonly Lazy<Bitmap?> FireworkTexture = new(() => LoadMaimaiTexture("Firework.png"));
     private static readonly Lazy<Bitmap?> ColorBallTexture = new(() => LoadMaimaiTexture("ColorBall.png"));
     private readonly DateTime _startedAt = DateTime.UtcNow;
     private readonly TimeSpan _duration;
@@ -72,13 +72,16 @@ internal sealed class IslandRippleOverlay : Control
 
     private void DrawHanabi(DrawingContext context, double progress, double radius)
     {
-        // This follows MajdataView's Firework.prefab/Hanabi.mat: Firework_new is
-        // white and the material's central ColorBall is yellow. Hanabi deliberately
-        // ignores the ordinary ripple tint so it preserves the maimai appearance.
+        // This follows MajdataView's colourful Firework sprite and yellow
+        // ColorBall sprite. Hanabi deliberately ignores the ordinary ripple tint
+        // so it preserves the maimai appearance.
         var opening = Math.Clamp(progress / 0.18, 0, 1);
         var burst = 1 - Math.Pow(1 - opening, 3);
         var fade = Math.Clamp(1 - Math.Pow(progress, 1.65), 0, 1) * 0.589;
-        var coreRadius = Math.Max(2, 19 * (1 - Math.Min(progress * 4.5, 1)) + 2.5);
+        // The ColorBall sprite is a prominent part of the original touch burst,
+        // not a tiny point. Let it occupy the same central proportion as the
+        // Firework texture, then taper it as the rays take over.
+        var coreRadius = Math.Max(16, radius * (0.26 - Math.Min(progress, 0.78) * 0.19));
         var yellowCore = Color.FromArgb((byte)(255 * fade), 255, 213, 38);
         var whiteCore = Color.FromArgb((byte)(255 * fade), 255, 255, 218);
         var fireworkWhite = Color.FromArgb((byte)(255 * fade), 255, 255, 255);
