@@ -104,6 +104,9 @@ public sealed class InjectorSettings
     private double _shadowOffsetX;
     private double _shadowOffsetY = 6;
     private double _shadowOpacity = 0.8;
+    private bool _borderEnabled;
+    private string _borderColor = "#99FFFFFF";
+    private double _borderThickness = 1;
     private VisibilityAnimation _visibilityAnimation = VisibilityAnimation.Scale;
     private double _visibilityDurationSeconds = 0.35;
     private EmphasisAnimation _emphasisAnimation = EmphasisAnimation.Pulse;
@@ -115,6 +118,11 @@ public sealed class InjectorSettings
     private string _rippleColor = "#AA7DD3FC";
     private double _rippleDurationSeconds = 0.65;
     private double _rippleThickness = 3;
+    private bool _countdownArrowsEnabled = true;
+    private string _countdownArrowColor = "#BFF8FAFC";
+    private int _countdownArrowCount = 5;
+    private double _countdownArrowSpeed = 2.4;
+    private double _countdownArrowThickness = 3;
     private int _updateDepth;
     private bool _changePending;
 
@@ -144,6 +152,9 @@ public sealed class InjectorSettings
     public double ShadowOffsetX { get => _shadowOffsetX; set => Set(ref _shadowOffsetX, Math.Clamp(value, -200, 200)); }
     public double ShadowOffsetY { get => _shadowOffsetY; set => Set(ref _shadowOffsetY, Math.Clamp(value, -200, 200)); }
     public double ShadowOpacity { get => _shadowOpacity; set => Set(ref _shadowOpacity, Math.Clamp(value, 0, 1)); }
+    public bool BorderEnabled { get => _borderEnabled; set => Set(ref _borderEnabled, value); }
+    public string BorderColor { get => _borderColor; set => Set(ref _borderColor, value.Trim()); }
+    public double BorderThickness { get => _borderThickness; set => Set(ref _borderThickness, Math.Clamp(value, 0.25, 20)); }
     public VisibilityAnimation VisibilityAnimation { get => _visibilityAnimation; set => Set(ref _visibilityAnimation, value); }
     public double VisibilityDurationSeconds { get => _visibilityDurationSeconds; set => Set(ref _visibilityDurationSeconds, Math.Clamp(value, 0.1, 10)); }
     public EmphasisAnimation EmphasisAnimation { get => _emphasisAnimation; set => Set(ref _emphasisAnimation, value); }
@@ -155,6 +166,11 @@ public sealed class InjectorSettings
     public string RippleColor { get => _rippleColor; set => Set(ref _rippleColor, value.Trim()); }
     public double RippleDurationSeconds { get => _rippleDurationSeconds; set => Set(ref _rippleDurationSeconds, Math.Clamp(value, 0.1, 10)); }
     public double RippleThickness { get => _rippleThickness; set => Set(ref _rippleThickness, Math.Clamp(value, 0.5, 40)); }
+    public bool CountdownArrowsEnabled { get => _countdownArrowsEnabled; set => Set(ref _countdownArrowsEnabled, value); }
+    public string CountdownArrowColor { get => _countdownArrowColor; set => Set(ref _countdownArrowColor, value.Trim()); }
+    public int CountdownArrowCount { get => _countdownArrowCount; set => Set(ref _countdownArrowCount, Math.Clamp(value, 2, 24)); }
+    public double CountdownArrowSpeed { get => _countdownArrowSpeed; set => Set(ref _countdownArrowSpeed, Math.Clamp(value, 0.1, 12)); }
+    public double CountdownArrowThickness { get => _countdownArrowThickness; set => Set(ref _countdownArrowThickness, Math.Clamp(value, 0.5, 8)); }
 
     public void ResetToDefaults()
     {
@@ -180,6 +196,9 @@ public sealed class InjectorSettings
                 ShadowColor = "#8839BDF8";
                 ShadowBlur = 22;
                 ShadowOffsetY = 5;
+                BorderEnabled = true;
+                BorderColor = "#8AE0F2FE";
+                BorderThickness = 1;
                 VisibilityAnimation = VisibilityAnimation.Fade;
                 EmphasisAnimation = EmphasisAnimation.Pulse;
                 RippleType = RippleType.Glow;
@@ -194,6 +213,9 @@ public sealed class InjectorSettings
                 ShadowEnabled = true;
                 ShadowColor = "#D05B2CFF";
                 ShadowBlur = 28;
+                BorderEnabled = true;
+                BorderColor = "#D05B2CFF";
+                BorderThickness = 1.25;
                 AnimationEnabled = true;
                 AnimationMode = IslandAnimationMode.Breathe;
                 AnimationAmount = 0.025;
@@ -212,6 +234,8 @@ public sealed class InjectorSettings
                 ShadowEnabled = true;
                 ShadowColor = "#B8FF4C9A";
                 ShadowBlur = 30;
+                BorderEnabled = true;
+                BorderColor = "#B8FF76B8";
                 VisibilityAnimation = VisibilityAnimation.Scale;
                 EmphasisAnimation = EmphasisAnimation.Bounce;
                 EmphasisAmount = 0.13;
@@ -224,6 +248,8 @@ public sealed class InjectorSettings
                 Shape = IslandShape.RoundedRectangle;
                 CornerRadius = 12;
                 ShadowEnabled = false;
+                BorderEnabled = true;
+                BorderColor = "#55FFFFFF";
                 AnimationEnabled = false;
                 VisibilityAnimation = VisibilityAnimation.Fade;
                 EmphasisAnimation = EmphasisAnimation.None;
@@ -376,6 +402,9 @@ public sealed class InjectorSettings
         ShadowOffsetX = source.ShadowOffsetX;
         ShadowOffsetY = source.ShadowOffsetY;
         ShadowOpacity = source.ShadowOpacity;
+        BorderEnabled = source.BorderEnabled;
+        BorderColor = source.BorderColor;
+        BorderThickness = source.BorderThickness;
         VisibilityAnimation = source.VisibilityAnimation;
         VisibilityDurationSeconds = source.VisibilityDurationSeconds;
         EmphasisAnimation = source.EmphasisAnimation;
@@ -387,6 +416,11 @@ public sealed class InjectorSettings
         RippleColor = source.RippleColor;
         RippleDurationSeconds = source.RippleDurationSeconds;
         RippleThickness = source.RippleThickness;
+        CountdownArrowsEnabled = source.CountdownArrowsEnabled;
+        CountdownArrowColor = source.CountdownArrowColor;
+        CountdownArrowCount = source.CountdownArrowCount;
+        CountdownArrowSpeed = source.CountdownArrowSpeed;
+        CountdownArrowThickness = source.CountdownArrowThickness;
         EndUpdate();
     }
 

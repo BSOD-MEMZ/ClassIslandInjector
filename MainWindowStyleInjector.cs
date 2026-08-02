@@ -38,6 +38,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private readonly Dictionary<Control, object?> _nativeEffectPlayers = [];
     private object? _suppressingEffectPlayer;
     private readonly List<IslandRippleOverlay> _ripples = [];
+    private readonly Dictionary<Control, CountdownArrowOverlay> _countdownArrows = [];
     // A custom ripple normally lives in ClassIsland's full-screen topmost effect
     // window.  This map lets us remove it from the same host when it completes.
     private readonly Dictionary<IslandRippleOverlay, IList> _rippleHosts = [];
@@ -365,7 +366,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         var hasContinuousAnimation = _settings.AnimationEnabled && _settings.AnimationMode != IslandAnimationMode.None;
         var hasTransientAnimation = GetEffectProgress(_visibilityStartedAt, _settings.VisibilityDurationSeconds) < 1 ||
                                    GetEffectProgress(_emphasisStartedAt, _settings.EmphasisDurationSeconds) < 1 ||
-                                   _ripples.Count > 0;
+                                   _ripples.Count > 0 || _countdownArrows.Count > 0;
         if (hasContinuousAnimation || hasTransientAnimation)
         {
             _animationTimer.Start();
@@ -392,11 +393,14 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
         _lastContentVisible = isVisible;
 
-        foreach (var line in _mainWindow.GetVisualDescendants().OfType<Control>()
-                     .Where(x => x.GetType().FullName == "ClassIsland.Controls.MainWindowLine"))
+        var currentLines = _mainWindow.GetVisualDescendants().OfType<Control>()
+                     .Where(x => x.GetType().FullName == "ClassIsland.Controls.MainWindowLine")
+                     .ToArray();
+        foreach (var line in currentLines)
         {
             ConfigureNativeRipplePlayer(line);
             ObserveLine(line);
+            UpdateCountdownArrows(line);
             var mask = line.GetType().GetProperty("MaskContent")?.GetValue(line);
             if (!_lineMasks.TryGetValue(line, out var previousMask))
             {
@@ -416,6 +420,66 @@ internal sealed class MainWindowStyleInjector : IDisposable
                     TriggerEmphasis(mask);
                 }
             }
+        }
+
+        foreach (var line in _countdownArrows.Keys.Except(currentLines).ToArray())
+        {
+            RemoveCountdownArrows(line);
+        }
+        UpdateAnimationTimer();
+    }
+
+    private void UpdateCountdownArrows(Control line)
+    {
+        if (!_settings.CountdownArrowsEnabled || !IsPrepareOnClassCountdown(line))
+        {
+            RemoveCountdownArrows(line);
+            return;
+        }
+
+        if (!_countdownArrows.TryGetValue(line, out var arrows))
+        {
+            var overlayHost = line.GetVisualDescendants().OfType<Grid>()
+                .FirstOrDefault(x => x.Name == "GridOverlay");
+            if (overlayHost == null)
+            {
+                return;
+            }
+
+            arrows = new CountdownArrowOverlay();
+            overlayHost.Children.Add(arrows);
+            _countdownArrows[line] = arrows;
+        }
+
+        arrows.Phase = DateTime.UtcNow.TimeOfDay.TotalSeconds * _settings.CountdownArrowSpeed;
+        arrows.ArrowColor = TryParseColor(_settings.CountdownArrowColor, out var color) ? color : Colors.White;
+        arrows.ArrowCount = _settings.CountdownArrowCount;
+        arrows.ArrowThickness = _settings.CountdownArrowThickness;
+        arrows.InvalidateVisual();
+    }
+
+    private static bool IsPrepareOnClassCountdown(Control line)
+    {
+        var request = line.GetType().GetProperty("CurrentNotificationRequest")?.GetValue(line);
+        return request?.GetType().GetProperty("ChannelId")?.GetValue(request) is Guid channelId &&
+               channelId == new Guid("CDDFE7FF-B904-4C73-B458-82793B2F66E9");
+    }
+
+    private void RemoveCountdownArrows(Control line)
+    {
+        if (!_countdownArrows.Remove(line, out var arrows))
+        {
+            return;
+        }
+
+        (arrows.Parent as Panel)?.Children.Remove(arrows);
+    }
+
+    private void RemoveAllCountdownArrows()
+    {
+        foreach (var line in _countdownArrows.Keys.ToArray())
+        {
+            RemoveCountdownArrows(line);
         }
     }
 
@@ -668,14 +732,18 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         foreach (var border in _mainWindow.GetVisualDescendants().OfType<Border>()
-                     .Where(x => x.Name is "BackgroundBorder" or "BackgroundBorderOverlayMask"))
+                     .Where(x => x.Name is "BackgroundBorder" or "BackgroundBorderOverlayMask" or "OverlayMask"))
         {
             var originalCornerRadius = border.CornerRadius;
             var originalBackground = border.Background;
+            var originalBorderBrush = border.BorderBrush;
+            var originalBorderThickness = border.BorderThickness;
             _decorationRestorers.Add(() =>
             {
                 border.CornerRadius = originalCornerRadius;
                 border.Background = originalBackground;
+                border.BorderBrush = originalBorderBrush;
+                border.BorderThickness = originalBorderThickness;
             });
 
             switch (_settings.Shape)
@@ -702,6 +770,12 @@ internal sealed class MainWindowStyleInjector : IDisposable
                         GradientStops = [new GradientStop(startColor, 0), new GradientStop(endColor, 1)]
                     }
                     : new SolidColorBrush(startColor);
+            }
+
+            if (_settings.BorderEnabled && TryParseColor(_settings.BorderColor, out var borderColor))
+            {
+                border.BorderBrush = new SolidColorBrush(borderColor);
+                border.BorderThickness = new Thickness(_settings.BorderThickness);
             }
         }
 
@@ -781,6 +855,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _styleSheetWatcher?.Dispose();
         _styleSheetWatcher = null;
         RestoreDecorations();
+        RemoveAllCountdownArrows();
         _lineMasks.Clear();
         foreach (var line in _observedLines)
         {

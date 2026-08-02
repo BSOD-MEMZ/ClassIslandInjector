@@ -33,6 +33,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly TextBox _shadowOffsetX = new();
     private readonly TextBox _shadowOffsetY = new();
     private readonly TextBox _shadowOpacity = new();
+    private readonly CheckBox _border = new() { Content = "启用岛屿边框" };
+    private readonly TextBox _borderColor = new();
+    private readonly TextBox _borderThickness = new();
     private readonly ComboBox _visibilityAnimation = new() { ItemsSource = Enum.GetValues<VisibilityAnimation>() };
     private readonly ComboBox _emphasisAnimation = new() { ItemsSource = Enum.GetValues<EmphasisAnimation>() };
     private readonly TextBox _emphasisAmount = new();
@@ -44,6 +47,11 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly TextBox _rippleColor = new();
     private readonly TextBox _rippleDuration = new();
     private readonly TextBox _rippleThickness = new();
+    private readonly CheckBox _countdownArrows = new() { Content = "即将上课时显示箭头滑动效果" };
+    private readonly TextBox _countdownArrowColor = new();
+    private readonly TextBox _countdownArrowCount = new();
+    private readonly TextBox _countdownArrowSpeed = new();
+    private readonly TextBox _countdownArrowThickness = new();
     private readonly ComboBox _preset = new() { ItemsSource = Enum.GetValues<StylePreset>() };
     private readonly ComboBox _animationPreset = new() { ItemsSource = Enum.GetValues<AnimationPreset>() };
     private readonly TextBlock _status = new() { TextWrapping = Avalonia.Media.TextWrapping.Wrap };
@@ -140,6 +148,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(Field("阴影 X 偏移", _shadowOffsetX));
         panel.Children.Add(Field("阴影 Y 偏移", _shadowOffsetY));
         panel.Children.Add(Field("阴影不透明度 (0–1)", _shadowOpacity));
+        panel.Children.Add(Section("边框"));
+        panel.Children.Add(_border);
+        panel.Children.Add(Field("边框颜色 (#AARRGGBB)", _borderColor));
+        panel.Children.Add(Field("边框线宽", _borderThickness));
         panel.Children.Add(Section("出现、消失与强调"));
         panel.Children.Add(Field("主界面显示动画", _visibilityAnimation));
         panel.Children.Add(Field("显示动画时长（秒）", _visibilityDuration));
@@ -153,6 +165,12 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(Field("Ripple 颜色 (#AARRGGBB)", _rippleColor));
         panel.Children.Add(Field("Ripple 时长（秒）", _rippleDuration));
         panel.Children.Add(Field("Ripple 线宽", _rippleThickness));
+        panel.Children.Add(Section("即将上课倒计时"));
+        panel.Children.Add(_countdownArrows);
+        panel.Children.Add(Field("箭头颜色 (#AARRGGBB)", _countdownArrowColor));
+        panel.Children.Add(Field("箭头组数 (2–24，每组 >>)", _countdownArrowCount));
+        panel.Children.Add(Field("滑动速度 (0.1–12)", _countdownArrowSpeed));
+        panel.Children.Add(Field("箭头线宽", _countdownArrowThickness));
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         var apply = new Button { Content = "保存并应用" };
@@ -233,6 +251,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _shadowOffsetX.Text = Number(settings.ShadowOffsetX);
         _shadowOffsetY.Text = Number(settings.ShadowOffsetY);
         _shadowOpacity.Text = Number(settings.ShadowOpacity);
+        _border.IsChecked = settings.BorderEnabled;
+        _borderColor.Text = settings.BorderColor;
+        _borderThickness.Text = Number(settings.BorderThickness);
         _visibilityAnimation.SelectedItem = settings.VisibilityAnimation;
         _visibilityDuration.Text = Number(settings.VisibilityDurationSeconds);
         _emphasisAnimation.SelectedItem = settings.EmphasisAnimation;
@@ -244,6 +265,11 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _rippleColor.Text = settings.RippleColor;
         _rippleDuration.Text = Number(settings.RippleDurationSeconds);
         _rippleThickness.Text = Number(settings.RippleThickness);
+        _countdownArrows.IsChecked = settings.CountdownArrowsEnabled;
+        _countdownArrowColor.Text = settings.CountdownArrowColor;
+        _countdownArrowCount.Text = settings.CountdownArrowCount.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        _countdownArrowSpeed.Text = Number(settings.CountdownArrowSpeed);
+        _countdownArrowThickness.Text = Number(settings.CountdownArrowThickness);
     }
 
     private void SaveAndApply()
@@ -254,10 +280,13 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             !TryNumber(_animationPeriod, out var animationPeriod) || !TryNumber(_cornerRadius, out var cornerRadius) ||
             !TryNumber(_shadowBlur, out var shadowBlur) || !TryNumber(_shadowOffsetX, out var shadowOffsetX) ||
             !TryNumber(_shadowOffsetY, out var shadowOffsetY) || !TryNumber(_shadowOpacity, out var shadowOpacity) ||
+            !TryNumber(_borderThickness, out var borderThickness) ||
             !TryNumber(_emphasisAmount, out var emphasisAmount) || !TryNumber(_emphasisDuration, out var emphasisDuration) ||
             !TryNumber(_visibilityDuration, out var visibilityDuration) ||
             !TryNumber(_notificationTransitionDuration, out var notificationTransitionDuration) ||
-            !TryNumber(_rippleDuration, out var rippleDuration) || !TryNumber(_rippleThickness, out var rippleThickness))
+            !TryNumber(_rippleDuration, out var rippleDuration) || !TryNumber(_rippleThickness, out var rippleThickness) ||
+            !int.TryParse(_countdownArrowCount.Text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var countdownArrowCount) ||
+            !TryNumber(_countdownArrowSpeed, out var countdownArrowSpeed) || !TryNumber(_countdownArrowThickness, out var countdownArrowThickness))
         {
             _status.Text = "请输入有效数字后再保存。";
             return;
@@ -291,6 +320,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         settings.ShadowOffsetX = shadowOffsetX;
         settings.ShadowOffsetY = shadowOffsetY;
         settings.ShadowOpacity = shadowOpacity;
+        settings.BorderEnabled = _border.IsChecked == true;
+        settings.BorderColor = _borderColor.Text ?? string.Empty;
+        settings.BorderThickness = borderThickness;
         settings.VisibilityAnimation = _visibilityAnimation.SelectedItem is VisibilityAnimation visibilityAnimation ? visibilityAnimation : VisibilityAnimation.None;
         settings.VisibilityDurationSeconds = visibilityDuration;
         settings.EmphasisAnimation = _emphasisAnimation.SelectedItem is EmphasisAnimation emphasisAnimation ? emphasisAnimation : EmphasisAnimation.None;
@@ -302,6 +334,11 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         settings.RippleColor = _rippleColor.Text ?? string.Empty;
         settings.RippleDurationSeconds = rippleDuration;
         settings.RippleThickness = rippleThickness;
+        settings.CountdownArrowsEnabled = _countdownArrows.IsChecked == true;
+        settings.CountdownArrowColor = _countdownArrowColor.Text ?? string.Empty;
+        settings.CountdownArrowCount = countdownArrowCount;
+        settings.CountdownArrowSpeed = countdownArrowSpeed;
+        settings.CountdownArrowThickness = countdownArrowThickness;
         }
         finally
         {

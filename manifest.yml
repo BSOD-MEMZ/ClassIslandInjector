@@ -4,7 +4,7 @@ description: 以运行时注入和可热重载 Avalonia 样式表深度重塑 Cl
 entranceAssembly: "ClassIslandInjector.dll"
 url: https://github.com/Miku/ClasisIslandInjector
 apiVersion: 2.0.0.0
-version: 1.0.0.0
+version: 1.1.0.0
 author: Miku
 supportedOSPlatforms:
   - Windows
