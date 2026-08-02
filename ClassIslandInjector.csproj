@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>ClassIslandInjector</AssemblyName>
+    <RootNamespace>ClassIslandInjector</RootNamespace>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <CreateCipx>true</CreateCipx>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ClassIsland.PluginSdk" Version="2.0.0.2">
+      <ExcludeAssets>runtime;native</ExcludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="manifest.yml" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="README.md" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Defaults\Overrides.axaml" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\Firework_new.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\ColorBall.png" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
