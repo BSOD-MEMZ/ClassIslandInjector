@@ -11,6 +11,7 @@ namespace ClassIslandInjector;
 /// </summary>
 internal sealed class IslandRippleOverlay : Control
 {
+    private const double HanabiClipDuration = 1.3333334;
     private static readonly Lazy<Bitmap?> FireworkTexture = new(() => LoadMaimaiTexture("Firework.png"));
     private static readonly Lazy<Bitmap?> ColorBallTexture = new(() => LoadMaimaiTexture("ColorBall.png"));
     private readonly DateTime _startedAt = DateTime.UtcNow;
@@ -74,29 +75,34 @@ internal sealed class IslandRippleOverlay : Control
 
     private void DrawHanabi(DrawingContext context, double progress)
     {
-        // The colour ball grows for the whole animation while the white bloom
-        // appears shortly afterwards, expands, and rotates around it.
+        // Ported from MajdataView's Firework.prefab and fire.anim. The original
+        // uses three SpriteRenderers driven by 60 FPS Unity Hermite curves.
         var extent = Math.Max(Bounds.Width, Bounds.Height);
-        var burstProgress = Math.Clamp((progress - 0.14) / 0.86, 0, 1);
-        var burstExpansion = EaseOutCubic(burstProgress);
-        var radius = extent * (0.045 + 0.44 * burstExpansion);
-        var coreExpansion = EaseOutCubic(progress);
-        var coreRadius = Math.Max(12, extent * (0.018 + 0.105 * coreExpansion));
-        var rotation = 105 * burstProgress;
-        var fireworkOpacity = SmoothStep(0.14, 0.22, progress) * FadeOut(0.58, progress);
-        var coreOpacity = FadeOut(0.62, progress);
-        var yellowCore = Color.FromArgb((byte)(255 * coreOpacity), 255, 213, 38);
-        var whiteCore = Color.FromArgb((byte)(255 * coreOpacity), 255, 255, 218);
-        var fireworkWhite = Color.FromArgb((byte)(255 * fireworkOpacity), 255, 255, 255);
-        var softWhite = Color.FromArgb((byte)(170 * fireworkOpacity), 255, 255, 255);
+        var time = progress * HanabiClipDuration;
+        var fireworkScale = SampleFireworkScale(time);
+        var fireworkRadius = extent * 0.098 * fireworkScale;
+        var rotation = SampleFireworkRotation(time);
+        var fireworkOpacity = SampleFireworkOpacity(time);
 
-        if (DrawMaimaiTextures(context, radius, coreRadius, rotation, fireworkOpacity, coreOpacity))
+        var smallBallScale = SampleSmooth(time, 0, 0.2, 0.1, 0.5);
+        var smallBallRadius = extent * 0.0465 * smallBallScale;
+        var smallBallOpacity = SampleSmallBallOpacity(time);
+
+        var bigBallScale = SampleSmooth(time, 0, 1, 0.3, 1.15);
+        var bigBallRadius = extent * 0.0465 * bigBallScale;
+        var bigBallOpacity = SampleBigBallOpacity(time);
+        var bigBallTint = SampleBigBallTint(time);
+
+        if (DrawMaimaiTextures(context, fireworkRadius, rotation, fireworkOpacity,
+            bigBallRadius, bigBallOpacity, bigBallTint, smallBallRadius, smallBallOpacity))
         {
             return;
         }
 
-        context.DrawEllipse(new SolidColorBrush(yellowCore), null, _center, coreRadius, coreRadius);
-        context.DrawEllipse(new SolidColorBrush(whiteCore), null, _center, coreRadius * 0.44, coreRadius * 0.44);
+        context.DrawEllipse(new SolidColorBrush(Color.FromArgb((byte)(255 * bigBallOpacity), 255, 191, 191)),
+            null, _center, bigBallRadius, bigBallRadius);
+        context.DrawEllipse(new SolidColorBrush(Color.FromArgb((byte)(255 * smallBallOpacity), 255, 213, 38)),
+            null, _center, smallBallRadius, smallBallRadius);
 
         using (context.PushTransform(CreateRotationMatrix(rotation)))
         {
@@ -108,11 +114,12 @@ internal sealed class IslandRippleOverlay : Control
                 var angle = i * Math.Tau / rays + 0.12 + (i % 2 == 0 ? 0.025 : -0.025);
                 var direction = new Vector(Math.Cos(angle), Math.Sin(angle));
                 var variation = 0.62 + ((i * 7) % 9) * 0.047;
-                var outer = radius * variation;
+                var outer = fireworkRadius * variation;
                 var inner = outer * (0.08 + progress * 0.15);
                 var start = _center + direction * inner;
                 var end = _center + direction * outer;
-                var rayBrush = new SolidColorBrush(i % 4 == 0 ? softWhite : fireworkWhite);
+                var rayAlpha = (byte)((i % 4 == 0 ? 170 : 255) * fireworkOpacity);
+                var rayBrush = new SolidColorBrush(Color.FromArgb(rayAlpha, 255, 255, 255));
                 context.DrawLine(new Pen(rayBrush, Math.Max(0.9, _thickness * (1.05 - progress * 0.42))), start, end);
 
                 if (i % 2 == 0)
@@ -124,8 +131,9 @@ internal sealed class IslandRippleOverlay : Control
         }
     }
 
-    private bool DrawMaimaiTextures(DrawingContext context, double radius, double coreRadius,
-        double rotation, double fireworkOpacity, double coreOpacity)
+    private bool DrawMaimaiTextures(DrawingContext context, double fireworkRadius, double rotation,
+        double fireworkOpacity, double bigBallRadius, double bigBallOpacity, double bigBallTint,
+        double smallBallRadius, double smallBallOpacity)
     {
         var firework = FireworkTexture.Value;
         var colorBall = ColorBallTexture.Value;
@@ -134,24 +142,144 @@ internal sealed class IslandRippleOverlay : Control
             return false;
         }
 
-        var fireworkRect = new Rect(_center.X - radius, _center.Y - radius, radius * 2, radius * 2);
-        var coreRect = new Rect(_center.X - coreRadius, _center.Y - coreRadius, coreRadius * 2, coreRadius * 2);
+        var fireworkRect = CenteredRect(fireworkRadius);
+        var bigBallRect = CenteredRect(bigBallRadius);
+        var smallBallRect = CenteredRect(smallBallRadius);
         using (context.PushOpacity(fireworkOpacity))
         using (context.PushTransform(CreateRotationMatrix(rotation)))
         {
             context.DrawImage(firework, fireworkRect);
         }
-        using (context.PushOpacity(coreOpacity))
+        using (context.PushOpacity(bigBallOpacity))
         {
-            context.DrawImage(colorBall, coreRect);
+            context.DrawImage(colorBall, bigBallRect);
+            if (bigBallTint > 0)
+            {
+                var mask = new ImageBrush(colorBall) { Stretch = Stretch.Fill };
+                using (context.PushOpacityMask(mask, bigBallRect))
+                {
+                    context.DrawRectangle(new SolidColorBrush(Color.FromArgb(
+                        (byte)(64 * bigBallTint), 255, 0, 0)), null, bigBallRect);
+                }
+            }
+        }
+        using (context.PushOpacity(smallBallOpacity))
+        {
+            context.DrawImage(colorBall, smallBallRect);
         }
         return true;
     }
 
-    private static double EaseOutCubic(double value) => 1 - Math.Pow(1 - value, 3);
+    private Rect CenteredRect(double radius) =>
+        new(_center.X - radius, _center.Y - radius, radius * 2, radius * 2);
 
-    private static double FadeOut(double start, double progress) =>
-        1 - Math.Clamp((progress - start) / (1 - start), 0, 1);
+    private static double SampleFireworkScale(double time)
+    {
+        if (time <= 0.1)
+        {
+            return 0;
+        }
+        if (time <= 0.13333334)
+        {
+            return Hermite(time, 0.1, 0, 0, 0.13333334, 0.6, 9.375001);
+        }
+        if (time <= 0.23333333)
+        {
+            return Hermite(time, 0.13333334, 0.6, 9.375001, 0.23333333, 1.25, 2.1666665);
+        }
+        return Hermite(time, 0.23333333, 1.25, 2.1666665, HanabiClipDuration, 5, 0);
+    }
+
+    private static double SampleFireworkRotation(double time)
+    {
+        if (time <= 0.13333334)
+        {
+            return 0;
+        }
+        if (time <= 1.2166667)
+        {
+            return Hermite(time, 0.13333334, 0, -66.46153, 1.2166667, -72, -66.46153);
+        }
+        return Hermite(time, 1.2166667, -72, -58.775543,
+            HanabiClipDuration, -78.85715, -102.857155);
+    }
+
+    private static double SampleFireworkOpacity(double time) =>
+        time <= 0.5 ? 0.589 : Hermite(time, 0.5, 0.589, 0, HanabiClipDuration, 0, 0);
+
+    private static double SampleSmallBallOpacity(double time)
+    {
+        if (time <= 0.1)
+        {
+            return 1;
+        }
+        if (time <= 0.2)
+        {
+            return Hermite(time, 0.1, 1, 0, 0.2, 0.1, -2.0000002);
+        }
+        if (time <= 0.3)
+        {
+            return Hermite(time, 0.2, 0.1, -2.0000002, 0.3, 0, 0);
+        }
+        return 0;
+    }
+
+    private static double SampleBigBallOpacity(double time)
+    {
+        if (time <= 0.06666667)
+        {
+            return 1;
+        }
+        if (time <= 0.16666667)
+        {
+            return Hermite(time, 0.06666667, 1, 0, 0.16666667, 0.1, -0.48979604);
+        }
+        if (time <= 0.8833333)
+        {
+            return Hermite(time, 0.16666667, 0.1, -0.48979604, 0.8833333, 0, 0);
+        }
+        return 0;
+    }
+
+    private static double SampleBigBallTint(double time)
+    {
+        if (time <= 0.06666667)
+        {
+            return SampleSmooth(time, 0, 0, 0.06666667, 1);
+        }
+        if (time <= 0.3)
+        {
+            return SampleSmooth(time, 0.06666667, 1, 0.3, 0);
+        }
+        return 0;
+    }
+
+    private static double SampleSmooth(double time, double startTime, double startValue,
+        double endTime, double endValue)
+    {
+        if (time <= startTime)
+        {
+            return startValue;
+        }
+        if (time >= endTime)
+        {
+            return endValue;
+        }
+        return Hermite(time, startTime, startValue, 0, endTime, endValue, 0);
+    }
+
+    private static double Hermite(double time, double startTime, double startValue, double startSlope,
+        double endTime, double endValue, double endSlope)
+    {
+        var duration = endTime - startTime;
+        var t = Math.Clamp((time - startTime) / duration, 0, 1);
+        var t2 = t * t;
+        var t3 = t2 * t;
+        return (2 * t3 - 3 * t2 + 1) * startValue +
+               (t3 - 2 * t2 + t) * duration * startSlope +
+               (-2 * t3 + 3 * t2) * endValue +
+               (t3 - t2) * duration * endSlope;
+    }
 
     private Matrix CreateRotationMatrix(double degrees)
     {
@@ -159,12 +287,6 @@ internal sealed class IslandRippleOverlay : Control
         return Matrix.CreateTranslation(-_center.X, -_center.Y) *
                Matrix.CreateRotation(radians) *
                Matrix.CreateTranslation(_center.X, _center.Y);
-    }
-
-    private static double SmoothStep(double edge0, double edge1, double value)
-    {
-        var normalized = Math.Clamp((value - edge0) / (edge1 - edge0), 0, 1);
-        return normalized * normalized * (3 - 2 * normalized);
     }
 
     private static Bitmap? LoadMaimaiTexture(string fileName)

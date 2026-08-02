@@ -217,7 +217,7 @@ public sealed class InjectorSettings
                 EmphasisAmount = 0.13;
                 RippleType = RippleType.Hanabi;
                 RippleColor = "#FFFF76B8";
-                RippleDurationSeconds = 1.1;
+                RippleDurationSeconds = 1.333;
                 RippleThickness = 2.5;
                 break;
             case StylePreset.Minimal:
@@ -326,7 +326,7 @@ public sealed class InjectorSettings
                 NotificationTransitionDurationSeconds = 0.24;
                 RippleType = RippleType.Hanabi;
                 RippleColor = "#FFFF76B8";
-                RippleDurationSeconds = 1.1;
+                RippleDurationSeconds = 1.333;
                 RippleThickness = 2.5;
                 break;
         }

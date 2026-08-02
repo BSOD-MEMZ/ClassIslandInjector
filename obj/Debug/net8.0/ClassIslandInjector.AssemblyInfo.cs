@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("ClassIslandInjector")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+b0b46254ba9091a1fd8a718635cea9f1ecab63ed")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+f0307462f3ddd9414d313b795d98b279e02acb5f")]
 [assembly: System.Reflection.AssemblyProductAttribute("ClassIslandInjector")]
 [assembly: System.Reflection.AssemblyTitleAttribute("ClassIslandInjector")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
