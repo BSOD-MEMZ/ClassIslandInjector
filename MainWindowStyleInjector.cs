@@ -553,13 +553,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
         var effectControls = TryGetFullScreenEffectHost(out var effectWindow);
         var center = GetRippleCenter(effectWindow);
-        // MajdataView's fire animation runs for roughly 1.33 seconds. Preserve
-        // that timing even if this setting was saved before Hanabi was added.
-        var duration = _settings.RippleType == RippleType.Hanabi
-            ? Math.Max(_settings.RippleDurationSeconds, 1.35)
-            : _settings.RippleDurationSeconds;
         var ripple = new IslandRippleOverlay(center, _settings.RippleType, color,
-            TimeSpan.FromSeconds(duration), _settings.RippleThickness);
+            TimeSpan.FromSeconds(_settings.RippleDurationSeconds), _settings.RippleThickness);
         ripple.HorizontalAlignment = HorizontalAlignment.Stretch;
         ripple.VerticalAlignment = VerticalAlignment.Stretch;
 

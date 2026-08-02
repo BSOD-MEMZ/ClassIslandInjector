@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "n5aJd/4m62s=",
+  "dgSpecHash": "P9It5hwGlig=",
   "success": true,
-  "projectFilePath": "D:\\Dev\\ClassIslandInjector\\ClassIslandInjector.csproj",
+  "projectFilePath": "d:\\Dev\\ClassIslandInjector\\ClassIslandInjector.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\Miku\\.nuget\\packages\\asyncimageloader.avalonia\\3.3.0\\asyncimageloader.avalonia.3.3.0.nupkg.sha512",
     "C:\\Users\\Miku\\.nuget\\packages\\avalonia\\11.3.6\\avalonia.11.3.6.nupkg.sha512",

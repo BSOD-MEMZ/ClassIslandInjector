@@ -45,6 +45,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly TextBox _rippleDuration = new();
     private readonly TextBox _rippleThickness = new();
     private readonly ComboBox _preset = new() { ItemsSource = Enum.GetValues<StylePreset>() };
+    private readonly ComboBox _animationPreset = new() { ItemsSource = Enum.GetValues<AnimationPreset>() };
     private readonly TextBlock _status = new() { TextWrapping = Avalonia.Media.TextWrapping.Wrap };
 
     public InjectorSettingsPage()
@@ -108,6 +109,21 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(Field("动画类型", _animationMode));
         panel.Children.Add(Field("动画幅度 (0–1)", _animationAmount));
         panel.Children.Add(Field("动画周期（秒）", _animationPeriod));
+        panel.Children.Add(Field("动画预设", _animationPreset));
+        var animationPresetActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var applyAnimationPreset = new Button { Content = "应用动画预设" };
+        applyAnimationPreset.Click += (_, _) =>
+        {
+            if (_animationPreset.SelectedItem is not AnimationPreset preset)
+            {
+                return;
+            }
+            InjectorRuntime.Settings.ApplyAnimationPreset(preset);
+            LoadFromSettings();
+            _status.Text = $"已应用 {preset} 动画预设；形状、背景和阴影保持不变。";
+        };
+        animationPresetActions.Children.Add(applyAnimationPreset);
+        panel.Children.Add(animationPresetActions);
         panel.Children.Add(Field("覆盖样式表 (.axaml) 的完整路径", _styleSheetPath));
         panel.Children.Add(_watchStyleSheet);
         panel.Children.Add(Section("形状与背景"));

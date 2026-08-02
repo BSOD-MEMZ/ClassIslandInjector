@@ -17,3 +17,6 @@ D:\Dev\ClassIslandInjector\obj\Debug\net8.0\ClassIslandInjector.pdb
 D:\Dev\ClassIslandInjector\obj\Debug\net8.0\ClassIslandInjector.genruntimeconfig.cache
 D:\Dev\ClassIslandInjector\obj\Debug\net8.0\ref\ClassIslandInjector.dll
 D:\Dev\ClassIslandInjector\bin\Debug\net8.0\Defaults\Overrides.axaml
+D:\Dev\ClassIslandInjector\bin\Debug\net8.0\Assets\Firework.png
+D:\Dev\ClassIslandInjector\bin\Debug\net8.0\Assets\Firework_new.png
+D:\Dev\ClassIslandInjector\bin\Debug\net8.0\Assets\ColorBall.png

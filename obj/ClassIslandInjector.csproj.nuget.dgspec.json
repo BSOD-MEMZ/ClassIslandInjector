@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "D:\\Dev\\ClassIslandInjector\\ClassIslandInjector.csproj": {}
+    "d:\\Dev\\ClassIslandInjector\\ClassIslandInjector.csproj": {}
   },
   "projects": {
-    "D:\\Dev\\ClassIslandInjector\\ClassIslandInjector.csproj": {
+    "d:\\Dev\\ClassIslandInjector\\ClassIslandInjector.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "D:\\Dev\\ClassIslandInjector\\ClassIslandInjector.csproj",
+        "projectUniqueName": "d:\\Dev\\ClassIslandInjector\\ClassIslandInjector.csproj",
         "projectName": "ClassIslandInjector",
-        "projectPath": "D:\\Dev\\ClassIslandInjector\\ClassIslandInjector.csproj",
+        "projectPath": "d:\\Dev\\ClassIslandInjector\\ClassIslandInjector.csproj",
         "packagesPath": "C:\\Users\\Miku\\.nuget\\packages\\",
-        "outputPath": "D:\\Dev\\ClassIslandInjector\\obj\\",
+        "outputPath": "d:\\Dev\\ClassIslandInjector\\obj\\",
         "projectStyle": "PackageReference",
         "configFilePaths": [
           "C:\\Users\\Miku\\AppData\\Roaming\\NuGet\\NuGet.Config"

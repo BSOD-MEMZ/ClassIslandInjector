@@ -11,6 +11,8 @@
 
 设置页顶部提供四个预设：`GlassCapsule`、`NeonPulse`、`MaimaiHanabi`、`Minimal`，并可使用“恢复插件默认”一次性复位运行时设置。恢复操作会保留高级 `Overrides.axaml`，避免误删手工样式。
 
+“启用动画”下方另有独立的动画预设。它们只会替换连续动画、出现/强调、提醒遮罩和 Ripple 的参数，不会改动当前的形状、背景或阴影：`Still`、`SoftBreathe`、`GentleFloat`、`DynamicWave`、`AlertShake`、`HanabiCelebration`。
+
 插件配置保存在 ClassIsland 为插件分配的配置目录中，而不是安装目录。首次启动会生成：
 
 - `settings.json`：基础注入和动画设置。

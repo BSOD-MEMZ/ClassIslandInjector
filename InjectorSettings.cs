@@ -64,6 +64,20 @@ public enum StylePreset
     Minimal
 }
 
+/// <summary>
+/// A coordinated set of motion settings. Unlike <see cref="StylePreset"/>, these
+/// presets leave the island's shape, colours and shadows untouched.
+/// </summary>
+public enum AnimationPreset
+{
+    Still,
+    SoftBreathe,
+    GentleFloat,
+    DynamicWave,
+    AlertShake,
+    HanabiCelebration
+}
+
 public sealed class InjectorSettings
 {
     private bool _enabled = true;
@@ -203,7 +217,7 @@ public sealed class InjectorSettings
                 EmphasisAmount = 0.13;
                 RippleType = RippleType.Hanabi;
                 RippleColor = "#FFFF76B8";
-                RippleDurationSeconds = 1.35;
+                RippleDurationSeconds = 1.1;
                 RippleThickness = 2.5;
                 break;
             case StylePreset.Minimal:
@@ -214,6 +228,106 @@ public sealed class InjectorSettings
                 VisibilityAnimation = VisibilityAnimation.Fade;
                 EmphasisAnimation = EmphasisAnimation.None;
                 RippleType = RippleType.None;
+                break;
+        }
+        EndUpdate();
+    }
+
+    public void ApplyAnimationPreset(AnimationPreset preset)
+    {
+        BeginUpdate();
+        switch (preset)
+        {
+            case AnimationPreset.Still:
+                AnimationEnabled = false;
+                AnimationMode = IslandAnimationMode.None;
+                VisibilityAnimation = VisibilityAnimation.None;
+                EmphasisAnimation = EmphasisAnimation.None;
+                NotificationTransition = NotificationTransition.HostDefault;
+                RippleType = RippleType.None;
+                break;
+            case AnimationPreset.SoftBreathe:
+                AnimationEnabled = true;
+                AnimationMode = IslandAnimationMode.Breathe;
+                AnimationAmount = 0.025;
+                AnimationPeriodSeconds = 3.2;
+                VisibilityAnimation = VisibilityAnimation.Fade;
+                VisibilityDurationSeconds = 0.3;
+                EmphasisAnimation = EmphasisAnimation.Pulse;
+                EmphasisAmount = 0.08;
+                EmphasisDurationSeconds = 0.5;
+                NotificationTransition = NotificationTransition.Fade;
+                NotificationTransitionDurationSeconds = 0.22;
+                RippleType = RippleType.Glow;
+                RippleColor = "#AA7DD3FC";
+                RippleDurationSeconds = 0.6;
+                RippleThickness = 2;
+                break;
+            case AnimationPreset.GentleFloat:
+                AnimationEnabled = true;
+                AnimationMode = IslandAnimationMode.Float;
+                AnimationAmount = 0.07;
+                AnimationPeriodSeconds = 3.6;
+                VisibilityAnimation = VisibilityAnimation.SlideFromBottom;
+                VisibilityDurationSeconds = 0.35;
+                EmphasisAnimation = EmphasisAnimation.Bounce;
+                EmphasisAmount = 0.08;
+                EmphasisDurationSeconds = 0.5;
+                NotificationTransition = NotificationTransition.SlideUp;
+                NotificationTransitionDurationSeconds = 0.22;
+                RippleType = RippleType.Ring;
+                RippleColor = "#AA7DD3FC";
+                RippleDurationSeconds = 0.65;
+                RippleThickness = 2.5;
+                break;
+            case AnimationPreset.DynamicWave:
+                AnimationEnabled = true;
+                AnimationMode = IslandAnimationMode.Wave;
+                AnimationAmount = 0.035;
+                AnimationPeriodSeconds = 2;
+                VisibilityAnimation = VisibilityAnimation.Scale;
+                VisibilityDurationSeconds = 0.3;
+                EmphasisAnimation = EmphasisAnimation.Pulse;
+                EmphasisAmount = 0.12;
+                EmphasisDurationSeconds = 0.45;
+                NotificationTransition = NotificationTransition.SlideDown;
+                NotificationTransitionDurationSeconds = 0.2;
+                RippleType = RippleType.DoubleRing;
+                RippleColor = "#CC8B5CFF";
+                RippleDurationSeconds = 0.65;
+                RippleThickness = 2.5;
+                break;
+            case AnimationPreset.AlertShake:
+                AnimationEnabled = false;
+                AnimationMode = IslandAnimationMode.None;
+                VisibilityAnimation = VisibilityAnimation.Fade;
+                VisibilityDurationSeconds = 0.18;
+                EmphasisAnimation = EmphasisAnimation.Shake;
+                EmphasisAmount = 0.24;
+                EmphasisDurationSeconds = 0.55;
+                NotificationTransition = NotificationTransition.SlideLeft;
+                NotificationTransitionDurationSeconds = 0.18;
+                RippleType = RippleType.Square;
+                RippleColor = "#E0FF5C6C";
+                RippleDurationSeconds = 0.45;
+                RippleThickness = 3;
+                break;
+            case AnimationPreset.HanabiCelebration:
+                AnimationEnabled = true;
+                AnimationMode = IslandAnimationMode.Breathe;
+                AnimationAmount = 0.018;
+                AnimationPeriodSeconds = 2.8;
+                VisibilityAnimation = VisibilityAnimation.Scale;
+                VisibilityDurationSeconds = 0.36;
+                EmphasisAnimation = EmphasisAnimation.Bounce;
+                EmphasisAmount = 0.13;
+                EmphasisDurationSeconds = 0.5;
+                NotificationTransition = NotificationTransition.SlideUp;
+                NotificationTransitionDurationSeconds = 0.24;
+                RippleType = RippleType.Hanabi;
+                RippleColor = "#FFFF76B8";
+                RippleDurationSeconds = 1.1;
+                RippleThickness = 2.5;
                 break;
         }
         EndUpdate();

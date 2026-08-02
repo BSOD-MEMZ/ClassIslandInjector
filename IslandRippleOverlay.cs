@@ -35,7 +35,9 @@ internal sealed class IslandRippleOverlay : Control
     public void Advance()
     {
         var progress = Math.Clamp((DateTime.UtcNow - _startedAt).TotalMilliseconds / _duration.TotalMilliseconds, 0, 1);
-        Opacity = 1 - progress;
+        // Hanabi owns separate opacity curves for its core and burst. Applying the
+        // ordinary ripple fade here would multiply those curves and hide it early.
+        Opacity = _type == RippleType.Hanabi ? 1 : 1 - progress;
         InvalidateVisual();
     }
 
@@ -65,31 +67,30 @@ internal sealed class IslandRippleOverlay : Control
                 context.DrawRectangle(null, new Pen(brush, _thickness), rect);
                 break;
             case RippleType.Hanabi:
-                DrawHanabi(context, progress, radius);
+                DrawHanabi(context, progress);
                 break;
         }
     }
 
-    private void DrawHanabi(DrawingContext context, double progress, double radius)
+    private void DrawHanabi(DrawingContext context, double progress)
     {
-        // This follows MajdataView's colourful Firework sprite and yellow
-        // ColorBall sprite. Hanabi deliberately ignores the ordinary ripple tint
-        // so it preserves the maimai appearance.
-        var opening = Math.Clamp(progress / 0.18, 0, 1);
-        var burst = 1 - Math.Pow(1 - opening, 3);
-        var fade = Math.Clamp(1 - Math.Pow(progress, 1.65), 0, 1) * 0.589;
-        // The ColorBall sprite is a prominent part of the original touch burst,
-        // not a tiny point. Let it occupy the same central proportion as the
-        // Firework texture, then taper it as the rays take over.
-        var coreRadius = Math.Max(16, radius * (0.26 - Math.Min(progress, 0.78) * 0.19));
-        var yellowCore = Color.FromArgb((byte)(255 * fade), 255, 213, 38);
-        var whiteCore = Color.FromArgb((byte)(255 * fade), 255, 255, 218);
-        var fireworkWhite = Color.FromArgb((byte)(255 * fade), 255, 255, 255);
-        var softWhite = Color.FromArgb((byte)(170 * fade), 255, 255, 255);
+        // The colour ball grows for the whole animation while the white bloom
+        // appears shortly afterwards, expands, and rotates around it.
+        var extent = Math.Max(Bounds.Width, Bounds.Height);
+        var burstProgress = Math.Clamp((progress - 0.14) / 0.86, 0, 1);
+        var burstExpansion = EaseOutCubic(burstProgress);
+        var radius = extent * (0.045 + 0.44 * burstExpansion);
+        var coreExpansion = EaseOutCubic(progress);
+        var coreRadius = Math.Max(12, extent * (0.018 + 0.105 * coreExpansion));
+        var rotation = 105 * burstProgress;
+        var fireworkOpacity = SmoothStep(0.14, 0.22, progress) * FadeOut(0.58, progress);
+        var coreOpacity = FadeOut(0.62, progress);
+        var yellowCore = Color.FromArgb((byte)(255 * coreOpacity), 255, 213, 38);
+        var whiteCore = Color.FromArgb((byte)(255 * coreOpacity), 255, 255, 218);
+        var fireworkWhite = Color.FromArgb((byte)(255 * fireworkOpacity), 255, 255, 255);
+        var softWhite = Color.FromArgb((byte)(170 * fireworkOpacity), 255, 255, 255);
 
-        // Use the original MajdataView sprites when they are present in the plugin
-        // package. The procedural branch below is only a resilient fallback.
-        if (DrawMaimaiTextures(context, radius, coreRadius, fade))
+        if (DrawMaimaiTextures(context, radius, coreRadius, rotation, fireworkOpacity, coreOpacity))
         {
             return;
         }
@@ -97,30 +98,34 @@ internal sealed class IslandRippleOverlay : Control
         context.DrawEllipse(new SolidColorBrush(yellowCore), null, _center, coreRadius, coreRadius);
         context.DrawEllipse(new SolidColorBrush(whiteCore), null, _center, coreRadius * 0.44, coreRadius * 0.44);
 
-        // The original Firework texture is an irregular 16-spoke white bloom;
-        // alternating radii recreate its petal-like silhouette rather than a ring.
-        const int rays = 24;
-        for (var i = 0; i < rays; i++)
+        using (context.PushTransform(CreateRotationMatrix(rotation)))
         {
-            var angle = i * Math.Tau / rays + 0.12 + (i % 2 == 0 ? 0.025 : -0.025);
-            var direction = new Vector(Math.Cos(angle), Math.Sin(angle));
-            var variation = 0.62 + ((i * 7) % 9) * 0.047;
-            var outer = radius * burst * variation;
-            var inner = outer * (0.08 + progress * 0.15);
-            var start = _center + direction * inner;
-            var end = _center + direction * outer;
-            var rayBrush = new SolidColorBrush(i % 4 == 0 ? softWhite : fireworkWhite);
-            context.DrawLine(new Pen(rayBrush, Math.Max(0.9, _thickness * (1.05 - progress * 0.42))), start, end);
-
-            if (i % 2 == 0)
+            // The original Firework texture is an irregular white bloom;
+            // alternating radii recreate its silhouette when the asset is absent.
+            const int rays = 24;
+            for (var i = 0; i < rays; i++)
             {
-                var sparkRadius = Math.Max(1.1, _thickness * (1.15 - progress * 0.55));
-                context.DrawEllipse(rayBrush, null, end, sparkRadius, sparkRadius);
+                var angle = i * Math.Tau / rays + 0.12 + (i % 2 == 0 ? 0.025 : -0.025);
+                var direction = new Vector(Math.Cos(angle), Math.Sin(angle));
+                var variation = 0.62 + ((i * 7) % 9) * 0.047;
+                var outer = radius * variation;
+                var inner = outer * (0.08 + progress * 0.15);
+                var start = _center + direction * inner;
+                var end = _center + direction * outer;
+                var rayBrush = new SolidColorBrush(i % 4 == 0 ? softWhite : fireworkWhite);
+                context.DrawLine(new Pen(rayBrush, Math.Max(0.9, _thickness * (1.05 - progress * 0.42))), start, end);
+
+                if (i % 2 == 0)
+                {
+                    var sparkRadius = Math.Max(1.1, _thickness * (1.15 - progress * 0.55));
+                    context.DrawEllipse(rayBrush, null, end, sparkRadius, sparkRadius);
+                }
             }
         }
     }
 
-    private bool DrawMaimaiTextures(DrawingContext context, double radius, double coreRadius, double opacity)
+    private bool DrawMaimaiTextures(DrawingContext context, double radius, double coreRadius,
+        double rotation, double fireworkOpacity, double coreOpacity)
     {
         var firework = FireworkTexture.Value;
         var colorBall = ColorBallTexture.Value;
@@ -131,12 +136,35 @@ internal sealed class IslandRippleOverlay : Control
 
         var fireworkRect = new Rect(_center.X - radius, _center.Y - radius, radius * 2, radius * 2);
         var coreRect = new Rect(_center.X - coreRadius, _center.Y - coreRadius, coreRadius * 2, coreRadius * 2);
-        using (context.PushOpacity(opacity))
+        using (context.PushOpacity(fireworkOpacity))
+        using (context.PushTransform(CreateRotationMatrix(rotation)))
         {
             context.DrawImage(firework, fireworkRect);
+        }
+        using (context.PushOpacity(coreOpacity))
+        {
             context.DrawImage(colorBall, coreRect);
         }
         return true;
+    }
+
+    private static double EaseOutCubic(double value) => 1 - Math.Pow(1 - value, 3);
+
+    private static double FadeOut(double start, double progress) =>
+        1 - Math.Clamp((progress - start) / (1 - start), 0, 1);
+
+    private Matrix CreateRotationMatrix(double degrees)
+    {
+        var radians = degrees * Math.PI / 180;
+        return Matrix.CreateTranslation(-_center.X, -_center.Y) *
+               Matrix.CreateRotation(radians) *
+               Matrix.CreateTranslation(_center.X, _center.Y);
+    }
+
+    private static double SmoothStep(double edge0, double edge1, double value)
+    {
+        var normalized = Math.Clamp((value - edge0) / (edge1 - edge0), 0, 1);
+        return normalized * normalized * (3 - 2 * normalized);
     }
 
     private static Bitmap? LoadMaimaiTexture(string fileName)
