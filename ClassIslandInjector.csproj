@@ -1,12 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net8.0-windows10.0.26100.0</TargetFramework>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>ClassIslandInjector</AssemblyName>
     <RootNamespace>ClassIslandInjector</RootNamespace>
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <CreateCipx>true</CreateCipx>
+    <!-- tools\ 下的独立工具项目（如 SmtcProbe 探针）不应被本插件项目编译 -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);tools\**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>

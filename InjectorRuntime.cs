@@ -14,6 +14,7 @@ internal static class InjectorRuntime
     {
         ConfigDirectory = configDirectory;
         Settings = InjectorSettingsStore.Load(configDirectory, pluginDirectory);
+        SmtcAlbumColorPicker.SetLogPath(Path.Combine(configDirectory, "album-color.log"));
         Settings.Changed += OnSettingsChanged;
         _injector = new MainWindowStyleInjector(Settings);
     }

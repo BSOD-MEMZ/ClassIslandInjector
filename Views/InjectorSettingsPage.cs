@@ -38,6 +38,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly ToggleSwitch _customBackground = Toggle();
     private readonly ColorPicker _backgroundColor = ColorPicker();
     private readonly ToggleSwitch _dynamicBackgroundColor = Toggle();
+    private readonly ToggleSwitch _dynamicBorderColor = Toggle();
+    private readonly ToggleSwitch _dynamicShadowColor = Toggle();
+    private readonly Slider _albumColorPollingInterval = Slider(0.5, 120, 0.5);
+    private readonly Slider _albumColorTransition = Slider(0, 10, 0.1);
     private readonly ToggleSwitch _gradient = Toggle();
     private readonly ColorPicker _gradientEndColor = ColorPicker();
 
@@ -222,15 +226,24 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("渐变终止色", "线性渐变背景的结束颜色。", _gradientEndColor, _gradient));
         EnabledWhenManualColor(backgroundColorItem, _customBackground, _dynamicBackgroundColor);
         panel.Children.Add(backgroundGroup);
+        panel.Children.Add(Group("\uE7E8", "动态取色轮询", "控制从媒体播放器读取专辑封面的频率，以及颜色变化时的过渡方式。",
+            Item("轮询间隔", "每隔多少秒重新读取一次当前专辑封面（秒）。", _albumColorPollingInterval),
+            Item("颜色过渡时长", "专辑颜色变化时，背景、边框、阴影平滑过渡到新颜色的时长（秒），0 为立即切换。", _albumColorTransition)));
+        var shadowColorItem = Item("阴影颜色", "支持透明度的阴影颜色。", _shadowColor);
         panel.Children.Add(SwitchableGroup("\uEA84", "阴影", "为岛屿添加投影效果。", _shadow,
-            Item("阴影颜色", "支持透明度的阴影颜色。", _shadowColor),
+            Item("动态取色", "阴影色调跟随专辑封面，使用 Material You 深色中性色；透明度沿用你配置的阴影颜色透明度。", _dynamicShadowColor),
+            shadowColorItem,
             Item("阴影模糊", "控制投影的柔和程度。", _shadowBlur),
             Item("阴影水平偏移", "控制投影向左或向右偏移。", _shadowOffsetX),
             Item("阴影垂直偏移", "控制投影向上或向下偏移。", _shadowOffsetY),
             Item("阴影不透明度", "控制投影的深浅。", _shadowOpacity)));
+        EnabledWhenManualColor(shadowColorItem, _shadow, _dynamicShadowColor);
+        var borderColorItem = Item("边框颜色", "支持透明度的边框颜色。", _borderColor);
         panel.Children.Add(SwitchableGroup("\uF483", "岛屿边框", "为岛屿添加细边框。", _border,
-            Item("边框颜色", "支持透明度的边框颜色。", _borderColor),
+            Item("动态取色", "边框色调跟随专辑封面，使用 Material You 主色调；透明度沿用你配置的边框颜色透明度。", _dynamicBorderColor),
+            borderColorItem,
             Item("边框线宽", "控制岛屿边框的粗细。", _borderThickness)));
+        EnabledWhenManualColor(borderColorItem, _border, _dynamicBorderColor);
 
         AddSection(panel, "\uE508", "高级样式表");
         panel.Children.Add(Setting("\uE508", "覆盖样式表路径", "填写 .axaml 样式表的完整路径。", _styleSheetPath));
@@ -286,7 +299,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         foreach (var control in new Control[]
                  {
                      _opacity, _scale, _rotation, _offsetX, _offsetY, _cornerRadius, _customSize, _mainWindowWidth, _mainWindowHeight,
-                     _customBackground, _backgroundColor, _dynamicBackgroundColor, _gradient, _gradientEndColor,
+                     _customBackground, _backgroundColor, _dynamicBackgroundColor, _dynamicBorderColor, _dynamicShadowColor,
+                     _albumColorPollingInterval, _albumColorTransition, _gradient, _gradientEndColor,
                      _shadow, _shadowColor, _shadowBlur, _shadowOffsetX, _shadowOffsetY, _shadowOpacity,
                      _border, _borderColor, _borderThickness
                  })
@@ -362,7 +376,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         window.GradientEdited += enabled => { _gradient.IsChecked = enabled; SaveAndApply(); };
         window.GradientEndColorEdited += color => { _gradientEndColor.Color = color; SaveAndApply(); };
         window.ShadowEdited += enabled => { _shadow.IsChecked = enabled; SaveAndApply(); };
-        window.ShadowColorEdited += color => { _shadowColor.Color = color; SaveAndApply(); };
+        window.ShadowColorEdited += color => { _dynamicShadowColor.IsChecked = false; _shadowColor.Color = color; SaveAndApply(); };
         window.ShadowBlurEdited += value => { _shadowBlur.Value = value; SaveAndApply(); };
         window.ShadowOpacityEdited += value => { _shadowOpacity.Value = value; SaveAndApply(); };
         window.OpacityEdited += value => { _opacity.Value = value; SaveAndApply(); };
@@ -394,6 +408,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _customBackground.IsChecked = settings.CustomBackgroundEnabled;
         _backgroundColor.Color = ReadColor(settings.BackgroundColor, Color.FromArgb(0xCC, 0x20, 0x20, 0x20));
         _dynamicBackgroundColor.IsChecked = settings.DynamicBackgroundColorEnabled;
+        _dynamicBorderColor.IsChecked = settings.DynamicBorderColorEnabled;
+        _dynamicShadowColor.IsChecked = settings.DynamicShadowColorEnabled;
+        _albumColorPollingInterval.Value = settings.AlbumColorPollingIntervalSeconds;
+        _albumColorTransition.Value = settings.AlbumColorTransitionSeconds;
         _gradient.IsChecked = settings.GradientEnabled;
         _gradientEndColor.Color = ReadColor(settings.GradientEndColor, Color.FromArgb(0xCC, 0x40, 0x40, 0xA0));
         _shadow.IsChecked = settings.ShadowEnabled;
@@ -447,6 +465,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.CornerRadius = _cornerRadius.Value;
             settings.CustomSizeEnabled = _customSize.IsChecked == true;
             settings.MainWindowWidth = _mainWindowWidth.Value;
+            settings.DynamicBorderColorEnabled = _dynamicBorderColor.IsChecked == true;
+            settings.DynamicShadowColorEnabled = _dynamicShadowColor.IsChecked == true;
+            settings.AlbumColorPollingIntervalSeconds = _albumColorPollingInterval.Value;
+            settings.AlbumColorTransitionSeconds = _albumColorTransition.Value;
             settings.MainWindowHeight = _mainWindowHeight.Value;
             settings.CustomBackgroundEnabled = _customBackground.IsChecked == true;
             settings.BackgroundColor = _backgroundColor.Color.ToString();

@@ -123,6 +123,10 @@ public sealed class InjectorSettings
     private double _rippleThickness = 3;
     private bool _hanabiConstraintEnabled = true;
     private bool _dynamicBackgroundColorEnabled;
+    private bool _dynamicBorderColorEnabled;
+    private bool _dynamicShadowColorEnabled;
+    private double _albumColorPollingIntervalSeconds = 4;
+    private double _albumColorTransitionSeconds = 0.6;
     private bool _countdownArrowsEnabled = true;
     private string _countdownArrowColor = "#BFF8FAFC";
     private int _countdownArrowCount = 5;
@@ -176,6 +180,10 @@ public sealed class InjectorSettings
     public double RippleThickness { get => _rippleThickness; set => Set(ref _rippleThickness, Math.Clamp(value, 0.5, 40)); }
     public bool HanabiConstraintEnabled { get => _hanabiConstraintEnabled; set => Set(ref _hanabiConstraintEnabled, value); }
     public bool DynamicBackgroundColorEnabled { get => _dynamicBackgroundColorEnabled; set => Set(ref _dynamicBackgroundColorEnabled, value); }
+    public bool DynamicBorderColorEnabled { get => _dynamicBorderColorEnabled; set => Set(ref _dynamicBorderColorEnabled, value); }
+    public bool DynamicShadowColorEnabled { get => _dynamicShadowColorEnabled; set => Set(ref _dynamicShadowColorEnabled, value); }
+    public double AlbumColorPollingIntervalSeconds { get => _albumColorPollingIntervalSeconds; set => Set(ref _albumColorPollingIntervalSeconds, Math.Clamp(value, 0.5, 120)); }
+    public double AlbumColorTransitionSeconds { get => _albumColorTransitionSeconds; set => Set(ref _albumColorTransitionSeconds, Math.Clamp(value, 0, 10)); }
     public bool CountdownArrowsEnabled { get => _countdownArrowsEnabled; set => Set(ref _countdownArrowsEnabled, value); }
     public string CountdownArrowColor { get => _countdownArrowColor; set => Set(ref _countdownArrowColor, value.Trim()); }
     public int CountdownArrowCount { get => _countdownArrowCount; set => Set(ref _countdownArrowCount, Math.Clamp(value, 2, 24)); }
@@ -427,6 +435,10 @@ public sealed class InjectorSettings
         NotificationTransitionDurationSeconds = source.NotificationTransitionDurationSeconds;
         RippleType = source.RippleType;
         RippleColor = source.RippleColor;
+        DynamicBorderColorEnabled = source.DynamicBorderColorEnabled;
+        DynamicShadowColorEnabled = source.DynamicShadowColorEnabled;
+        AlbumColorPollingIntervalSeconds = source.AlbumColorPollingIntervalSeconds;
+        AlbumColorTransitionSeconds = source.AlbumColorTransitionSeconds;
         RippleDurationSeconds = source.RippleDurationSeconds;
         RippleThickness = source.RippleThickness;
         HanabiConstraintEnabled = source.HanabiConstraintEnabled;

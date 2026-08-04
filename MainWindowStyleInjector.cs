@@ -48,6 +48,20 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private DateTime _emphasisStartedAt = DateTime.MinValue;
     private bool _lastContentVisible;
     private bool _isPickingAlbumColor;
+    private bool _dynamicColorsInitialized;
+    private Color _dynamicBackgroundColor;
+    private Color _dynamicBorderColor;
+    private Color _dynamicShadowColor;
+    private Color _bgTransitionFrom;
+    private Color _bgTransitionTo;
+    private Color _borderTransitionFrom;
+    private Color _borderTransitionTo;
+    private Color _shadowTransitionFrom;
+    private Color _shadowTransitionTo;
+    private DateTime _colorTransitionStart = DateTime.MinValue;
+    private bool _colorTransitionActive;
+    private readonly List<(Border Border, IBrush? Background, IBrush? BorderBrush)> _decorations = [];
+    private DropShadowEffect? _shadowEffect;
 
     public MainWindowStyleInjector(InjectorSettings settings)
     {
@@ -254,6 +268,11 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
+        if (_colorTransitionActive)
+        {
+            AdvanceColorTransition();
+        }
+
         var phase = _animationClock.Elapsed.TotalSeconds / _settings.AnimationPeriodSeconds * Math.Tau;
         ApplyTransform(Math.Sin(phase));
         AdvanceRipples();
@@ -380,7 +399,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
         var hasContinuousAnimation = _settings.AnimationEnabled && _settings.AnimationMode != IslandAnimationMode.None;
         var hasTransientAnimation = GetEffectProgress(_visibilityStartedAt, _settings.VisibilityDurationSeconds) < 1 ||
                                    GetEffectProgress(_emphasisStartedAt, _settings.EmphasisDurationSeconds) < 1 ||
-                                   _ripples.Count > 0 || _countdownArrows.Count > 0;
+                                   _ripples.Count > 0 || _countdownArrows.Count > 0 ||
+                                   _colorTransitionActive;
         if (hasContinuousAnimation || hasTransientAnimation)
         {
             _animationTimer.Start();
@@ -467,8 +487,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     private void UpdateAlbumColorTimer()
     {
-        if (_settings.Enabled && _settings.CustomBackgroundEnabled && _settings.DynamicBackgroundColorEnabled)
+        if (_settings.Enabled && IsAnyDynamicColorEnabled())
         {
+            _albumColorTimer.Interval = TimeSpan.FromSeconds(Math.Clamp(_settings.AlbumColorPollingIntervalSeconds, 0.5, 120));
             _albumColorTimer.Start();
             OnAlbumColorTimerTick(null, EventArgs.Empty);
         }
@@ -478,9 +499,14 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
     }
 
+    private bool IsAnyDynamicColorEnabled() =>
+        (_settings.CustomBackgroundEnabled && _settings.DynamicBackgroundColorEnabled) ||
+        (_settings.BorderEnabled && _settings.DynamicBorderColorEnabled) ||
+        (_settings.ShadowEnabled && _settings.DynamicShadowColorEnabled);
+
     private async void OnAlbumColorTimerTick(object? sender, EventArgs e)
     {
-        if (_isPickingAlbumColor || !_settings.DynamicBackgroundColorEnabled || !_settings.CustomBackgroundEnabled)
+        if (_isPickingAlbumColor || !IsAnyDynamicColorEnabled())
         {
             return;
         }
@@ -488,10 +514,10 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _isPickingAlbumColor = true;
         try
         {
-            var color = await SmtcAlbumColorPicker.TryGetAccentColorAsync();
-            if (color is { } albumColor && !string.Equals(_settings.BackgroundColor, albumColor.ToString(), StringComparison.OrdinalIgnoreCase))
+            var colors = await SmtcAlbumColorPicker.TryGetAccentColorsAsync();
+            if (colors != null)
             {
-                _settings.BackgroundColor = albumColor.ToString();
+                StartColorTransition(colors);
             }
         }
         finally
@@ -499,6 +525,126 @@ internal sealed class MainWindowStyleInjector : IDisposable
             _isPickingAlbumColor = false;
         }
     }
+
+    private void EnsureDynamicColorsInitialized()
+    {
+        if (_dynamicColorsInitialized)
+        {
+            return;
+        }
+
+        _dynamicBackgroundColor = ParseColorOrDefault(_settings.BackgroundColor, Color.FromArgb(0xCC, 0x20, 0x20, 0x20));
+        _dynamicBorderColor = ParseColorOrDefault(_settings.BorderColor, Color.FromArgb(0x99, 0xFF, 0xFF, 0xFF));
+        _dynamicShadowColor = ParseColorOrDefault(_settings.ShadowColor, Color.FromArgb(0x99, 0, 0, 0));
+        _dynamicColorsInitialized = true;
+    }
+
+    private void StartColorTransition(AlbumAccentColors colors)
+    {
+        EnsureDynamicColorsInitialized();
+
+        // 边框与阴影保留用户在设置里配置的透明度，只替换色调。
+        var borderAlpha = ParseColorOrDefault(_settings.BorderColor, Color.FromArgb(0x99, 0xFF, 0xFF, 0xFF)).A;
+        var shadowAlpha = ParseColorOrDefault(_settings.ShadowColor, Color.FromArgb(0x99, 0, 0, 0)).A;
+        var newBackground = colors.Background;
+        var newBorder = WithAlpha(colors.Border, borderAlpha);
+        var newShadow = WithAlpha(colors.Shadow, shadowAlpha);
+
+        var duration = Math.Max(0, _settings.AlbumColorTransitionSeconds);
+        if (duration <= 0)
+        {
+            _dynamicBackgroundColor = newBackground;
+            _dynamicBorderColor = newBorder;
+            _dynamicShadowColor = newShadow;
+            _colorTransitionActive = false;
+            RefreshDynamicColors();
+            return;
+        }
+
+        _bgTransitionFrom = _dynamicBackgroundColor;
+        _bgTransitionTo = newBackground;
+        _borderTransitionFrom = _dynamicBorderColor;
+        _borderTransitionTo = newBorder;
+        _shadowTransitionFrom = _dynamicShadowColor;
+        _shadowTransitionTo = newShadow;
+        _colorTransitionStart = DateTime.UtcNow;
+        _colorTransitionActive = true;
+        UpdateAnimationTimer();
+    }
+
+    private void AdvanceColorTransition()
+    {
+        var duration = Math.Max(0.001, _settings.AlbumColorTransitionSeconds);
+        var progress = Math.Clamp((DateTime.UtcNow - _colorTransitionStart).TotalSeconds / duration, 0, 1);
+        // 三次缓出（ease-out cubic），让颜色切换更柔和。
+        var eased = 1 - Math.Pow(1 - progress, 3);
+        _dynamicBackgroundColor = Lerp(_bgTransitionFrom, _bgTransitionTo, eased);
+        _dynamicBorderColor = Lerp(_borderTransitionFrom, _borderTransitionTo, eased);
+        _dynamicShadowColor = Lerp(_shadowTransitionFrom, _shadowTransitionTo, eased);
+        RefreshDynamicColors();
+        if (progress >= 1)
+        {
+            _colorTransitionActive = false;
+            UpdateAnimationTimer();
+        }
+    }
+
+    private void RefreshDynamicColors()
+    {
+        EnsureDynamicColorsInitialized();
+
+        var background = _settings.DynamicBackgroundColorEnabled
+            ? _dynamicBackgroundColor
+            : ParseColorOrDefault(_settings.BackgroundColor, _dynamicBackgroundColor);
+        var border = _settings.DynamicBorderColorEnabled
+            ? _dynamicBorderColor
+            : ParseColorOrDefault(_settings.BorderColor, _dynamicBorderColor);
+        var shadow = _settings.DynamicShadowColorEnabled
+            ? _dynamicShadowColor
+            : ParseColorOrDefault(_settings.ShadowColor, _dynamicShadowColor);
+
+        foreach (var (borderControl, backgroundBrush, borderBrush) in _decorations)
+        {
+            if (borderControl.Name == "BackgroundBorder" && backgroundBrush != null)
+            {
+                UpdateBrushColor(backgroundBrush, background);
+            }
+
+            if (borderBrush != null && _settings.BorderEnabled)
+            {
+                UpdateBrushColor(borderBrush, border);
+            }
+        }
+
+        if (_shadowEffect != null && _settings.ShadowEnabled)
+        {
+            _shadowEffect.Color = shadow;
+        }
+    }
+
+    private static void UpdateBrushColor(IBrush brush, Color color)
+    {
+        switch (brush)
+        {
+            case SolidColorBrush solid:
+                solid.Color = color;
+                break;
+            case LinearGradientBrush gradient when gradient.GradientStops.Count > 0:
+                gradient.GradientStops[0].Color = color;
+                break;
+        }
+    }
+
+    private static Color Lerp(Color from, Color to, double t) => Color.FromArgb(
+        (byte)Math.Round(from.A + (to.A - from.A) * t),
+        (byte)Math.Round(from.R + (to.R - from.R) * t),
+        (byte)Math.Round(from.G + (to.G - from.G) * t),
+        (byte)Math.Round(from.B + (to.B - from.B) * t));
+
+    private static Color WithAlpha(Color color, byte alpha) => Color.FromArgb(alpha, color.R, color.G, color.B);
+
+    private static Color ParseColorOrDefault(string text, Color fallback) =>
+        TryParseColor(text, out var color) ? color : fallback;
 
     private void UpdateCountdownArrows(Control line)
     {
@@ -849,66 +995,84 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private void ApplyDecorations()
     {
         RestoreDecorations();
+        _decorations.Clear();
+        _shadowEffect = null;
         if (_mainWindow == null)
         {
             return;
         }
 
-        foreach (var border in _mainWindow.GetVisualDescendants().OfType<Border>()
+        EnsureDynamicColorsInitialized();
+        var background = _settings.DynamicBackgroundColorEnabled
+            ? _dynamicBackgroundColor
+            : ParseColorOrDefault(_settings.BackgroundColor, _dynamicBackgroundColor);
+        var border = _settings.DynamicBorderColorEnabled
+            ? _dynamicBorderColor
+            : ParseColorOrDefault(_settings.BorderColor, _dynamicBorderColor);
+        var shadow = _settings.DynamicShadowColorEnabled
+            ? _dynamicShadowColor
+            : ParseColorOrDefault(_settings.ShadowColor, _dynamicShadowColor);
+
+        foreach (var borderControl in _mainWindow.GetVisualDescendants().OfType<Border>()
                      .Where(x => x.Name is "BackgroundBorder" or "BackgroundBorderOverlayMask" or "OverlayMask"))
         {
-            var originalCornerRadius = border.CornerRadius;
-            var originalBackground = border.Background;
-            var originalBorderBrush = border.BorderBrush;
-            var originalBorderThickness = border.BorderThickness;
+            var originalCornerRadius = borderControl.CornerRadius;
+            var originalBackground = borderControl.Background;
+            var originalBorderBrush = borderControl.BorderBrush;
+            var originalBorderThickness = borderControl.BorderThickness;
             _decorationRestorers.Add(() =>
             {
-                border.CornerRadius = originalCornerRadius;
-                border.Background = originalBackground;
-                border.BorderBrush = originalBorderBrush;
-                border.BorderThickness = originalBorderThickness;
+                borderControl.CornerRadius = originalCornerRadius;
+                borderControl.Background = originalBackground;
+                borderControl.BorderBrush = originalBorderBrush;
+                borderControl.BorderThickness = originalBorderThickness;
             });
 
             switch (_settings.Shape)
             {
                 case IslandShape.Rectangle:
-                    border.CornerRadius = new CornerRadius(0);
+                    borderControl.CornerRadius = new CornerRadius(0);
                     break;
                 case IslandShape.RoundedRectangle:
                 case IslandShape.Capsule:
-                    border.CornerRadius = _settings.Shape == IslandShape.Capsule
-                        ? new CornerRadius(Math.Max(1, border.Bounds.Height / 2))
+                    borderControl.CornerRadius = _settings.Shape == IslandShape.Capsule
+                        ? new CornerRadius(Math.Max(1, borderControl.Bounds.Height / 2))
                         : new CornerRadius(_settings.CornerRadius);
                     break;
                 case IslandShape.HostDefault:
                     // The shape picker was removed from the UI.  Treat the custom
                     // radius as an explicit override so the basic editor remains
                     // useful even for existing HostDefault configurations.
-                    border.CornerRadius = new CornerRadius(_settings.CornerRadius);
+                    borderControl.CornerRadius = new CornerRadius(_settings.CornerRadius);
                     break;
             }
 
-            if (border.Name == "BackgroundBorder" && _settings.CustomBackgroundEnabled &&
-                TryParseColor(_settings.BackgroundColor, out var startColor))
+            IBrush? backgroundBrush = null;
+            if (borderControl.Name == "BackgroundBorder" && _settings.CustomBackgroundEnabled)
             {
-                border.Background = _settings.GradientEnabled && TryParseColor(_settings.GradientEndColor, out var endColor)
+                backgroundBrush = _settings.GradientEnabled && TryParseColor(_settings.GradientEndColor, out var endColor)
                     ? new LinearGradientBrush
                     {
                         StartPoint = RelativePoint.TopLeft,
                         EndPoint = RelativePoint.BottomRight,
-                        GradientStops = [new GradientStop(startColor, 0), new GradientStop(endColor, 1)]
+                        GradientStops = [new GradientStop(background, 0), new GradientStop(endColor, 1)]
                     }
-                    : new SolidColorBrush(startColor);
+                    : new SolidColorBrush(background);
+                borderControl.Background = backgroundBrush;
             }
 
-            if (_settings.BorderEnabled && TryParseColor(_settings.BorderColor, out var borderColor))
+            IBrush? borderBrush = null;
+            if (_settings.BorderEnabled)
             {
-                border.BorderBrush = new SolidColorBrush(borderColor);
-                border.BorderThickness = new Thickness(_settings.BorderThickness);
+                borderBrush = new SolidColorBrush(border);
+                borderControl.BorderBrush = borderBrush;
+                borderControl.BorderThickness = new Thickness(_settings.BorderThickness);
             }
+
+            _decorations.Add((borderControl, backgroundBrush, borderBrush));
         }
 
-        if (!_settings.ShadowEnabled || !TryParseColor(_settings.ShadowColor, out var shadowColor))
+        if (!_settings.ShadowEnabled)
         {
             return;
         }
@@ -918,14 +1082,15 @@ internal sealed class MainWindowStyleInjector : IDisposable
         {
             var originalEffect = grid.Effect;
             _decorationRestorers.Add(() => grid.Effect = originalEffect);
-            grid.Effect = new DropShadowEffect
+            _shadowEffect = new DropShadowEffect
             {
-                Color = shadowColor,
+                Color = shadow,
                 BlurRadius = _settings.ShadowBlur,
                 OffsetX = _settings.ShadowOffsetX,
                 OffsetY = _settings.ShadowOffsetY,
                 Opacity = _settings.ShadowOpacity
             };
+            grid.Effect = _shadowEffect;
         }
     }
 
@@ -985,6 +1150,10 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _styleSheetWatcher?.Dispose();
         _styleSheetWatcher = null;
         RestoreDecorations();
+        _decorations.Clear();
+        _shadowEffect = null;
+        _colorTransitionActive = false;
+        _dynamicColorsInitialized = false;
         RemoveAllCountdownArrows();
         _lineMasks.Clear();
         foreach (var line in _observedLines)
