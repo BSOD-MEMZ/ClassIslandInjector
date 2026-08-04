@@ -616,6 +616,13 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         var effectControls = TryGetFullScreenEffectHost(out var effectWindow);
+        // A Hanabi burst is intentionally much larger than the island. Do not
+        // fall back to WindowRoot (which is island-sized) or the bloom will be
+        // visibly cropped during early startup.
+        if (_settings.RippleType == RippleType.Hanabi && effectControls == null)
+        {
+            return;
+        }
         var center = GetRippleCenter(effectWindow);
         var ripple = new IslandRippleOverlay(center, _settings.RippleType, color,
             TimeSpan.FromSeconds(_settings.RippleDurationSeconds), _settings.RippleThickness);
@@ -644,23 +651,43 @@ internal sealed class MainWindowStyleInjector : IDisposable
         effectWindow = null;
         foreach (var player in _nativeEffectPlayers.Values)
         {
-            if (player is not Window window)
+            if (TryGetEffectControls(player, out effectWindow) is { } controls)
             {
-                continue;
+                return controls;
             }
+        }
 
-            var viewModel = player.GetType().GetProperty("ViewModel", BindingFlags.Instance | BindingFlags.Public)
-                ?.GetValue(player);
-            if (viewModel?.GetType().GetProperty("EffectControls", BindingFlags.Instance | BindingFlags.Public)
-                    ?.GetValue(viewModel) is not IList controls)
-            {
-                continue;
-            }
+        // The public MainWindow property gives us a reliable path before the
+        // per-line player has been observed, avoiding the island-sized fallback
+        // window that used to crop the Hanabi centre ball.
+        var topmostEffectWindow = _mainWindow?.GetType()
+            .GetProperty("TopmostEffectWindow", BindingFlags.Instance | BindingFlags.Public)
+            ?.GetValue(_mainWindow);
+        if (TryGetEffectControls(topmostEffectWindow, out effectWindow) is { } controlsFromMainWindow)
+        {
+            return controlsFromMainWindow;
+        }
 
-            effectWindow = window;
+        return null;
+    }
+
+    private static IList? TryGetEffectControls(object? player, out Window? effectWindow)
+    {
+        effectWindow = player as Window;
+        if (effectWindow == null)
+        {
+            return null;
+        }
+
+        var viewModel = player!.GetType().GetProperty("ViewModel", BindingFlags.Instance | BindingFlags.Public)
+            ?.GetValue(player);
+        if (viewModel?.GetType().GetProperty("EffectControls", BindingFlags.Instance | BindingFlags.Public)
+                ?.GetValue(viewModel) is IList controls)
+        {
             return controls;
         }
 
+        effectWindow = null;
         return null;
     }
 

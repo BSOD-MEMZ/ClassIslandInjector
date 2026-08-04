@@ -26,9 +26,14 @@ internal sealed class IslandRippleOverlay : Control
         _center = center;
         _type = type;
         _color = color;
-        _duration = duration;
+        // Hanabi's curves are authored for a 1.333 s clip. Finishing the host
+        // control sooner makes its centre bloom look as though it was cut off.
+        _duration = type == RippleType.Hanabi && duration < TimeSpan.FromSeconds(HanabiClipDuration)
+            ? TimeSpan.FromSeconds(HanabiClipDuration)
+            : duration;
         _thickness = thickness;
         IsHitTestVisible = false;
+        ClipToBounds = false;
     }
 
     public bool IsCompleted => DateTime.UtcNow - _startedAt >= _duration;
@@ -84,11 +89,13 @@ internal sealed class IslandRippleOverlay : Control
         var rotation = SampleFireworkRotation(time);
         var fireworkOpacity = SampleFireworkOpacity(time);
 
-        var smallBallScale = SampleSmooth(time, 0, 0.2, 0.1, 0.5);
+        // Preserve the original expansion cadence while increasing the final
+        // size of both centre balls. Opacity is controlled separately below.
+        var smallBallScale = SampleAccelerating(time, 0, 0.2, 0.1, 0.82);
         var smallBallRadius = extent * 0.0465 * smallBallScale;
         var smallBallOpacity = SampleSmallBallOpacity(time);
 
-        var bigBallScale = SampleSmooth(time, 0, 1, 0.3, 1.15);
+        var bigBallScale = SampleAccelerating(time, 0, 1, 0.3, 1.65);
         var bigBallRadius = extent * 0.0465 * bigBallScale;
         var bigBallOpacity = SampleBigBallOpacity(time);
         var bigBallTint = SampleBigBallTint(time);
@@ -209,34 +216,38 @@ internal sealed class IslandRippleOverlay : Control
 
     private static double SampleSmallBallOpacity(double time)
     {
-        if (time <= 0.1)
+        // Keep the two centre light balls visible long enough to read as an
+        // actual bloom at 30 FPS. The previous imported curve dropped the
+        // small ball to 10% by frame 6 and made the whole core disappear
+        // around frame 8.
+        if (time <= 0.18)
         {
             return 1;
         }
-        if (time <= 0.2)
+        if (time <= 0.42)
         {
-            return Hermite(time, 0.1, 1, 0, 0.2, 0.1, -2.0000002);
+            return Hermite(time, 0.18, 1, 0, 0.42, 0.16, -1.2);
         }
-        if (time <= 0.3)
+        if (time <= 0.62)
         {
-            return Hermite(time, 0.2, 0.1, -2.0000002, 0.3, 0, 0);
+            return Hermite(time, 0.42, 0.16, -1.2, 0.62, 0, 0);
         }
         return 0;
     }
 
     private static double SampleBigBallOpacity(double time)
     {
-        if (time <= 0.06666667)
+        if (time <= 0.16)
         {
             return 1;
         }
-        if (time <= 0.16666667)
+        if (time <= 0.46)
         {
-            return Hermite(time, 0.06666667, 1, 0, 0.16666667, 0.1, -0.48979604);
+            return Hermite(time, 0.16, 1, 0, 0.46, 0.32, -1.1);
         }
-        if (time <= 0.8833333)
+        if (time <= 0.95)
         {
-            return Hermite(time, 0.16666667, 0.1, -0.48979604, 0.8833333, 0, 0);
+            return Hermite(time, 0.46, 0.32, -1.1, 0.95, 0, 0);
         }
         return 0;
     }
@@ -266,6 +277,27 @@ internal sealed class IslandRippleOverlay : Control
             return endValue;
         }
         return Hermite(time, startTime, startValue, 0, endTime, endValue, 0);
+    }
+
+    /// <summary>
+    /// A monotonic ease-in curve for the centre balls: its velocity continues
+    /// to increase until the existing expansion deadline, without changing the
+    /// start value, end value, or duration of the animation.
+    /// </summary>
+    private static double SampleAccelerating(double time, double startTime, double startValue,
+        double endTime, double endValue)
+    {
+        if (time <= startTime)
+        {
+            return startValue;
+        }
+        if (time >= endTime)
+        {
+            return endValue;
+        }
+
+        var t = (time - startTime) / (endTime - startTime);
+        return startValue + (endValue - startValue) * t * t;
     }
 
     private static double Hermite(double time, double startTime, double startValue, double startSlope,
