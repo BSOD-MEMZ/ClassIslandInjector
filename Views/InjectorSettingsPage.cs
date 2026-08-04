@@ -15,7 +15,7 @@ namespace ClassIslandInjector.Views;
 /// The settings page deliberately follows the layout used by ClassIsland's built-in appearance page.
 /// Settings are edited locally and applied together by the button at the bottom of the page.
 /// </summary>
-[SettingsPageInfo("miku.classisland.injector", "样式注入器", "\uEC4A", "\uEC49")]
+[SettingsPageInfo("miku.classisland.injector", "样式注入器", "\uEC4A", "\uEC4A")]
 public sealed class InjectorSettingsPage : SettingsPageBase
 {
     private readonly ToggleSwitch _enabled = Toggle();
@@ -41,6 +41,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly ToggleSwitch _dynamicBackgroundColor = Toggle();
     private readonly ToggleSwitch _dynamicBorderColor = Toggle();
     private readonly ToggleSwitch _dynamicShadowColor = Toggle();
+    private readonly ToggleSwitch _revertColorsWhenPaused = Toggle();
     private readonly Spin _albumColorPollingInterval = Spinner(0.5, 120, 0.5);
     private readonly Spin _albumColorTransition = Spinner(0, 10, 0.1);
     private readonly ToggleSwitch _gradient = Toggle();
@@ -182,18 +183,18 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Spacing = 4
         };
 
-        panel.Children.Add(new IconText { Glyph = "\uEC49", Text = "样式注入器", Margin = new Thickness(0, 0, 0, 4) });
-        panel.Children.Add(Setting("\uE84E", "运行时注入", "启用后由插件接管主界面根节点的视觉效果。", _enabled));
+        panel.Children.Add(new IconText { Glyph = "\uEC4A", Text = "样式注入器", Margin = new Thickness(0, 0, 0, 4) });
+        panel.Children.Add(Setting("\uE84F", "运行时注入", "启用后由插件接管主界面根节点的视觉效果。", _enabled));
 
-        AddSection(panel, "\uF42E", "预设");
-        panel.Children.Add(Setting("\uF42E", "样式预设", "一键套用形状、配色、阴影、边框与提醒效果；不会修改不透明度、缩放、位置、旋转与圆角半径等基础变形设置。", _preset));
+        AddSection(panel, "\uF42F", "预设");
+        panel.Children.Add(Setting("\uF42F", "样式预设", "一键套用形状、配色、阴影、边框与提醒效果；不会修改不透明度、缩放、位置、旋转与圆角半径等基础变形设置。", _preset));
         var presetActions = Actions("应用样式预设", ApplyStylePreset, "恢复插件默认", ResetToDefaults);
         panel.Children.Add(Setting("\uE161", "预设操作", "恢复默认不会修改 Overrides.axaml。", presetActions));
 
-        AddSection(panel, "\uE287", "可视化编辑器");
-        panel.Children.Add(Setting("\uE287", "打开可视化编辑器", "在独立窗口中像编辑演示文稿一样拖动、旋转、缩放岛屿，并即时应用到主界面。", Button("打开编辑器", OpenVisualEditor)));
+        AddSection(panel, "\uE288", "可视化编辑器");
+        panel.Children.Add(Setting("\uE288", "打开可视化编辑器", "在独立窗口中像编辑演示文稿一样拖动、旋转、缩放岛屿，并即时应用到主界面。", Button("打开编辑器", OpenVisualEditor)));
 
-        AddSection(panel, "\uE112", "基础变形");
+        AddSection(panel, "\uE113", "基础变形");
         panel.Children.Add(new InfoBar
         {
             Severity = InfoBarSeverity.Warning,
@@ -202,18 +203,18 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             IsOpen = true,
             IsClosable = false
         });
-        panel.Children.Add(Group("\uE112", "基础变形", "这些值会覆盖并叠加在 ClassIsland 的主界面外观设置之上。",
+        panel.Children.Add(Group("\uE113", "基础变形", "这些值会覆盖并叠加在 ClassIsland 的主界面外观设置之上。",
             Item("不透明度", "控制主界面的整体透明度。", _opacity),
             Item("界面缩放", "控制主界面的显示大小。", _scale),
             Item("水平偏移", "向左或向右移动主界面。", _offsetX),
             Item("垂直偏移", "向上或向下移动主界面。", _offsetY),
             Item("圆角半径", "控制岛屿边角的圆润程度。", _cornerRadius),
             Item("旋转角度", "以中心点旋转主界面。", _rotation)));
-        panel.Children.Add(SwitchableGroup("\uEE82", "固定显示大小", "启用后覆盖主界面根容器的宽度与高度；关闭时完全沿用 ClassIsland 原生布局。", _customSize,
+        panel.Children.Add(SwitchableGroup("\uEE83", "固定显示大小", "启用后覆盖主界面根容器的宽度与高度；关闭时完全沿用 ClassIsland 原生布局。", _customSize,
             Item("显示宽度", "主界面显示区域的固定宽度。", _mainWindowWidth),
             Item("显示高度", "主界面显示区域的固定高度。", _mainWindowHeight)));
 
-        AddSection(panel, "\uF264", "动画与提醒");
+        AddSection(panel, "\uF265", "动画与提醒");
         panel.Children.Add(SwitchableGroup("\uEFFF", "持续动画", "打开后才会使用下方的循环动画设置。", _animationEnabled,
             Item("动画类型", "选择循环动画的运动方式。", _animationMode),
             Item("动画幅度", "控制循环动画的强弱。", _animationAmount),
@@ -243,20 +244,21 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("滑动速度", "倒计时箭头的移动速度。", _countdownArrowSpeed),
             Item("箭头线宽", "倒计时箭头的线条粗细。", _countdownArrowThickness)));
 
-        AddSection(panel, "\uEC49", "背景、阴影与边框");
+        AddSection(panel, "\uEC4A", "背景、阴影与边框");
         var backgroundColorItem = Item("背景色", "支持透明度的主界面背景颜色。", _backgroundColor);
-        var backgroundGroup = SwitchableGroup("\uE51F", "自定义背景色", "关闭时保留 ClassIsland 自身的背景颜色。", _customBackground,
+        var backgroundGroup = SwitchableGroup("\uE520", "自定义背景色", "关闭时保留 ClassIsland 自身的背景颜色。", _customBackground,
             backgroundColorItem,
             Item("动态专辑封面取色", "读取当前 SMTC 专辑封面，并使用 Material You（Monet）算法自动提取主题色。", _dynamicBackgroundColor),
             Item("线性渐变", "开启后会使用渐变终止色。", _gradient),
             Item("渐变终止色", "线性渐变背景的结束颜色。", _gradientEndColor, _gradient));
         EnabledWhenManualColor(backgroundColorItem, _customBackground, _dynamicBackgroundColor);
         panel.Children.Add(backgroundGroup);
-        panel.Children.Add(Group("\uF360", "动态取色轮询", "控制从媒体播放器读取专辑封面的频率，以及颜色变化时的过渡方式。",
-            Item("轮询间隔", "每隔多少秒重新读取一次当前专辑封面（秒）。", _albumColorPollingInterval),
+        panel.Children.Add(Group("\uF361", "动态取色轮询", "SMTC 采用事件驱动：媒体变化（切歌/换封面）时即时更新；下方的间隔仅作为兜底刷新，应对个别应用事件不触发的情况。",
+            Item("暂停/停止时恢复原色", "媒体暂停或停止播放时，把背景、边框、阴影从专辑取色平滑恢复为你配置的原始颜色，恢复播放后再跟随专辑。", _revertColorsWhenPaused),
+            Item("兜底刷新间隔", "事件驱动失效时的兜底刷新间隔（秒）。", _albumColorPollingInterval),
             Item("颜色过渡时长", "专辑颜色变化时，背景、边框、阴影平滑过渡到新颜色的时长（秒），0 为立即切换。", _albumColorTransition)));
         var shadowColorItem = Item("阴影颜色", "支持透明度的阴影颜色。", _shadowColor);
-        panel.Children.Add(SwitchableGroup("\uE471", "阴影", "为岛屿添加投影效果。", _shadow,
+        panel.Children.Add(SwitchableGroup("\uE472", "阴影", "为岛屿添加投影效果。", _shadow,
             Item("动态取色", "阴影色调跟随专辑封面，使用 Material You 深色中性色；透明度沿用你配置的阴影颜色透明度。", _dynamicShadowColor),
             shadowColorItem,
             Item("阴影模糊", "控制投影的柔和程度。", _shadowBlur),
@@ -265,16 +267,16 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("阴影不透明度", "控制投影的深浅。", _shadowOpacity)));
         EnabledWhenManualColor(shadowColorItem, _shadow, _dynamicShadowColor);
         var borderColorItem = Item("边框颜色", "支持透明度的边框颜色。", _borderColor);
-        panel.Children.Add(SwitchableGroup("\uE253", "岛屿边框", "为岛屿添加细边框。", _border,
+        panel.Children.Add(SwitchableGroup("\uE254", "岛屿边框", "为岛屿添加细边框。", _border,
             Item("动态取色", "边框色调跟随专辑封面，使用 Material You 主色调；透明度沿用你配置的边框颜色透明度。", _dynamicBorderColor),
             borderColorItem,
             Item("边框线宽", "控制岛屿边框的粗细。", _borderThickness)));
         EnabledWhenManualColor(borderColorItem, _border, _dynamicBorderColor);
 
-        AddSection(panel, "\uF42C", "主界面底图");
+        AddSection(panel, "\uF42D", "主界面底图");
         var wallpaperPathItem = Item("图片 / 文件夹", "底图文件或幻灯片文件夹的路径。", WallpaperPathFooter());
         var wallpaperSlideshowItem = Item("幻灯片间隔", "文件夹幻灯片切换间隔（秒）。", _wallpaperSlideshowInterval);
-        var wallpaperGroup = SwitchableGroup("\uF42C", "主界面底图", "层级：底图 → 底色 → 组件。SMTC 来源的轮询间隔与图片过渡时长沿用上方“动态取色轮询”设置。", _wallpaperEnabled,
+        var wallpaperGroup = SwitchableGroup("\uF42D", "主界面底图", "层级：底图 → 底色 → 组件。SMTC 来源由事件驱动即时更新，兜底刷新与图片过渡时长沿用上方“动态取色轮询”设置。", _wallpaperEnabled,
             Item("图片来源", "选择底图的来源：本地图片、文件夹幻灯片或 SMTC 专辑封面。", _wallpaperSource),
             wallpaperPathItem,
             Item("图片不透明度", "底图的整体透明度。", _wallpaperOpacity),
@@ -287,9 +289,20 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         VisibleWhen(wallpaperSlideshowItem, _wallpaperSource, WallpaperSource.FolderSlideshow);
         panel.Children.Add(wallpaperGroup);
 
-        AddSection(panel, "\uF262", "高级样式表");
-        panel.Children.Add(Setting("\uF262", "覆盖样式表路径", "填写 .axaml 样式表的完整路径。", _styleSheetPath));
+        AddSection(panel, "\uF263", "高级样式表");
+        panel.Children.Add(Setting("\uF263", "覆盖样式表路径", "填写 .axaml 样式表的完整路径。", _styleSheetPath));
         panel.Children.Add(Setting("\uE161", "自动热重载", "保存样式表后自动重新加载。", _watchStyleSheet));
+
+        AddSection(panel, "\uE74D", "卸载与数据清理");
+        panel.Children.Add(new InfoBar
+        {
+            Severity = InfoBarSeverity.Error,
+            Title = "删除所有数据",
+            Message = "将清除本插件在 ClassIsland 中创建的全部配置与数据（设置、覆盖样式表、诊断日志等），并把主界面恢复为原生状态。此操作不可恢复，执行后即可安全卸载插件。",
+            IsOpen = true,
+            IsClosable = false
+        });
+        panel.Children.Add(Setting("\uE74D", "删除所有数据", "一键清空插件全部数据并恢复主界面，让插件回到“全新安装”状态，之后可安全卸载。", Button("删除所有数据", DeleteAllData)));
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 12, 0, 0) };
         actions.Children.Add(Button("保存并应用", SaveAndApply));
@@ -334,6 +347,28 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         SaveAndApply();
         InjectorRuntime.PreviewRipple();
         _status.Text = "正在主界面中心预览当前 Ripple。";
+    }
+
+    private async void DeleteAllData()
+    {
+        var dialog = new ContentDialog
+        {
+            Title = "确认删除所有数据？",
+            Content = "将清除本插件的全部配置与数据，并把主界面恢复为原生状态。此操作不可恢复，执行后即可安全卸载插件。",
+            PrimaryButtonText = "删除",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Close
+        };
+
+        var result = await dialog.ShowAsync();
+        if (result != ContentDialogResult.Primary)
+        {
+            return;
+        }
+
+        InjectorRuntime.DeleteAllData();
+        LoadFromSettings();
+        _status.Text = "已删除所有数据，主界面已恢复为原生状态；现在可以通过 ClassIsland 的插件管理安全卸载本插件。";
     }
 
     private void WireVisualEditor()
@@ -452,6 +487,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _dynamicBackgroundColor.IsChecked = settings.DynamicBackgroundColorEnabled;
         _dynamicBorderColor.IsChecked = settings.DynamicBorderColorEnabled;
         _dynamicShadowColor.IsChecked = settings.DynamicShadowColorEnabled;
+        _revertColorsWhenPaused.IsChecked = settings.RevertColorsWhenPaused;
         _albumColorPollingInterval.DoubleValue = settings.AlbumColorPollingIntervalSeconds;
         _albumColorTransition.DoubleValue = settings.AlbumColorTransitionSeconds;
         _gradient.IsChecked = settings.GradientEnabled;
@@ -513,7 +549,15 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.AnimationPeriodSeconds = _animationPeriod.DoubleValue;
             settings.StyleSheetPath = _styleSheetPath.Text ?? string.Empty;
             settings.WatchStyleSheet = _watchStyleSheet.IsChecked == true;
+            var cornerRadiusChanged = settings.CornerRadius != _cornerRadius.DoubleValue;
             settings.CornerRadius = _cornerRadius.DoubleValue;
+            // 用户显式修改圆角时，把形状切换为 RoundedRectangle，让自定义圆角生效；
+            // 全新安装（HostDefault）保持不改动主界面原生圆角。
+            if (cornerRadiusChanged && settings.Shape == IslandShape.HostDefault)
+            {
+                settings.Shape = IslandShape.RoundedRectangle;
+            }
+
             settings.CustomSizeEnabled = _customSize.IsChecked == true;
             settings.MainWindowWidth = _mainWindowWidth.DoubleValue;
             settings.MainWindowHeight = _mainWindowHeight.DoubleValue;
@@ -522,6 +566,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.DynamicBackgroundColorEnabled = _dynamicBackgroundColor.IsChecked == true;
             settings.DynamicBorderColorEnabled = _dynamicBorderColor.IsChecked == true;
             settings.DynamicShadowColorEnabled = _dynamicShadowColor.IsChecked == true;
+            settings.RevertColorsWhenPaused = _revertColorsWhenPaused.IsChecked == true;
             settings.AlbumColorPollingIntervalSeconds = _albumColorPollingInterval.DoubleValue;
             settings.AlbumColorTransitionSeconds = _albumColorTransition.DoubleValue;
             settings.GradientEnabled = _gradient.IsChecked == true;

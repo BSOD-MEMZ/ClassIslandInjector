@@ -109,7 +109,7 @@ public sealed class InjectorSettings
     private double _offsetX;
     private double _offsetY;
     private bool _animationEnabled;
-    private IslandAnimationMode _animationMode = IslandAnimationMode.Breathe;
+    private IslandAnimationMode _animationMode = IslandAnimationMode.None;
     private double _animationAmount = 0.04;
     private double _animationPeriodSeconds = 2.5;
     private string _styleSheetPath = string.Empty;
@@ -132,14 +132,14 @@ public sealed class InjectorSettings
     private bool _borderEnabled;
     private string _borderColor = "#99FFFFFF";
     private double _borderThickness = 1;
-    private VisibilityAnimation _visibilityAnimation = VisibilityAnimation.Scale;
+    private VisibilityAnimation _visibilityAnimation = VisibilityAnimation.None;
     private double _visibilityDurationSeconds = 0.35;
-    private EmphasisAnimation _emphasisAnimation = EmphasisAnimation.Pulse;
+    private EmphasisAnimation _emphasisAnimation = EmphasisAnimation.None;
     private double _emphasisAmount = 0.12;
     private double _emphasisDurationSeconds = 0.45;
     private NotificationTransition _notificationTransition = NotificationTransition.HostDefault;
     private double _notificationTransitionDurationSeconds = 0.22;
-    private RippleType _rippleType = RippleType.Ring;
+    private RippleType _rippleType = RippleType.None;
     private string _rippleColor = "#AA7DD3FC";
     private double _rippleDurationSeconds = 0.65;
     private double _rippleThickness = 3;
@@ -147,6 +147,7 @@ public sealed class InjectorSettings
     private bool _dynamicBackgroundColorEnabled;
     private bool _dynamicBorderColorEnabled;
     private bool _dynamicShadowColorEnabled;
+    private bool _revertColorsWhenPaused;
     private double _albumColorPollingIntervalSeconds = 4;
     private double _albumColorTransitionSeconds = 0.6;
     private bool _wallpaperEnabled;
@@ -158,7 +159,7 @@ public sealed class InjectorSettings
     private double _wallpaperOffsetX;
     private double _wallpaperOffsetY;
     private double _wallpaperSlideshowIntervalSeconds = 30;
-    private bool _countdownArrowsEnabled = true;
+    private bool _countdownArrowsEnabled;
     private string _countdownArrowColor = "#BFF8FAFC";
     private int _countdownArrowCount = 5;
     private double _countdownArrowSpeed = 2.4;
@@ -213,6 +214,7 @@ public sealed class InjectorSettings
     public bool DynamicBackgroundColorEnabled { get => _dynamicBackgroundColorEnabled; set => Set(ref _dynamicBackgroundColorEnabled, value); }
     public bool DynamicBorderColorEnabled { get => _dynamicBorderColorEnabled; set => Set(ref _dynamicBorderColorEnabled, value); }
     public bool DynamicShadowColorEnabled { get => _dynamicShadowColorEnabled; set => Set(ref _dynamicShadowColorEnabled, value); }
+    public bool RevertColorsWhenPaused { get => _revertColorsWhenPaused; set => Set(ref _revertColorsWhenPaused, value); }
     public double AlbumColorPollingIntervalSeconds { get => _albumColorPollingIntervalSeconds; set => Set(ref _albumColorPollingIntervalSeconds, Math.Clamp(value, 0.5, 120)); }
     public double AlbumColorTransitionSeconds { get => _albumColorTransitionSeconds; set => Set(ref _albumColorTransitionSeconds, Math.Clamp(value, 0, 10)); }
     public bool WallpaperEnabled { get => _wallpaperEnabled; set => Set(ref _wallpaperEnabled, value); }
@@ -339,6 +341,7 @@ public sealed class InjectorSettings
         bool DynamicBackgroundColorEnabled,
         bool DynamicBorderColorEnabled,
         bool DynamicShadowColorEnabled,
+        bool RevertColorsWhenPaused,
         double AlbumColorPollingIntervalSeconds,
         double AlbumColorTransitionSeconds);
 
@@ -349,6 +352,7 @@ public sealed class InjectorSettings
         WallpaperDisplayMode, WallpaperScale, WallpaperOffsetX, WallpaperOffsetY,
         WallpaperSlideshowIntervalSeconds,
         DynamicBackgroundColorEnabled, DynamicBorderColorEnabled, DynamicShadowColorEnabled,
+        RevertColorsWhenPaused,
         AlbumColorPollingIntervalSeconds, AlbumColorTransitionSeconds);
 
     private void RestoreProtectedSettings(ProtectedSettings s)
@@ -374,6 +378,7 @@ public sealed class InjectorSettings
         DynamicBackgroundColorEnabled = s.DynamicBackgroundColorEnabled;
         DynamicBorderColorEnabled = s.DynamicBorderColorEnabled;
         DynamicShadowColorEnabled = s.DynamicShadowColorEnabled;
+        RevertColorsWhenPaused = s.RevertColorsWhenPaused;
         AlbumColorPollingIntervalSeconds = s.AlbumColorPollingIntervalSeconds;
         AlbumColorTransitionSeconds = s.AlbumColorTransitionSeconds;
     }
@@ -538,6 +543,7 @@ public sealed class InjectorSettings
         RippleColor = source.RippleColor;
         DynamicBorderColorEnabled = source.DynamicBorderColorEnabled;
         DynamicShadowColorEnabled = source.DynamicShadowColorEnabled;
+        RevertColorsWhenPaused = source.RevertColorsWhenPaused;
         AlbumColorPollingIntervalSeconds = source.AlbumColorPollingIntervalSeconds;
         AlbumColorTransitionSeconds = source.AlbumColorTransitionSeconds;
         RippleDurationSeconds = source.RippleDurationSeconds;

@@ -23,7 +23,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private readonly InjectorSettings _settings;
     private readonly DispatcherTimer _animationTimer;
     private readonly DispatcherTimer _stateTimer;
-    private readonly DispatcherTimer _albumColorTimer;
     private readonly Stopwatch _animationClock = Stopwatch.StartNew();
     private Window? _mainWindow;
     private Control? _islandRoot;
@@ -48,7 +47,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private DateTime _visibilityStartedAt = DateTime.MinValue;
     private DateTime _emphasisStartedAt = DateTime.MinValue;
     private bool _lastContentVisible;
-    private bool _isPickingAlbumColor;
     private bool _dynamicColorsInitialized;
     private Color _dynamicBackgroundColor;
     private Color _dynamicBorderColor;
@@ -84,7 +82,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _settings = settings;
         _animationTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(16), DispatcherPriority.Render, OnAnimationTick);
         _stateTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(50), DispatcherPriority.Background, OnStateTick);
-        _albumColorTimer = new DispatcherTimer(TimeSpan.FromSeconds(4), DispatcherPriority.Background, OnAlbumColorTimerTick);
         _wallpaperTimer = new DispatcherTimer(TimeSpan.FromSeconds(30), DispatcherPriority.Background, OnWallpaperTimerTick);
     }
 
@@ -147,7 +144,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
         ReloadStyleSheet();
         ReloadNotificationTransitionStyles();
         ConfigureStyleSheetWatcher();
-        UpdateAlbumColorTimer();
         _animationClock.Restart();
         _stateTimer.Start();
         UpdateAnimationTimer();
@@ -513,44 +509,42 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
     }
 
-    private void UpdateAlbumColorTimer()
-    {
-        if (_settings.Enabled && IsAnyDynamicColorEnabled())
-        {
-            _albumColorTimer.Interval = TimeSpan.FromSeconds(Math.Clamp(_settings.AlbumColorPollingIntervalSeconds, 0.5, 120));
-            _albumColorTimer.Start();
-            OnAlbumColorTimerTick(null, EventArgs.Empty);
-        }
-        else
-        {
-            _albumColorTimer.Stop();
-        }
-    }
-
     private bool IsAnyDynamicColorEnabled() =>
         (_settings.CustomBackgroundEnabled && _settings.DynamicBackgroundColorEnabled) ||
         (_settings.BorderEnabled && _settings.DynamicBorderColorEnabled) ||
         (_settings.ShadowEnabled && _settings.DynamicShadowColorEnabled);
 
-    private async void OnAlbumColorTimerTick(object? sender, EventArgs e)
+    /// <summary>
+    /// 由 <see cref="SmtcWatcher"/> 事件驱动调用（已调度到 UI 线程）。
+    /// 媒体变化时应用动态取色与 SMTC 底图；暂停/停止时（若启用）恢复原始颜色。
+    /// </summary>
+    public void OnSmtcMediaChanged(AlbumAccentColors? colors, byte[]? thumbnailBytes, bool isPlaying)
     {
-        if (_isPickingAlbumColor || !IsAnyDynamicColorEnabled())
+        if (IsAnyDynamicColorEnabled())
         {
-            return;
-        }
-
-        _isPickingAlbumColor = true;
-        try
-        {
-            var colors = await SmtcAlbumColorPicker.TryGetAccentColorsAsync();
-            if (colors != null)
+            if (isPlaying)
             {
-                StartColorTransition(colors);
+                if (colors != null)
+                {
+                    StartColorTransition(colors);
+                }
+            }
+            else if (_settings.RevertColorsWhenPaused)
+            {
+                RevertDynamicColors();
             }
         }
-        finally
+
+        if (_settings.WallpaperEnabled && _settings.WallpaperSource == WallpaperSource.SmtcAlbum)
         {
-            _isPickingAlbumColor = false;
+            if (isPlaying && thumbnailBytes is { Length: > 0 })
+            {
+                LoadWallpaperImage(thumbnailBytes);
+            }
+            else if (thumbnailBytes is not { Length: > 0 })
+            {
+                ClearWallpaperImage();
+            }
         }
     }
 
@@ -574,10 +568,24 @@ internal sealed class MainWindowStyleInjector : IDisposable
         // 边框与阴影保留用户在设置里配置的透明度，只替换色调。
         var borderAlpha = ParseColorOrDefault(_settings.BorderColor, Color.FromArgb(0x99, 0xFF, 0xFF, 0xFF)).A;
         var shadowAlpha = ParseColorOrDefault(_settings.ShadowColor, Color.FromArgb(0x99, 0, 0, 0)).A;
-        var newBackground = colors.Background;
-        var newBorder = WithAlpha(colors.Border, borderAlpha);
-        var newShadow = WithAlpha(colors.Shadow, shadowAlpha);
+        StartColorTransition(colors.Background, WithAlpha(colors.Border, borderAlpha), WithAlpha(colors.Shadow, shadowAlpha));
+    }
 
+    /// <summary>
+    /// 暂停/停止播放时，把动态取色平滑过渡回用户在设置里配置的原始颜色。
+    /// </summary>
+    private void RevertDynamicColors()
+    {
+        EnsureDynamicColorsInitialized();
+        StartColorTransition(
+            ParseColorOrDefault(_settings.BackgroundColor, Color.FromArgb(0xCC, 0x20, 0x20, 0x20)),
+            ParseColorOrDefault(_settings.BorderColor, Color.FromArgb(0x99, 0xFF, 0xFF, 0xFF)),
+            ParseColorOrDefault(_settings.ShadowColor, Color.FromArgb(0x99, 0, 0, 0)));
+    }
+
+    private void StartColorTransition(Color newBackground, Color newBorder, Color newShadow)
+    {
+        EnsureDynamicColorsInitialized();
         var duration = Math.Max(0, _settings.AlbumColorTransitionSeconds);
         if (duration <= 0)
         {
@@ -789,6 +797,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         {
             IslandShape.Rectangle => new CornerRadius(0),
             IslandShape.Capsule => new CornerRadius(Math.Max(1, _wallpaperHost.Bounds.Height / 2)),
+            IslandShape.HostDefault => new CornerRadius(0),
             _ => new CornerRadius(_settings.CornerRadius)
         };
         _wallpaperHost.CornerRadius = radius;
@@ -826,45 +835,27 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     private void UpdateWallpaperTimer()
     {
-        if (!_settings.Enabled || !_settings.WallpaperEnabled)
+        if (!_settings.Enabled || !_settings.WallpaperEnabled ||
+            _settings.WallpaperSource != WallpaperSource.FolderSlideshow)
         {
             _wallpaperTimer.Stop();
             return;
         }
 
-        switch (_settings.WallpaperSource)
-        {
-            case WallpaperSource.FolderSlideshow:
-                _wallpaperTimer.Interval = TimeSpan.FromSeconds(Math.Clamp(_settings.WallpaperSlideshowIntervalSeconds, 2, 3600));
-                _wallpaperTimer.Start();
-                break;
-            case WallpaperSource.SmtcAlbum:
-                // SMTC 封面轮询间隔与现有动态取色设置绑定。
-                _wallpaperTimer.Interval = TimeSpan.FromSeconds(Math.Clamp(_settings.AlbumColorPollingIntervalSeconds, 0.5, 120));
-                _wallpaperTimer.Start();
-                break;
-            default:
-                _wallpaperTimer.Stop();
-                break;
-        }
+        // SMTC 底图由 SmtcWatcher 事件驱动，无需定时轮询。
+        _wallpaperTimer.Interval = TimeSpan.FromSeconds(Math.Clamp(_settings.WallpaperSlideshowIntervalSeconds, 2, 3600));
+        _wallpaperTimer.Start();
     }
 
     private void OnWallpaperTimerTick(object? sender, EventArgs e)
     {
-        if (!_settings.Enabled || !_settings.WallpaperEnabled)
+        if (!_settings.Enabled || !_settings.WallpaperEnabled ||
+            _settings.WallpaperSource != WallpaperSource.FolderSlideshow)
         {
             return;
         }
 
-        switch (_settings.WallpaperSource)
-        {
-            case WallpaperSource.FolderSlideshow:
-                AdvanceSlideshow();
-                break;
-            case WallpaperSource.SmtcAlbum:
-                _ = RefreshSmtcWallpaperAsync();
-                break;
-        }
+        AdvanceSlideshow();
     }
 
     private void ReloadWallpaperImageIfNeeded()
@@ -890,7 +881,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
                 }
                 break;
             case WallpaperSource.SmtcAlbum:
-                _ = RefreshSmtcWallpaperAsync();
+                // SMTC 底图由 SmtcWatcher 事件驱动推送，这里只需清空旧图。
+                ClearWallpaperImage();
                 break;
         }
     }
@@ -921,12 +913,17 @@ internal sealed class MainWindowStyleInjector : IDisposable
         LoadWallpaperImage(_wallpaperSlideshow[_wallpaperSlideshowIndex]);
     }
 
-    private async Task RefreshSmtcWallpaperAsync()
+    /// <summary>
+    /// 清空当前底图（如 SMTC 切换到的媒体没有封面时）。
+    /// </summary>
+    private void ClearWallpaperImage()
     {
-        var bytes = await SmtcAlbumColorPicker.TryGetAlbumThumbnailBytesAsync();
-        if (bytes is { Length: > 0 })
+        _wallpaperTransitionActive = false;
+        DisposeWallpaperBitmap();
+        foreach (var layer in _wallpaperLayers)
         {
-            LoadWallpaperImage(bytes);
+            layer.Background = null;
+            layer.Opacity = 0;
         }
     }
 
@@ -1501,10 +1498,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
                         : new CornerRadius(_settings.CornerRadius);
                     break;
                 case IslandShape.HostDefault:
-                    // The shape picker was removed from the UI.  Treat the custom
-                    // radius as an explicit override so the basic editor remains
-                    // useful even for existing HostDefault configurations.
-                    borderControl.CornerRadius = new CornerRadius(_settings.CornerRadius);
+                    // 全新安装默认不改动主界面的圆角（沿用 ClassIsland 原生圆角）。
+                    // 只有用户通过可视化编辑器/设置页显式修改圆角时，
+                    // Shape 才会被切换为 RoundedRectangle 并应用自定义圆角。
                     break;
             }
 
@@ -1609,7 +1605,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
     {
         _animationTimer.Stop();
         _stateTimer.Stop();
-        _albumColorTimer.Stop();
         _styleSheetWatcher?.Dispose();
         _styleSheetWatcher = null;
         RestoreDecorations();

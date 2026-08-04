@@ -4,6 +4,7 @@ using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using ClassIsland.Core.Controls;
+using FluentAvalonia.UI.Controls;
 
 namespace ClassIslandInjector.Views;
 
@@ -28,6 +29,10 @@ internal sealed class IslandVisualEditor : UserControl
     private bool _isRotating;
     private bool _isResizing;
     private bool _isEditingCornerRadius;
+    private readonly Dictionary<long, Point> _activePointers = [];
+    private bool _isPinching;
+    private double _pinchStartDistance;
+    private double _pinchStartScale;
 
     public event EventHandler<IslandTransformEditedEventArgs>? TransformEdited;
     public event EventHandler<IslandSizeEditedEventArgs>? SizeEdited;
@@ -110,7 +115,7 @@ internal sealed class IslandVisualEditor : UserControl
                 _stage,
                 new TextBlock
                 {
-                    Text = "拖动对象移动位置；八个蓝色手柄调整宽高；紫色上方手柄旋转；绿色手柄调整圆角。滚轮缩放，Ctrl + 滚轮旋转，方向键微调。",
+                    Text = "拖动对象移动位置；八个蓝色手柄调整宽高；紫色上方手柄旋转；绿色手柄调整圆角。滚轮或双指捏合缩放，方向键微调，Q/E 旋转。",
                     Opacity = 0.72,
                     TextWrapping = TextWrapping.Wrap
                 }
@@ -178,6 +183,8 @@ internal sealed class IslandVisualEditor : UserControl
     public void Center() => RaiseTransformEdited(0, 0, _state.Scale, _state.Rotation, true);
     public void ResetTransform() => RaiseTransformEdited(0, 0, 1, 0, true);
 
+    private static double Distance(Point a, Point b) => Math.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y));
+
     private static Border Handle(double size, IBrush background, StandardCursorType cursor) => new()
     {
         Width = size,
@@ -192,17 +199,48 @@ internal sealed class IslandVisualEditor : UserControl
 
     private void StageOnPointerPressed(object? sender, PointerPressedEventArgs e)
     {
-        if (!e.GetCurrentPoint(_stage).Properties.IsLeftButtonPressed)
+        var point = e.GetCurrentPoint(_stage);
+        if (!point.Properties.IsLeftButtonPressed && !point.Properties.IsRightButtonPressed)
             return;
         Focus();
+        _activePointers[e.Pointer.Id] = point.Position;
+        if (_activePointers.Count == 2)
+        {
+            // 第二根手指落下 → 进入双指捏合缩放，取消单指拖动。
+            _isDragging = false;
+            _isPinching = true;
+            var positions = _activePointers.Values.ToArray();
+            _pinchStartDistance = Math.Max(Distance(positions[0], positions[1]), 1);
+            _pinchStartScale = _state.Scale;
+            e.Pointer.Capture(_stage);
+            e.Handled = true;
+            return;
+        }
+
         _isDragging = true;
-        _lastPointerPosition = e.GetPosition(_stage);
+        _lastPointerPosition = point.Position;
         e.Pointer.Capture(_stage);
         e.Handled = true;
     }
 
     private void StageOnPointerMoved(object? sender, PointerEventArgs e)
     {
+        if (_activePointers.ContainsKey(e.Pointer.Id))
+        {
+            _activePointers[e.Pointer.Id] = e.GetPosition(_stage);
+        }
+
+        if (_isPinching && _activePointers.Count >= 2)
+        {
+            // 双指捏合：按两指间距比例缩放。
+            var positions = _activePointers.Values.ToArray();
+            var distance = Math.Max(Distance(positions[0], positions[1]), 1);
+            var scale = Math.Clamp(_pinchStartScale * (distance / _pinchStartDistance), 0.1, 5);
+            RaiseTransformEdited(_state.OffsetX, _state.OffsetY, scale, _state.Rotation);
+            e.Handled = true;
+            return;
+        }
+
         if (!_isDragging)
             return;
         var position = e.GetPosition(_stage);
@@ -214,6 +252,20 @@ internal sealed class IslandVisualEditor : UserControl
 
     private void StageOnPointerReleased(object? sender, PointerReleasedEventArgs e)
     {
+        _activePointers.Remove(e.Pointer.Id);
+        if (_isPinching)
+        {
+            if (_activePointers.Count < 2)
+            {
+                _isPinching = false;
+            }
+
+            e.Pointer.Capture(null);
+            TransformEditCompleted?.Invoke(this, EventArgs.Empty);
+            e.Handled = true;
+            return;
+        }
+
         if (!_isDragging)
             return;
         _isDragging = false;
@@ -326,10 +378,9 @@ internal sealed class IslandVisualEditor : UserControl
 
     private void StageOnPointerWheelChanged(object? sender, PointerWheelEventArgs e)
     {
-        if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
-            RaiseTransformEdited(_state.OffsetX, _state.OffsetY, _state.Scale, _state.Rotation + e.Delta.Y * 3, true);
-        else
-            RaiseTransformEdited(_state.OffsetX, _state.OffsetY, Math.Clamp(_state.Scale + e.Delta.Y * 0.05, 0.1, 5), _state.Rotation, true);
+        // Windows 把触摸板捏合缩放映射为带 Ctrl 修饰键的滚轮事件，
+        // 与 Ctrl + 滚轮无法区分，因此滚轮一律缩放；旋转请使用紫色手柄或 Q/E 键。
+        RaiseTransformEdited(_state.OffsetX, _state.OffsetY, Math.Clamp(_state.Scale + e.Delta.Y * 0.05, 0.1, 5), _state.Rotation, true);
         e.Handled = true;
     }
 
@@ -456,13 +507,22 @@ internal sealed class IslandVisualEditorWindow : Window
             Children = { Editor, new ScrollViewer { Content = inspector } }
         };
         Grid.SetColumn(body.Children[1], 1);
+        var dangerInfo = new InfoBar
+        {
+            Severity = InfoBarSeverity.Warning,
+            Title = "危险操作提示",
+            Message = "可视化编辑器会直接改动主界面的外观与变形，操作不当可能导致布局异常或视觉混乱，请谨慎使用。",
+            IsOpen = true,
+            IsClosable = true
+        };
         Content = new Grid
         {
             Margin = new Thickness(20),
-            RowDefinitions = new RowDefinitions("Auto,*"),
-            Children = { toolbar, body }
+            RowDefinitions = new RowDefinitions("Auto,Auto,*"),
+            Children = { dangerInfo, toolbar, body }
         };
-        Grid.SetRow(body, 1);
+        Grid.SetRow(toolbar, 1);
+        Grid.SetRow(body, 2);
     }
 
     public void UpdateInspector(IslandPreviewState state)
