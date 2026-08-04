@@ -1,64 +1,146 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
+using Avalonia.Media;
 using ClassIsland.Core.Abstractions.Controls;
+using ClassIsland.Core.Assists;
 using ClassIsland.Core.Attributes;
+using ClassIsland.Core.Controls;
+using FluentAvalonia.UI.Controls;
 
 namespace ClassIslandInjector.Views;
 
-[SettingsPageInfo("miku.classisland.injector", "样式注入器")]
+/// <summary>
+/// The settings page deliberately follows the layout used by ClassIsland's built-in appearance page.
+/// Settings are edited locally and applied together by the button at the bottom of the page.
+/// </summary>
+[SettingsPageInfo("miku.classisland.injector", "样式注入器", "\uEC4A", "\uEC49")]
 public sealed class InjectorSettingsPage : SettingsPageBase
 {
-    private readonly CheckBox _enabled = new() { Content = "启用运行时注入" };
-    private readonly TextBox _opacity = new();
-    private readonly TextBox _scale = new();
-    private readonly TextBox _rotation = new();
-    private readonly TextBox _offsetX = new();
-    private readonly TextBox _offsetY = new();
-    private readonly CheckBox _animationEnabled = new() { Content = "启用动画" };
-    private readonly ComboBox _animationMode = new() { ItemsSource = Enum.GetValues<IslandAnimationMode>() };
-    private readonly TextBox _animationAmount = new();
-    private readonly TextBox _animationPeriod = new();
-    private readonly TextBox _styleSheetPath = new();
-    private readonly CheckBox _watchStyleSheet = new() { Content = "保存样式表后自动热重载" };
-    private readonly ComboBox _shape = new() { ItemsSource = Enum.GetValues<IslandShape>() };
-    private readonly TextBox _cornerRadius = new();
-    private readonly CheckBox _customBackground = new() { Content = "覆盖岛屿背景色" };
-    private readonly TextBox _backgroundColor = new();
-    private readonly CheckBox _gradient = new() { Content = "使用线性渐变背景" };
-    private readonly TextBox _gradientEndColor = new();
-    private readonly CheckBox _shadow = new() { Content = "启用阴影" };
-    private readonly TextBox _shadowColor = new();
-    private readonly TextBox _shadowBlur = new();
-    private readonly TextBox _shadowOffsetX = new();
-    private readonly TextBox _shadowOffsetY = new();
-    private readonly TextBox _shadowOpacity = new();
-    private readonly CheckBox _border = new() { Content = "启用岛屿边框" };
-    private readonly TextBox _borderColor = new();
-    private readonly TextBox _borderThickness = new();
-    private readonly ComboBox _visibilityAnimation = new() { ItemsSource = Enum.GetValues<VisibilityAnimation>() };
-    private readonly ComboBox _emphasisAnimation = new() { ItemsSource = Enum.GetValues<EmphasisAnimation>() };
-    private readonly TextBox _emphasisAmount = new();
-    private readonly TextBox _emphasisDuration = new();
-    private readonly TextBox _visibilityDuration = new();
-    private readonly ComboBox _notificationTransition = new() { ItemsSource = Enum.GetValues<NotificationTransition>() };
-    private readonly TextBox _notificationTransitionDuration = new();
-    private readonly ComboBox _rippleType = new() { ItemsSource = Enum.GetValues<RippleType>() };
-    private readonly TextBox _rippleColor = new();
-    private readonly TextBox _rippleDuration = new();
-    private readonly TextBox _rippleThickness = new();
-    private readonly CheckBox _countdownArrows = new() { Content = "即将上课时显示箭头滑动效果" };
-    private readonly TextBox _countdownArrowColor = new();
-    private readonly TextBox _countdownArrowCount = new();
-    private readonly TextBox _countdownArrowSpeed = new();
-    private readonly TextBox _countdownArrowThickness = new();
-    private readonly ComboBox _preset = new() { ItemsSource = Enum.GetValues<StylePreset>() };
-    private readonly ComboBox _animationPreset = new() { ItemsSource = Enum.GetValues<AnimationPreset>() };
-    private readonly TextBlock _status = new() { TextWrapping = Avalonia.Media.TextWrapping.Wrap };
+    private readonly ToggleSwitch _enabled = Toggle();
+    private readonly Slider _opacity = Slider(0, 1, 0.05);
+    private readonly Slider _scale = Slider(0.1, 5, 0.05);
+    private readonly Slider _rotation = Slider(-360, 360, 1);
+    private readonly Slider _offsetX = Slider(-2000, 2000, 1);
+    private readonly Slider _offsetY = Slider(-2000, 2000, 1);
+    private readonly ToggleSwitch _animationEnabled = Toggle();
+    private readonly ComboBox _animationMode = Combo(IslandAnimationModes);
+    private readonly Slider _animationAmount = Slider(0, 1, 0.01);
+    private readonly Slider _animationPeriod = Slider(0.2, 60, 0.1);
+    private readonly ComboBox _animationPreset = Combo(AnimationPresets);
+    private readonly TextBox _styleSheetPath = new() { MinWidth = 280 };
+    private readonly ToggleSwitch _watchStyleSheet = Toggle();
+
+    private readonly Slider _cornerRadius = Slider(0, 500, 1);
+    private readonly ToggleSwitch _customSize = Toggle();
+    private readonly Slider _mainWindowWidth = Slider(160, 2000, 10);
+    private readonly Slider _mainWindowHeight = Slider(40, 800, 10);
+    private readonly ToggleSwitch _customBackground = Toggle();
+    private readonly ColorPicker _backgroundColor = ColorPicker();
+    private readonly ToggleSwitch _dynamicBackgroundColor = Toggle();
+    private readonly ToggleSwitch _gradient = Toggle();
+    private readonly ColorPicker _gradientEndColor = ColorPicker();
+
+    private readonly ToggleSwitch _shadow = Toggle();
+    private readonly ColorPicker _shadowColor = ColorPicker();
+    private readonly Slider _shadowBlur = Slider(0, 200, 1);
+    private readonly Slider _shadowOffsetX = Slider(-200, 200, 1);
+    private readonly Slider _shadowOffsetY = Slider(-200, 200, 1);
+    private readonly Slider _shadowOpacity = Slider(0, 1, 0.05);
+    private readonly ToggleSwitch _border = Toggle();
+    private readonly ColorPicker _borderColor = ColorPicker();
+    private readonly Slider _borderThickness = Slider(0.25, 20, 0.25);
+
+    private readonly ComboBox _visibilityAnimation = Combo(VisibilityAnimations);
+    private readonly Slider _visibilityDuration = Slider(0.1, 10, 0.05);
+    private readonly ComboBox _emphasisAnimation = Combo(EmphasisAnimations);
+    private readonly Slider _emphasisAmount = Slider(0, 1, 0.01);
+    private readonly Slider _emphasisDuration = Slider(0.1, 10, 0.05);
+    private readonly ComboBox _notificationTransition = Combo(NotificationTransitions);
+    private readonly Slider _notificationTransitionDuration = Slider(0.05, 5, 0.05);
+
+    private readonly ComboBox _rippleType = Combo(RippleTypes);
+    private readonly ColorPicker _rippleColor = ColorPicker();
+    private readonly Slider _rippleDuration = Slider(0.1, 10, 0.05);
+    private readonly Slider _rippleThickness = Slider(0.5, 40, 0.5);
+    private readonly ToggleSwitch _hanabiConstraint = Toggle();
+    private readonly ToggleSwitch _countdownArrows = Toggle();
+    private readonly ColorPicker _countdownArrowColor = ColorPicker();
+    private readonly Slider _countdownArrowCount = Slider(2, 24, 1);
+    private readonly Slider _countdownArrowSpeed = Slider(0.1, 12, 0.1);
+    private readonly Slider _countdownArrowThickness = Slider(0.5, 8, 0.5);
+    private readonly ComboBox _preset = Combo(StylePresets);
+    private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.8 };
+    private IslandVisualEditorWindow? _visualEditorWindow;
+
+    private static readonly Choice<StylePreset>[] StylePresets =
+    [
+        new(StylePreset.GlassCapsule, "玻璃胶囊"),
+        new(StylePreset.NeonPulse, "霓虹脉冲"),
+        new(StylePreset.MaimaiHanabi, "舞萌花火"),
+        new(StylePreset.Minimal, "极简"),
+    ];
+
+    private static readonly Choice<AnimationPreset>[] AnimationPresets =
+    [
+        new(AnimationPreset.Still, "静止"),
+        new(AnimationPreset.SoftBreathe, "柔和呼吸"),
+        new(AnimationPreset.GentleFloat, "轻柔浮动"),
+        new(AnimationPreset.DynamicWave, "动态波浪"),
+        new(AnimationPreset.AlertShake, "提醒摇晃"),
+        new(AnimationPreset.HanabiCelebration, "花火庆祝"),
+    ];
+
+    private static readonly Choice<IslandAnimationMode>[] IslandAnimationModes =
+    [
+        new(IslandAnimationMode.None, "无"),
+        new(IslandAnimationMode.Breathe, "呼吸"),
+        new(IslandAnimationMode.Float, "浮动"),
+        new(IslandAnimationMode.Wave, "波浪"),
+    ];
+
+    private static readonly Choice<VisibilityAnimation>[] VisibilityAnimations =
+    [
+        new(VisibilityAnimation.None, "无"),
+        new(VisibilityAnimation.Fade, "淡入淡出"),
+        new(VisibilityAnimation.Scale, "缩放"),
+        new(VisibilityAnimation.SlideFromTop, "从上方滑入"),
+        new(VisibilityAnimation.SlideFromBottom, "从下方滑入"),
+    ];
+
+    private static readonly Choice<EmphasisAnimation>[] EmphasisAnimations =
+    [
+        new(EmphasisAnimation.None, "无"),
+        new(EmphasisAnimation.Pulse, "脉冲"),
+        new(EmphasisAnimation.Bounce, "弹跳"),
+        new(EmphasisAnimation.Shake, "摇晃"),
+        new(EmphasisAnimation.Flash, "闪烁"),
+    ];
+
+    private static readonly Choice<NotificationTransition>[] NotificationTransitions =
+    [
+        new(NotificationTransition.HostDefault, "跟随 ClassIsland"),
+        new(NotificationTransition.Fade, "淡入淡出"),
+        new(NotificationTransition.SlideDown, "向下滑动"),
+        new(NotificationTransition.SlideUp, "向上滑动"),
+        new(NotificationTransition.SlideLeft, "向左滑动"),
+        new(NotificationTransition.SlideRight, "向右滑动"),
+    ];
+
+    private static readonly Choice<RippleType>[] RippleTypes =
+    [
+        new(RippleType.None, "无"),
+        new(RippleType.Ring, "单环"),
+        new(RippleType.DoubleRing, "双环"),
+        new(RippleType.Glow, "光晕"),
+        new(RippleType.Square, "方框"),
+        new(RippleType.Hanabi, "花火"),
+    ];
 
     public InjectorSettingsPage()
     {
         Content = BuildContent();
+        WireVisualEditor();
         LoadFromSettings();
     }
 
@@ -66,293 +148,533 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     {
         var panel = new StackPanel
         {
-            Spacing = 10,
-            Margin = new Thickness(20),
-            MaxWidth = 820
+            Classes = { "settings-container", "animated-intro" },
+            Spacing = 4
         };
 
-        panel.Children.Add(new TextBlock
+        panel.Children.Add(new IconText { Glyph = "\uEC4A", Text = "样式注入器", Margin = new Thickness(0, 0, 0, 4) });
+        panel.Children.Add(Setting("\uEFFF", "运行时注入", "启用后由插件接管主界面根节点的视觉效果。", _enabled));
+
+        AddSection(panel, "\uF192", "预设");
+        panel.Children.Add(Setting("\uE508", "样式预设", "一键套用形状、背景、阴影和提醒效果。", _preset));
+        var presetActions = Actions("应用样式预设", ApplyStylePreset, "恢复插件默认", ResetToDefaults);
+        panel.Children.Add(Setting("\uE161", "预设操作", "恢复默认不会修改 Overrides.axaml。", presetActions));
+
+        AddSection(panel, "\uF483", "可视化编辑器");
+        panel.Children.Add(Setting("\uF192", "打开可视化编辑器", "在独立窗口中像编辑演示文稿一样拖动、旋转、缩放岛屿，并即时应用到主界面。", Button("打开编辑器", OpenVisualEditor)));
+
+        AddSection(panel, "\uF483", "基础变形");
+        panel.Children.Add(new InfoBar
         {
-            Text = "ClassIsland 样式注入器",
-            FontSize = 24,
-            FontWeight = Avalonia.Media.FontWeight.SemiBold
+            Severity = InfoBarSeverity.Warning,
+            Title = "与 ClassIsland 原生设置重叠",
+            Message = "不透明度、缩放、位置与圆角均可在 ClassIsland 的外观页修改。在此再次覆盖可能与原生设置产生少量兼容性问题。",
+            IsOpen = true,
+            IsClosable = false
         });
-        panel.Children.Add(Section("预设与恢复"));
-        panel.Children.Add(Field("样式预设", _preset));
-        var presetActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        var applyPreset = new Button { Content = "应用预设" };
-        applyPreset.Click += (_, _) =>
-        {
-            if (_preset.SelectedItem is not StylePreset preset)
-            {
-                return;
-            }
-            InjectorRuntime.Settings.ApplyPreset(preset);
-            LoadFromSettings();
-            _status.Text = $"已应用 {preset} 预设。";
-        };
-        var reset = new Button { Content = "恢复插件默认" };
-        reset.Click += (_, _) =>
-        {
-            InjectorRuntime.Settings.ResetToDefaults();
-            LoadFromSettings();
-            _status.Text = "已恢复插件默认设置；高级 Overrides.axaml 文件未修改。";
-        };
-        presetActions.Children.Add(applyPreset);
-        presetActions.Children.Add(reset);
-        panel.Children.Add(presetActions);
-        panel.Children.Add(new TextBlock
-        {
-            Text = "运行时层直接接管主界面根节点；XAML 覆盖层可使用 Avalonia 选择器重写任意已暴露控件。保存后立即生效，无需重启。",
-            TextWrapping = Avalonia.Media.TextWrapping.Wrap
-        });
+        panel.Children.Add(Group("\uF483", "基础变形", "这些值会覆盖并叠加在 ClassIsland 的主界面外观设置之上.",
+            Item("不透明度", "控制主界面的整体透明度。", _opacity),
+            Item("界面缩放", "控制主界面的显示大小。", _scale),
+            Item("水平偏移", "向左或向右移动主界面。", _offsetX),
+            Item("垂直偏移", "向上或向下移动主界面。", _offsetY),
+            Item("圆角半径", "控制岛屿边角的圆润程度。", _cornerRadius),
+            Item("旋转角度", "以中心点旋转主界面。", _rotation)));
+        panel.Children.Add(SwitchableGroup("\uF483", "固定显示大小", "启用后覆盖主界面根容器的宽度与高度；关闭时完全沿用 ClassIsland 原生布局。", _customSize,
+            Item("显示宽度", "主界面显示区域的固定宽度。", _mainWindowWidth),
+            Item("显示高度", "主界面显示区域的固定高度。", _mainWindowHeight)));
 
-        panel.Children.Add(_enabled);
-        panel.Children.Add(Field("不透明度 (0–1)", _opacity));
-        panel.Children.Add(Field("缩放 (0.1–5)", _scale));
-        panel.Children.Add(Field("旋转角度", _rotation));
-        panel.Children.Add(Field("X 偏移", _offsetX));
-        panel.Children.Add(Field("Y 偏移", _offsetY));
-        panel.Children.Add(_animationEnabled);
-        panel.Children.Add(Field("动画类型", _animationMode));
-        panel.Children.Add(Field("动画幅度 (0–1)", _animationAmount));
-        panel.Children.Add(Field("动画周期（秒）", _animationPeriod));
-        panel.Children.Add(Field("动画预设", _animationPreset));
-        var animationPresetActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        var applyAnimationPreset = new Button { Content = "应用动画预设" };
-        applyAnimationPreset.Click += (_, _) =>
-        {
-            if (_animationPreset.SelectedItem is not AnimationPreset preset)
-            {
-                return;
-            }
-            InjectorRuntime.Settings.ApplyAnimationPreset(preset);
-            LoadFromSettings();
-            _status.Text = $"已应用 {preset} 动画预设；形状、背景和阴影保持不变。";
-        };
-        animationPresetActions.Children.Add(applyAnimationPreset);
-        panel.Children.Add(animationPresetActions);
-        panel.Children.Add(Field("覆盖样式表 (.axaml) 的完整路径", _styleSheetPath));
-        panel.Children.Add(_watchStyleSheet);
-        panel.Children.Add(Section("形状与背景"));
-        panel.Children.Add(Field("岛屿形状", _shape));
-        panel.Children.Add(Field("圆角半径", _cornerRadius));
-        panel.Children.Add(_customBackground);
-        panel.Children.Add(Field("背景色 (#AARRGGBB)", _backgroundColor));
-        panel.Children.Add(_gradient);
-        panel.Children.Add(Field("渐变终止色 (#AARRGGBB)", _gradientEndColor));
-        panel.Children.Add(Section("阴影"));
-        panel.Children.Add(_shadow);
-        panel.Children.Add(Field("阴影颜色 (#AARRGGBB)", _shadowColor));
-        panel.Children.Add(Field("阴影模糊", _shadowBlur));
-        panel.Children.Add(Field("阴影 X 偏移", _shadowOffsetX));
-        panel.Children.Add(Field("阴影 Y 偏移", _shadowOffsetY));
-        panel.Children.Add(Field("阴影不透明度 (0–1)", _shadowOpacity));
-        panel.Children.Add(Section("边框"));
-        panel.Children.Add(_border);
-        panel.Children.Add(Field("边框颜色 (#AARRGGBB)", _borderColor));
-        panel.Children.Add(Field("边框线宽", _borderThickness));
-        panel.Children.Add(Section("出现、消失与强调"));
-        panel.Children.Add(Field("主界面显示动画", _visibilityAnimation));
-        panel.Children.Add(Field("显示动画时长（秒）", _visibilityDuration));
-        panel.Children.Add(Field("提醒强调动画", _emphasisAnimation));
-        panel.Children.Add(Field("强调幅度 (0–1)", _emphasisAmount));
-        panel.Children.Add(Field("强调时长（秒）", _emphasisDuration));
-        panel.Children.Add(Field("提醒遮罩出现/消失动画", _notificationTransition));
-        panel.Children.Add(Field("遮罩动画时长（秒）", _notificationTransitionDuration));
-        panel.Children.Add(Section("提醒 Ripple"));
-        panel.Children.Add(Field("Ripple 类型", _rippleType));
-        panel.Children.Add(Field("Ripple 颜色 (#AARRGGBB)", _rippleColor));
-        panel.Children.Add(Field("Ripple 时长（秒）", _rippleDuration));
-        panel.Children.Add(Field("Ripple 线宽", _rippleThickness));
-        panel.Children.Add(Section("即将上课倒计时"));
-        panel.Children.Add(_countdownArrows);
-        panel.Children.Add(Field("箭头颜色 (#AARRGGBB)", _countdownArrowColor));
-        panel.Children.Add(Field("箭头组数 (2–24，每组 >>)", _countdownArrowCount));
-        panel.Children.Add(Field("滑动速度 (0.1–12)", _countdownArrowSpeed));
-        panel.Children.Add(Field("箭头线宽", _countdownArrowThickness));
+        AddSection(panel, "\uEFFF", "动画与提醒");
+        panel.Children.Add(SwitchableGroup("\uEFFF", "持续动画", "打开后才会使用下方的循环动画设置。", _animationEnabled,
+            Item("动画类型", "选择循环动画的运动方式。", _animationMode),
+            Item("动画幅度", "控制循环动画的强弱。", _animationAmount),
+            Item("动画周期", "完成一次循环所需的时间（秒）。", _animationPeriod)));
+        panel.Children.Add(Setting("\uEFFF", "动画预设", "仅调整动效、提醒和 Ripple，不会改变形状、背景与阴影。", _animationPreset));
+        panel.Children.Add(Setting("\uE161", "应用动画预设", "立即应用当前选中的动画预设。", Button("应用动画预设", ApplyAnimationPreset)));
+        panel.Children.Add(ChoiceGroup("\uEFFF", "主界面显示动画", "选择主界面出现或消失时使用的动画。", _visibilityAnimation, VisibilityAnimation.None,
+            Item("显示动画时长", "主界面显示动画的时长（秒）。", _visibilityDuration)));
+        panel.Children.Add(ChoiceGroup("\uEFFF", "提醒强调动画", "选择收到提醒时使用的强调效果。", _emphasisAnimation, EmphasisAnimation.None,
+            Item("强调幅度", "控制强调动画的强弱。", _emphasisAmount),
+            Item("强调时长", "提醒强调动画的时长（秒）。", _emphasisDuration)));
+        panel.Children.Add(ChoiceGroup("\uEFFF", "提醒遮罩动画", "选择提醒遮罩出现和消失时的过渡效果。", _notificationTransition, NotificationTransition.HostDefault,
+            Item("遮罩动画时长", "提醒遮罩动画的时长（秒）。", _notificationTransitionDuration)));
+        var rippleColorItem = Item("Ripple 颜色", "支持透明度的提醒扩散颜色。", _rippleColor);
+        var rippleDurationItem = Item("Ripple 时长", "扩散效果的播放时长（秒）。", _rippleDuration);
+        var rippleThicknessItem = Item("Ripple 线宽", "环形或方框 Ripple 的线条粗细。", _rippleThickness);
+        var hanabiConstraintItem = Item("限制花火扩散", "以 ClassIsland 为圆心创建圆形裁剪遮罩，避免花火扩张至整个屏幕。", _hanabiConstraint);
+        var rippleGroup = ChoiceGroup("\uEFFF", "提醒 Ripple", "选择提醒时的扩散效果。花火使用固定的原始配色与线宽。", _rippleType, RippleType.None,
+            rippleColorItem, rippleDurationItem, rippleThicknessItem, hanabiConstraintItem);
+        EnabledWhenNot(rippleColorItem, _rippleType, RippleType.Hanabi);
+        EnabledWhenNot(rippleThicknessItem, _rippleType, RippleType.Hanabi);
+        VisibleWhen(hanabiConstraintItem, _rippleType, RippleType.Hanabi);
+        panel.Children.Add(rippleGroup);
+        panel.Children.Add(SwitchableGroup("\uE4C4", "倒计时箭头", "即将上课时显示箭头滑动效果。", _countdownArrows,
+            Item("箭头颜色", "支持透明度的倒计时箭头颜色。", _countdownArrowColor),
+            Item("箭头组数", "每组显示为一对 >> 箭头。", _countdownArrowCount),
+            Item("滑动速度", "倒计时箭头的移动速度。", _countdownArrowSpeed),
+            Item("箭头线宽", "倒计时箭头的线条粗细。", _countdownArrowThickness)));
 
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        var apply = new Button { Content = "保存并应用" };
-        apply.Click += (_, _) => SaveAndApply();
-        var reload = new Button { Content = "立即重载样式表" };
-        reload.Click += (_, _) =>
-        {
-            InjectorRuntime.ReloadStyleSheet();
-            _status.Text = "已请求重载。若样式表有语法错误，ClassIsland 会保留稳定运行状态。";
-        };
-        actions.Children.Add(apply);
-        actions.Children.Add(reload);
-        var previewRipple = new Button { Content = "预览 Ripple" };
-        previewRipple.Click += (_, _) =>
-        {
-            SaveAndApply();
-            InjectorRuntime.PreviewRipple();
-            _status.Text = "正在主界面中心预览当前 Ripple。";
-        };
-        actions.Children.Add(previewRipple);
+        AddSection(panel, "\uEC4A", "背景、阴影与边框");
+        var backgroundColorItem = Item("背景色", "支持透明度的主界面背景颜色。", _backgroundColor);
+        var backgroundGroup = SwitchableGroup("\uE51E", "自定义背景色", "关闭时保留 ClassIsland 自身的背景颜色。", _customBackground,
+            backgroundColorItem,
+            Item("动态专辑封面取色", "读取当前 SMTC 专辑封面，并使用 Material You（Monet）算法自动提取主题色。", _dynamicBackgroundColor),
+            Item("线性渐变", "开启后会使用渐变终止色。", _gradient),
+            Item("渐变终止色", "线性渐变背景的结束颜色。", _gradientEndColor, _gradient));
+        EnabledWhenManualColor(backgroundColorItem, _customBackground, _dynamicBackgroundColor);
+        panel.Children.Add(backgroundGroup);
+        panel.Children.Add(SwitchableGroup("\uEA84", "阴影", "为岛屿添加投影效果。", _shadow,
+            Item("阴影颜色", "支持透明度的阴影颜色。", _shadowColor),
+            Item("阴影模糊", "控制投影的柔和程度。", _shadowBlur),
+            Item("阴影水平偏移", "控制投影向左或向右偏移。", _shadowOffsetX),
+            Item("阴影垂直偏移", "控制投影向上或向下偏移。", _shadowOffsetY),
+            Item("阴影不透明度", "控制投影的深浅。", _shadowOpacity)));
+        panel.Children.Add(SwitchableGroup("\uF483", "岛屿边框", "为岛屿添加细边框。", _border,
+            Item("边框颜色", "支持透明度的边框颜色。", _borderColor),
+            Item("边框线宽", "控制岛屿边框的粗细。", _borderThickness)));
+
+        AddSection(panel, "\uE508", "高级样式表");
+        panel.Children.Add(Setting("\uE508", "覆盖样式表路径", "填写 .axaml 样式表的完整路径。", _styleSheetPath));
+        panel.Children.Add(Setting("\uE161", "自动热重载", "保存样式表后自动重新加载。", _watchStyleSheet));
+
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 12, 0, 0) };
+        actions.Children.Add(Button("保存并应用", SaveAndApply));
+        actions.Children.Add(Button("重载样式表", ReloadStyleSheet));
+        actions.Children.Add(Button("预览 Ripple", PreviewRipple));
         panel.Children.Add(actions);
         panel.Children.Add(_status);
-        panel.Children.Add(new TextBlock
-        {
-            Text = "提示：默认样式表及 settings.json 都在此插件的配置目录。可编辑样式表中的 Grid#GridRoot、Panel#WorkingRoot、StackPanel#StackPanelRootContainer 和 Window.classisland-injector 等选择器。详细示例见插件 README。",
-            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
-            Opacity = 0.75
-        });
         return new ScrollViewer { Content = panel };
     }
 
-    private static Control Field(string label, Control value)
+    private void ApplyStylePreset()
     {
-        value.MinWidth = 260;
-        value.HorizontalAlignment = HorizontalAlignment.Stretch;
-        var grid = new Grid
-        {
-            ColumnDefinitions = new ColumnDefinitions("260,*")
-        };
-        grid.Children.Add(new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center });
-        Grid.SetColumn(value, 1);
-        grid.Children.Add(value);
-        return grid;
+        var preset = Selected(_preset, StylePreset.GlassCapsule);
+        InjectorRuntime.Settings.ApplyPreset(preset);
+        LoadFromSettings();
+        _status.Text = $"已应用“{Display(StylePresets, preset)}”预设。";
     }
 
-    private static Control Section(string text) => new TextBlock
+    private void ApplyAnimationPreset()
     {
-        Text = text,
-        FontSize = 18,
-        FontWeight = Avalonia.Media.FontWeight.SemiBold,
-        Margin = new Thickness(0, 14, 0, 0)
-    };
+        var preset = Selected(_animationPreset, AnimationPreset.Still);
+        InjectorRuntime.Settings.ApplyAnimationPreset(preset);
+        LoadFromSettings();
+        _status.Text = $"已应用“{Display(AnimationPresets, preset)}”动画预设；形状、背景和阴影保持不变。";
+    }
+
+    private void ResetToDefaults()
+    {
+        InjectorRuntime.Settings.ResetToDefaults();
+        LoadFromSettings();
+        _status.Text = "已恢复插件默认设置；Overrides.axaml 未被修改。";
+    }
+
+    private void ReloadStyleSheet()
+    {
+        InjectorRuntime.ReloadStyleSheet();
+        _status.Text = "已请求重载样式表；若样式表存在语法错误，ClassIsland 会保留稳定运行状态。";
+    }
+
+    private void PreviewRipple()
+    {
+        SaveAndApply();
+        InjectorRuntime.PreviewRipple();
+        _status.Text = "正在主界面中心预览当前 Ripple。";
+    }
+
+    private void WireVisualEditor()
+    {
+        foreach (var control in new Control[]
+                 {
+                     _opacity, _scale, _rotation, _offsetX, _offsetY, _cornerRadius, _customSize, _mainWindowWidth, _mainWindowHeight,
+                     _customBackground, _backgroundColor, _dynamicBackgroundColor, _gradient, _gradientEndColor,
+                     _shadow, _shadowColor, _shadowBlur, _shadowOffsetX, _shadowOffsetY, _shadowOpacity,
+                     _border, _borderColor, _borderThickness
+                 })
+        {
+            control.PropertyChanged += (_, _) => RefreshVisualEditor();
+        }
+    }
+
+    private void RefreshVisualEditor()
+    {
+        var state = new IslandPreviewState(
+            _opacity.Value,
+            _scale.Value,
+            _rotation.Value,
+            _offsetX.Value,
+            _offsetY.Value,
+            _cornerRadius.Value,
+            _customSize.IsChecked == true,
+            _mainWindowWidth.Value,
+            _mainWindowHeight.Value,
+            _customBackground.IsChecked == true,
+            _backgroundColor.Color,
+            _gradient.IsChecked == true,
+            _gradientEndColor.Color,
+            _shadow.IsChecked == true,
+            _shadowColor.Color,
+            _shadowBlur.Value,
+            _shadowOffsetX.Value,
+            _shadowOffsetY.Value,
+            _shadowOpacity.Value,
+            _border.IsChecked == true,
+            _borderColor.Color,
+            _borderThickness.Value);
+        _visualEditorWindow?.Editor.Update(state);
+        _visualEditorWindow?.UpdateInspector(state);
+    }
+
+    private void OpenVisualEditor()
+    {
+        if (_visualEditorWindow is { IsVisible: true })
+        {
+            _visualEditorWindow.Activate();
+            return;
+        }
+
+        var window = new IslandVisualEditorWindow();
+        _visualEditorWindow = window;
+        window.Editor.TransformEdited += (_, e) =>
+        {
+            _offsetX.Value = e.OffsetX;
+            _offsetY.Value = e.OffsetY;
+            _scale.Value = e.Scale;
+            _rotation.Value = e.Rotation;
+        };
+        window.Editor.SizeEdited += (_, e) =>
+        {
+            _customSize.IsChecked = true;
+            _mainWindowWidth.Value = e.Width;
+            _mainWindowHeight.Value = e.Height;
+        };
+        window.Editor.CornerRadiusEdited += (_, e) => _cornerRadius.Value = e.Value;
+        window.Editor.TransformEditCompleted += (_, _) => SaveAndApply();
+        window.ApplyRequested += (_, _) => SaveAndApply();
+        window.CenterRequested += (_, _) => window.Editor.Center();
+        window.ResetRequested += (_, _) => window.Editor.ResetTransform();
+        window.BackgroundColorEdited += color =>
+        {
+            _customBackground.IsChecked = true;
+            _dynamicBackgroundColor.IsChecked = false;
+            _backgroundColor.Color = color;
+            SaveAndApply();
+        };
+        window.GradientEdited += enabled => { _gradient.IsChecked = enabled; SaveAndApply(); };
+        window.GradientEndColorEdited += color => { _gradientEndColor.Color = color; SaveAndApply(); };
+        window.ShadowEdited += enabled => { _shadow.IsChecked = enabled; SaveAndApply(); };
+        window.ShadowColorEdited += color => { _shadowColor.Color = color; SaveAndApply(); };
+        window.ShadowBlurEdited += value => { _shadowBlur.Value = value; SaveAndApply(); };
+        window.ShadowOpacityEdited += value => { _shadowOpacity.Value = value; SaveAndApply(); };
+        window.OpacityEdited += value => { _opacity.Value = value; SaveAndApply(); };
+        window.CornerRadiusEdited += value => { _cornerRadius.Value = value; SaveAndApply(); };
+        window.Closed += (_, _) => _visualEditorWindow = null;
+        RefreshVisualEditor();
+        window.Show();
+    }
 
     private void LoadFromSettings()
     {
         var settings = InjectorRuntime.Settings;
         _enabled.IsChecked = settings.Enabled;
-        _opacity.Text = settings.Opacity.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
-        _scale.Text = settings.Scale.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
-        _rotation.Text = settings.Rotation.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
-        _offsetX.Text = settings.OffsetX.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
-        _offsetY.Text = settings.OffsetY.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+        _opacity.Value = settings.Opacity;
+        _scale.Value = settings.Scale;
+        _rotation.Value = settings.Rotation;
+        _offsetX.Value = settings.OffsetX;
+        _offsetY.Value = settings.OffsetY;
         _animationEnabled.IsChecked = settings.AnimationEnabled;
-        _animationMode.SelectedItem = settings.AnimationMode;
-        _animationAmount.Text = settings.AnimationAmount.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
-        _animationPeriod.Text = settings.AnimationPeriodSeconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+        Select(_animationMode, IslandAnimationModes, settings.AnimationMode);
+        _animationAmount.Value = settings.AnimationAmount;
+        _animationPeriod.Value = settings.AnimationPeriodSeconds;
         _styleSheetPath.Text = settings.StyleSheetPath;
         _watchStyleSheet.IsChecked = settings.WatchStyleSheet;
-        _shape.SelectedItem = settings.Shape;
-        _cornerRadius.Text = Number(settings.CornerRadius);
+        _cornerRadius.Value = settings.CornerRadius;
+        _customSize.IsChecked = settings.CustomSizeEnabled;
+        _mainWindowWidth.Value = settings.MainWindowWidth;
+        _mainWindowHeight.Value = settings.MainWindowHeight;
         _customBackground.IsChecked = settings.CustomBackgroundEnabled;
-        _backgroundColor.Text = settings.BackgroundColor;
+        _backgroundColor.Color = ReadColor(settings.BackgroundColor, Color.FromArgb(0xCC, 0x20, 0x20, 0x20));
+        _dynamicBackgroundColor.IsChecked = settings.DynamicBackgroundColorEnabled;
         _gradient.IsChecked = settings.GradientEnabled;
-        _gradientEndColor.Text = settings.GradientEndColor;
+        _gradientEndColor.Color = ReadColor(settings.GradientEndColor, Color.FromArgb(0xCC, 0x40, 0x40, 0xA0));
         _shadow.IsChecked = settings.ShadowEnabled;
-        _shadowColor.Text = settings.ShadowColor;
-        _shadowBlur.Text = Number(settings.ShadowBlur);
-        _shadowOffsetX.Text = Number(settings.ShadowOffsetX);
-        _shadowOffsetY.Text = Number(settings.ShadowOffsetY);
-        _shadowOpacity.Text = Number(settings.ShadowOpacity);
+        _shadowColor.Color = ReadColor(settings.ShadowColor, Color.FromArgb(0x99, 0, 0, 0));
+        _shadowBlur.Value = settings.ShadowBlur;
+        _shadowOffsetX.Value = settings.ShadowOffsetX;
+        _shadowOffsetY.Value = settings.ShadowOffsetY;
+        _shadowOpacity.Value = settings.ShadowOpacity;
         _border.IsChecked = settings.BorderEnabled;
-        _borderColor.Text = settings.BorderColor;
-        _borderThickness.Text = Number(settings.BorderThickness);
-        _visibilityAnimation.SelectedItem = settings.VisibilityAnimation;
-        _visibilityDuration.Text = Number(settings.VisibilityDurationSeconds);
-        _emphasisAnimation.SelectedItem = settings.EmphasisAnimation;
-        _emphasisAmount.Text = Number(settings.EmphasisAmount);
-        _emphasisDuration.Text = Number(settings.EmphasisDurationSeconds);
-        _notificationTransition.SelectedItem = settings.NotificationTransition;
-        _notificationTransitionDuration.Text = Number(settings.NotificationTransitionDurationSeconds);
-        _rippleType.SelectedItem = settings.RippleType;
-        _rippleColor.Text = settings.RippleColor;
-        _rippleDuration.Text = Number(settings.RippleDurationSeconds);
-        _rippleThickness.Text = Number(settings.RippleThickness);
+        _borderColor.Color = ReadColor(settings.BorderColor, Color.FromArgb(0x99, 0xFF, 0xFF, 0xFF));
+        _borderThickness.Value = settings.BorderThickness;
+        Select(_visibilityAnimation, VisibilityAnimations, settings.VisibilityAnimation);
+        _visibilityDuration.Value = settings.VisibilityDurationSeconds;
+        Select(_emphasisAnimation, EmphasisAnimations, settings.EmphasisAnimation);
+        _emphasisAmount.Value = settings.EmphasisAmount;
+        _emphasisDuration.Value = settings.EmphasisDurationSeconds;
+        Select(_notificationTransition, NotificationTransitions, settings.NotificationTransition);
+        _notificationTransitionDuration.Value = settings.NotificationTransitionDurationSeconds;
+        Select(_rippleType, RippleTypes, settings.RippleType);
+        _rippleColor.Color = ReadColor(settings.RippleColor, Color.FromArgb(0xAA, 0x7D, 0xD3, 0xFC));
+        _rippleDuration.Value = settings.RippleDurationSeconds;
+        _rippleThickness.Value = settings.RippleThickness;
+        _hanabiConstraint.IsChecked = settings.HanabiConstraintEnabled;
         _countdownArrows.IsChecked = settings.CountdownArrowsEnabled;
-        _countdownArrowColor.Text = settings.CountdownArrowColor;
-        _countdownArrowCount.Text = settings.CountdownArrowCount.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        _countdownArrowSpeed.Text = Number(settings.CountdownArrowSpeed);
-        _countdownArrowThickness.Text = Number(settings.CountdownArrowThickness);
+        _countdownArrowColor.Color = ReadColor(settings.CountdownArrowColor, Color.FromArgb(0xBF, 0xF8, 0xFA, 0xFC));
+        _countdownArrowCount.Value = settings.CountdownArrowCount;
+        _countdownArrowSpeed.Value = settings.CountdownArrowSpeed;
+        _countdownArrowThickness.Value = settings.CountdownArrowThickness;
+        Select(_preset, StylePresets, StylePreset.GlassCapsule);
+        Select(_animationPreset, AnimationPresets, AnimationPreset.Still);
     }
 
     private void SaveAndApply()
     {
-        if (!TryNumber(_opacity, out var opacity) || !TryNumber(_scale, out var scale) ||
-            !TryNumber(_rotation, out var rotation) || !TryNumber(_offsetX, out var offsetX) ||
-            !TryNumber(_offsetY, out var offsetY) || !TryNumber(_animationAmount, out var animationAmount) ||
-            !TryNumber(_animationPeriod, out var animationPeriod) || !TryNumber(_cornerRadius, out var cornerRadius) ||
-            !TryNumber(_shadowBlur, out var shadowBlur) || !TryNumber(_shadowOffsetX, out var shadowOffsetX) ||
-            !TryNumber(_shadowOffsetY, out var shadowOffsetY) || !TryNumber(_shadowOpacity, out var shadowOpacity) ||
-            !TryNumber(_borderThickness, out var borderThickness) ||
-            !TryNumber(_emphasisAmount, out var emphasisAmount) || !TryNumber(_emphasisDuration, out var emphasisDuration) ||
-            !TryNumber(_visibilityDuration, out var visibilityDuration) ||
-            !TryNumber(_notificationTransitionDuration, out var notificationTransitionDuration) ||
-            !TryNumber(_rippleDuration, out var rippleDuration) || !TryNumber(_rippleThickness, out var rippleThickness) ||
-            !int.TryParse(_countdownArrowCount.Text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var countdownArrowCount) ||
-            !TryNumber(_countdownArrowSpeed, out var countdownArrowSpeed) || !TryNumber(_countdownArrowThickness, out var countdownArrowThickness))
-        {
-            _status.Text = "请输入有效数字后再保存。";
-            return;
-        }
-
         var settings = InjectorRuntime.Settings;
         settings.BeginUpdate();
         try
         {
-        settings.Enabled = _enabled.IsChecked == true;
-        settings.Opacity = opacity;
-        settings.Scale = scale;
-        settings.Rotation = rotation;
-        settings.OffsetX = offsetX;
-        settings.OffsetY = offsetY;
-        settings.AnimationEnabled = _animationEnabled.IsChecked == true;
-        settings.AnimationMode = _animationMode.SelectedItem is IslandAnimationMode mode ? mode : IslandAnimationMode.None;
-        settings.AnimationAmount = animationAmount;
-        settings.AnimationPeriodSeconds = animationPeriod;
-        settings.StyleSheetPath = _styleSheetPath.Text ?? string.Empty;
-        settings.WatchStyleSheet = _watchStyleSheet.IsChecked == true;
-        settings.Shape = _shape.SelectedItem is IslandShape shape ? shape : IslandShape.HostDefault;
-        settings.CornerRadius = cornerRadius;
-        settings.CustomBackgroundEnabled = _customBackground.IsChecked == true;
-        settings.BackgroundColor = _backgroundColor.Text ?? string.Empty;
-        settings.GradientEnabled = _gradient.IsChecked == true;
-        settings.GradientEndColor = _gradientEndColor.Text ?? string.Empty;
-        settings.ShadowEnabled = _shadow.IsChecked == true;
-        settings.ShadowColor = _shadowColor.Text ?? string.Empty;
-        settings.ShadowBlur = shadowBlur;
-        settings.ShadowOffsetX = shadowOffsetX;
-        settings.ShadowOffsetY = shadowOffsetY;
-        settings.ShadowOpacity = shadowOpacity;
-        settings.BorderEnabled = _border.IsChecked == true;
-        settings.BorderColor = _borderColor.Text ?? string.Empty;
-        settings.BorderThickness = borderThickness;
-        settings.VisibilityAnimation = _visibilityAnimation.SelectedItem is VisibilityAnimation visibilityAnimation ? visibilityAnimation : VisibilityAnimation.None;
-        settings.VisibilityDurationSeconds = visibilityDuration;
-        settings.EmphasisAnimation = _emphasisAnimation.SelectedItem is EmphasisAnimation emphasisAnimation ? emphasisAnimation : EmphasisAnimation.None;
-        settings.EmphasisAmount = emphasisAmount;
-        settings.EmphasisDurationSeconds = emphasisDuration;
-        settings.NotificationTransition = _notificationTransition.SelectedItem is NotificationTransition notificationTransition ? notificationTransition : NotificationTransition.HostDefault;
-        settings.NotificationTransitionDurationSeconds = notificationTransitionDuration;
-        settings.RippleType = _rippleType.SelectedItem is RippleType rippleType ? rippleType : RippleType.None;
-        settings.RippleColor = _rippleColor.Text ?? string.Empty;
-        settings.RippleDurationSeconds = rippleDuration;
-        settings.RippleThickness = rippleThickness;
-        settings.CountdownArrowsEnabled = _countdownArrows.IsChecked == true;
-        settings.CountdownArrowColor = _countdownArrowColor.Text ?? string.Empty;
-        settings.CountdownArrowCount = countdownArrowCount;
-        settings.CountdownArrowSpeed = countdownArrowSpeed;
-        settings.CountdownArrowThickness = countdownArrowThickness;
+            settings.Enabled = _enabled.IsChecked == true;
+            settings.Opacity = _opacity.Value;
+            settings.Scale = _scale.Value;
+            settings.Rotation = _rotation.Value;
+            settings.OffsetX = _offsetX.Value;
+            settings.OffsetY = _offsetY.Value;
+            settings.AnimationEnabled = _animationEnabled.IsChecked == true;
+            settings.AnimationMode = Selected(_animationMode, IslandAnimationMode.None);
+            settings.AnimationAmount = _animationAmount.Value;
+            settings.AnimationPeriodSeconds = _animationPeriod.Value;
+            settings.StyleSheetPath = _styleSheetPath.Text ?? string.Empty;
+            settings.WatchStyleSheet = _watchStyleSheet.IsChecked == true;
+            settings.CornerRadius = _cornerRadius.Value;
+            settings.CustomSizeEnabled = _customSize.IsChecked == true;
+            settings.MainWindowWidth = _mainWindowWidth.Value;
+            settings.MainWindowHeight = _mainWindowHeight.Value;
+            settings.CustomBackgroundEnabled = _customBackground.IsChecked == true;
+            settings.BackgroundColor = _backgroundColor.Color.ToString();
+            settings.DynamicBackgroundColorEnabled = _dynamicBackgroundColor.IsChecked == true;
+            settings.GradientEnabled = _gradient.IsChecked == true;
+            settings.GradientEndColor = _gradientEndColor.Color.ToString();
+            settings.ShadowEnabled = _shadow.IsChecked == true;
+            settings.ShadowColor = _shadowColor.Color.ToString();
+            settings.ShadowBlur = _shadowBlur.Value;
+            settings.ShadowOffsetX = _shadowOffsetX.Value;
+            settings.ShadowOffsetY = _shadowOffsetY.Value;
+            settings.ShadowOpacity = _shadowOpacity.Value;
+            settings.BorderEnabled = _border.IsChecked == true;
+            settings.BorderColor = _borderColor.Color.ToString();
+            settings.BorderThickness = _borderThickness.Value;
+            settings.VisibilityAnimation = Selected(_visibilityAnimation, VisibilityAnimation.None);
+            settings.VisibilityDurationSeconds = _visibilityDuration.Value;
+            settings.EmphasisAnimation = Selected(_emphasisAnimation, EmphasisAnimation.None);
+            settings.EmphasisAmount = _emphasisAmount.Value;
+            settings.EmphasisDurationSeconds = _emphasisDuration.Value;
+            settings.NotificationTransition = Selected(_notificationTransition, NotificationTransition.HostDefault);
+            settings.NotificationTransitionDurationSeconds = _notificationTransitionDuration.Value;
+            settings.RippleType = Selected(_rippleType, RippleType.None);
+            settings.RippleColor = _rippleColor.Color.ToString();
+            settings.RippleDurationSeconds = _rippleDuration.Value;
+            settings.RippleThickness = _rippleThickness.Value;
+            settings.HanabiConstraintEnabled = _hanabiConstraint.IsChecked == true;
+            settings.CountdownArrowsEnabled = _countdownArrows.IsChecked == true;
+            settings.CountdownArrowColor = _countdownArrowColor.Color.ToString();
+            settings.CountdownArrowCount = (int)Math.Round(_countdownArrowCount.Value);
+            settings.CountdownArrowSpeed = _countdownArrowSpeed.Value;
+            settings.CountdownArrowThickness = _countdownArrowThickness.Value;
         }
         finally
         {
             settings.EndUpdate();
         }
+
         _status.Text = "已保存并应用。样式表有更改时会自动热重载。";
     }
 
-    private static bool TryNumber(TextBox textBox, out double value)
+    private static SettingsExpander Setting(string glyph, string header, string description, Control footer) => new()
     {
-        return double.TryParse(textBox.Text, System.Globalization.NumberStyles.Float,
-            System.Globalization.CultureInfo.InvariantCulture, out value) ||
-            double.TryParse(textBox.Text, out value);
+        IconSource = new FluentIconSource(glyph),
+        Header = header,
+        Description = description,
+        Footer = footer
+    };
+
+    private static void AddSection(Panel panel, string glyph, string title)
+    {
+        panel.Children.Add(new IconText { Glyph = glyph, Text = title, Margin = new Thickness(0, 16, 0, 4) });
     }
 
-    private static string Number(double value) => value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+    private static SettingsExpander Group(string glyph, string header, string description, params SettingsExpanderItem[] items)
+    {
+        var group = new SettingsExpander
+        {
+            IconSource = new FluentIconSource(glyph),
+            Header = header,
+            Description = description,
+            IsExpanded = false
+        };
+        foreach (var item in items)
+        {
+            group.Items.Add(item);
+        }
+
+        return group;
+    }
+
+    private static SettingsExpander SwitchableGroup(string glyph, string header, string description, ToggleSwitch toggle, params SettingsExpanderItem[] items)
+    {
+        var group = Group(glyph, header, description, items);
+        group.Footer = toggle;
+        foreach (var item in items)
+        {
+            ControlledBy(item, toggle);
+        }
+
+        return group;
+    }
+
+    private static SettingsExpander ChoiceGroup<T>(string glyph, string header, string description, ComboBox selector, T disabledValue, params SettingsExpanderItem[] items)
+    {
+        var group = Group(glyph, header, description, items);
+        group.Footer = selector;
+        void Sync()
+        {
+            var isEnabled = !EqualityComparer<T>.Default.Equals(Selected(selector, disabledValue), disabledValue);
+            foreach (var item in items)
+            {
+                item.IsEnabled = isEnabled;
+            }
+        }
+
+        selector.SelectionChanged += (_, _) => Sync();
+        Sync();
+        return group;
+    }
+
+    private static SettingsExpanderItem Item(string header, string description, Control footer, ToggleSwitch? dependency = null)
+    {
+        var item = new SettingsExpanderItem
+        {
+            Content = header,
+            Description = description,
+            Footer = footer
+        };
+        if (dependency != null)
+        {
+            ControlledBy(item, dependency);
+        }
+
+        return item;
+    }
+
+    private static void ControlledBy(Control target, ToggleSwitch controller)
+    {
+        void Sync() => target.IsEnabled = controller.IsChecked == true;
+        controller.PropertyChanged += (_, _) => Sync();
+        Sync();
+    }
+
+    private static void EnabledWhenManualColor(Control target, ToggleSwitch customBackground, ToggleSwitch dynamicColor)
+    {
+        void Sync() => target.IsEnabled = customBackground.IsChecked == true && dynamicColor.IsChecked != true;
+        customBackground.PropertyChanged += (_, _) => Sync();
+        dynamicColor.PropertyChanged += (_, _) => Sync();
+        Sync();
+    }
+
+    private static void EnabledWhenNot<T>(Control target, ComboBox selector, T disabledValue)
+    {
+        void Sync() => target.IsEnabled = !EqualityComparer<T>.Default.Equals(Selected(selector, disabledValue), disabledValue);
+        selector.SelectionChanged += (_, _) => Sync();
+        Sync();
+    }
+
+    private static void VisibleWhen<T>(Control target, ComboBox selector, T visibleValue)
+    {
+        void Sync() => target.IsVisible = EqualityComparer<T>.Default.Equals(Selected(selector, visibleValue), visibleValue);
+        selector.SelectionChanged += (_, _) => Sync();
+        Sync();
+    }
+
+    private static ToggleSwitch Toggle() => new()
+    {
+        OnContent = "开",
+        OffContent = "关",
+        VerticalAlignment = VerticalAlignment.Center
+    };
+
+    private static Slider Slider(double minimum, double maximum, double tickFrequency)
+    {
+        var slider = new Slider
+        {
+            Width = 220,
+            Minimum = minimum,
+            Maximum = maximum,
+            TickFrequency = tickFrequency,
+            IsSnapToTickEnabled = true,
+            VerticalAlignment = VerticalAlignment.Center,
+            Classes = { "auto-tooltip" }
+        };
+        SliderDragTooltipAssist.SetStringFormat(slider, tickFrequency < 1 ? "F2" : "F0");
+        return slider;
+    }
+
+    private static ColorPicker ColorPicker() => new()
+    {
+        VerticalAlignment = VerticalAlignment.Center,
+        Margin = new Thickness(0, 0, 6, 0)
+    };
+
+    private static ComboBox Combo<T>(IEnumerable<Choice<T>> items) => new()
+    {
+        ItemsSource = items,
+        MinWidth = 220,
+        HorizontalContentAlignment = HorizontalAlignment.Left
+    };
+
+    private static StackPanel ColorFooter(ColorPicker picker, ToggleSwitch toggle) => new()
+    {
+        Orientation = Orientation.Horizontal,
+        Spacing = 2,
+        Children = { picker, toggle }
+    };
+
+    private static StackPanel Actions(string firstText, Action firstAction, string secondText, Action secondAction) => new()
+    {
+        Orientation = Orientation.Horizontal,
+        Spacing = 8,
+        Children = { Button(firstText, firstAction), Button(secondText, secondAction) }
+    };
+
+    private static Button Button(string text, Action action)
+    {
+        var button = new Button { Content = text };
+        button.Click += (_, _) => action();
+        return button;
+    }
+
+    private static Color ReadColor(string value, Color fallback)
+    {
+        try
+        {
+            return Color.Parse(value);
+        }
+        catch (FormatException)
+        {
+            return fallback;
+        }
+    }
+
+    private static void Select<T>(ComboBox comboBox, IEnumerable<Choice<T>> choices, T value)
+    {
+        comboBox.SelectedItem = choices.FirstOrDefault(x => EqualityComparer<T>.Default.Equals(x.Value, value));
+    }
+
+    private static T Selected<T>(ComboBox comboBox, T fallback) =>
+        comboBox.SelectedItem is Choice<T> choice ? choice.Value : fallback;
+
+    private static string Display<T>(IEnumerable<Choice<T>> choices, T value) =>
+        choices.FirstOrDefault(x => EqualityComparer<T>.Default.Equals(x.Value, value))?.Text ?? value?.ToString() ?? string.Empty;
+
+    private sealed record Choice<T>(T Value, string Text)
+    {
+        public override string ToString() => Text;
+    }
 }

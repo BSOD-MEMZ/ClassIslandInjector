@@ -20,8 +20,10 @@ internal sealed class IslandRippleOverlay : Control
     private readonly Color _color;
     private readonly double _thickness;
     private readonly Point _center;
+    private readonly double? _hanabiClipRadius;
 
-    public IslandRippleOverlay(Point center, RippleType type, Color color, TimeSpan duration, double thickness)
+    public IslandRippleOverlay(Point center, RippleType type, Color color, TimeSpan duration, double thickness,
+        double? hanabiClipRadius = null)
     {
         _center = center;
         _type = type;
@@ -32,6 +34,7 @@ internal sealed class IslandRippleOverlay : Control
             ? TimeSpan.FromSeconds(HanabiClipDuration)
             : duration;
         _thickness = thickness;
+        _hanabiClipRadius = hanabiClipRadius;
         IsHitTestVisible = false;
         ClipToBounds = false;
     }
@@ -73,7 +76,18 @@ internal sealed class IslandRippleOverlay : Control
                 context.DrawRectangle(null, new Pen(brush, _thickness), rect);
                 break;
             case RippleType.Hanabi:
-                DrawHanabi(context, progress);
+                if (_hanabiClipRadius is { } clipRadius)
+                {
+                    using (context.PushGeometryClip(new EllipseGeometry(new Rect(
+                               _center.X - clipRadius, _center.Y - clipRadius, clipRadius * 2, clipRadius * 2))))
+                    {
+                        DrawHanabi(context, progress);
+                    }
+                }
+                else
+                {
+                    DrawHanabi(context, progress);
+                }
                 break;
         }
     }

@@ -94,6 +94,9 @@ public sealed class InjectorSettings
     private bool _watchStyleSheet = true;
     private IslandShape _shape = IslandShape.HostDefault;
     private double _cornerRadius = 18;
+    private bool _customSizeEnabled;
+    private double _mainWindowWidth = 420;
+    private double _mainWindowHeight = 120;
     private bool _customBackgroundEnabled;
     private string _backgroundColor = "#CC202020";
     private bool _gradientEnabled;
@@ -118,6 +121,8 @@ public sealed class InjectorSettings
     private string _rippleColor = "#AA7DD3FC";
     private double _rippleDurationSeconds = 0.65;
     private double _rippleThickness = 3;
+    private bool _hanabiConstraintEnabled = true;
+    private bool _dynamicBackgroundColorEnabled;
     private bool _countdownArrowsEnabled = true;
     private string _countdownArrowColor = "#BFF8FAFC";
     private int _countdownArrowCount = 5;
@@ -142,6 +147,9 @@ public sealed class InjectorSettings
     public bool WatchStyleSheet { get => _watchStyleSheet; set => Set(ref _watchStyleSheet, value); }
     public IslandShape Shape { get => _shape; set => Set(ref _shape, value); }
     public double CornerRadius { get => _cornerRadius; set => Set(ref _cornerRadius, Math.Clamp(value, 0, 500)); }
+    public bool CustomSizeEnabled { get => _customSizeEnabled; set => Set(ref _customSizeEnabled, value); }
+    public double MainWindowWidth { get => _mainWindowWidth; set => Set(ref _mainWindowWidth, Math.Clamp(value, 160, 2000)); }
+    public double MainWindowHeight { get => _mainWindowHeight; set => Set(ref _mainWindowHeight, Math.Clamp(value, 40, 800)); }
     public bool CustomBackgroundEnabled { get => _customBackgroundEnabled; set => Set(ref _customBackgroundEnabled, value); }
     public string BackgroundColor { get => _backgroundColor; set => Set(ref _backgroundColor, value.Trim()); }
     public bool GradientEnabled { get => _gradientEnabled; set => Set(ref _gradientEnabled, value); }
@@ -166,6 +174,8 @@ public sealed class InjectorSettings
     public string RippleColor { get => _rippleColor; set => Set(ref _rippleColor, value.Trim()); }
     public double RippleDurationSeconds { get => _rippleDurationSeconds; set => Set(ref _rippleDurationSeconds, Math.Clamp(value, 0.1, 10)); }
     public double RippleThickness { get => _rippleThickness; set => Set(ref _rippleThickness, Math.Clamp(value, 0.5, 40)); }
+    public bool HanabiConstraintEnabled { get => _hanabiConstraintEnabled; set => Set(ref _hanabiConstraintEnabled, value); }
+    public bool DynamicBackgroundColorEnabled { get => _dynamicBackgroundColorEnabled; set => Set(ref _dynamicBackgroundColorEnabled, value); }
     public bool CountdownArrowsEnabled { get => _countdownArrowsEnabled; set => Set(ref _countdownArrowsEnabled, value); }
     public string CountdownArrowColor { get => _countdownArrowColor; set => Set(ref _countdownArrowColor, value.Trim()); }
     public int CountdownArrowCount { get => _countdownArrowCount; set => Set(ref _countdownArrowCount, Math.Clamp(value, 2, 24)); }
@@ -392,6 +402,9 @@ public sealed class InjectorSettings
         WatchStyleSheet = source.WatchStyleSheet;
         Shape = source.Shape;
         CornerRadius = source.CornerRadius;
+        CustomSizeEnabled = source.CustomSizeEnabled;
+        MainWindowWidth = source.MainWindowWidth;
+        MainWindowHeight = source.MainWindowHeight;
         CustomBackgroundEnabled = source.CustomBackgroundEnabled;
         BackgroundColor = source.BackgroundColor;
         GradientEnabled = source.GradientEnabled;
@@ -416,6 +429,8 @@ public sealed class InjectorSettings
         RippleColor = source.RippleColor;
         RippleDurationSeconds = source.RippleDurationSeconds;
         RippleThickness = source.RippleThickness;
+        HanabiConstraintEnabled = source.HanabiConstraintEnabled;
+        DynamicBackgroundColorEnabled = source.DynamicBackgroundColorEnabled;
         CountdownArrowsEnabled = source.CountdownArrowsEnabled;
         CountdownArrowColor = source.CountdownArrowColor;
         CountdownArrowCount = source.CountdownArrowCount;

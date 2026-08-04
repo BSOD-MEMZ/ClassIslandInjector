@@ -22,12 +22,14 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private readonly InjectorSettings _settings;
     private readonly DispatcherTimer _animationTimer;
     private readonly DispatcherTimer _stateTimer;
+    private readonly DispatcherTimer _albumColorTimer;
     private readonly Stopwatch _animationClock = Stopwatch.StartNew();
     private Window? _mainWindow;
     private Control? _islandRoot;
     private Border? _styleHost;
     private ITransform? _originalTransform;
     private double _originalOpacity = 1;
+    private readonly Dictionary<Control, (double Width, double Height)> _originalDisplaySizes = [];
     private Styles? _loadedStyles;
     private Styles? _notificationStyles;
     private FileSystemWatcher? _styleSheetWatcher;
@@ -45,12 +47,14 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private DateTime _visibilityStartedAt = DateTime.MinValue;
     private DateTime _emphasisStartedAt = DateTime.MinValue;
     private bool _lastContentVisible;
+    private bool _isPickingAlbumColor;
 
     public MainWindowStyleInjector(InjectorSettings settings)
     {
         _settings = settings;
         _animationTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(16), DispatcherPriority.Render, OnAnimationTick);
         _stateTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(50), DispatcherPriority.Background, OnStateTick);
+        _albumColorTimer = new DispatcherTimer(TimeSpan.FromSeconds(4), DispatcherPriority.Background, OnAlbumColorTimerTick);
     }
 
     public void Attach()
@@ -64,6 +68,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         if (_mainWindow != mainWindow)
         {
             RestoreHostState();
+            _originalDisplaySizes.Clear();
             _mainWindow = mainWindow;
             _islandRoot = mainWindow.FindControl<Control>("StackPanelRootContainer");
             _windowRoot = mainWindow.FindControl<Grid>("WindowRoot");
@@ -75,6 +80,13 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
             _originalTransform = _islandRoot.RenderTransform;
             _originalOpacity = _islandRoot.Opacity;
+            // WorkingRoot is the actual client surface in ClassIsland. The
+            // previous implementation only sized descendants, which were then
+            // measured back to the host's full client rectangle by this parent.
+            CaptureDisplaySize(mainWindow.FindControl<Control>("WorkingRoot"));
+            CaptureDisplaySize(_islandRoot);
+            CaptureDisplaySize(mainWindow.FindControl<Control>("RootLayoutTransformControl"));
+            CaptureDisplaySize(mainWindow.FindControl<Control>("GridRoot"));
             mainWindow.Classes.Add("classisland-injector");
             _islandRoot.Classes.Add("classisland-injector-root");
         }
@@ -97,11 +109,13 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         _islandRoot.Opacity = _originalOpacity * _settings.Opacity;
+        ApplySize();
         ApplyTransform(0);
         ApplyDecorations();
         ReloadStyleSheet();
         ReloadNotificationTransitionStyles();
         ConfigureStyleSheetWatcher();
+        UpdateAlbumColorTimer();
         _animationClock.Restart();
         _stateTimer.Start();
         UpdateAnimationTimer();
@@ -429,6 +443,63 @@ internal sealed class MainWindowStyleInjector : IDisposable
         UpdateAnimationTimer();
     }
 
+    private void ApplySize()
+    {
+        if (_islandRoot == null)
+        {
+            return;
+        }
+
+        foreach (var (control, originalSize) in _originalDisplaySizes)
+        {
+            control.Width = _settings.CustomSizeEnabled ? _settings.MainWindowWidth : originalSize.Width;
+            control.Height = _settings.CustomSizeEnabled ? _settings.MainWindowHeight : originalSize.Height;
+        }
+    }
+
+    private void CaptureDisplaySize(Control? control)
+    {
+        if (control != null)
+        {
+            _originalDisplaySizes.TryAdd(control, (control.Width, control.Height));
+        }
+    }
+
+    private void UpdateAlbumColorTimer()
+    {
+        if (_settings.Enabled && _settings.CustomBackgroundEnabled && _settings.DynamicBackgroundColorEnabled)
+        {
+            _albumColorTimer.Start();
+            OnAlbumColorTimerTick(null, EventArgs.Empty);
+        }
+        else
+        {
+            _albumColorTimer.Stop();
+        }
+    }
+
+    private async void OnAlbumColorTimerTick(object? sender, EventArgs e)
+    {
+        if (_isPickingAlbumColor || !_settings.DynamicBackgroundColorEnabled || !_settings.CustomBackgroundEnabled)
+        {
+            return;
+        }
+
+        _isPickingAlbumColor = true;
+        try
+        {
+            var color = await SmtcAlbumColorPicker.TryGetAccentColorAsync();
+            if (color is { } albumColor && !string.Equals(_settings.BackgroundColor, albumColor.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                _settings.BackgroundColor = albumColor.ToString();
+            }
+        }
+        finally
+        {
+            _isPickingAlbumColor = false;
+        }
+    }
+
     private void UpdateCountdownArrows(Control line)
     {
         if (!_settings.CountdownArrowsEnabled || !IsPrepareOnClassCountdown(line))
@@ -609,8 +680,14 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     private void CreateRipple()
     {
-        if (_settings.RippleType == RippleType.None || _windowRoot == null || _islandRoot == null ||
-            !TryParseColor(_settings.RippleColor, out var color))
+        if (_settings.RippleType == RippleType.None || _windowRoot == null || _islandRoot == null)
+        {
+            return;
+        }
+
+        var isHanabi = _settings.RippleType == RippleType.Hanabi;
+        var color = Colors.White;
+        if (!isHanabi && !TryParseColor(_settings.RippleColor, out color))
         {
             return;
         }
@@ -624,8 +701,14 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
         var center = GetRippleCenter(effectWindow);
-        var ripple = new IslandRippleOverlay(center, _settings.RippleType, color,
-            TimeSpan.FromSeconds(_settings.RippleDurationSeconds), _settings.RippleThickness);
+        double? hanabiClipRadius = isHanabi && _settings.HanabiConstraintEnabled
+            ? GetHanabiConstraintRadius()
+            : null;
+        var ripple = new IslandRippleOverlay(center, _settings.RippleType,
+            isHanabi ? Colors.White : color,
+            TimeSpan.FromSeconds(_settings.RippleDurationSeconds),
+            isHanabi ? 2.5 : _settings.RippleThickness,
+            hanabiClipRadius);
         ripple.HorizontalAlignment = HorizontalAlignment.Stretch;
         ripple.VerticalAlignment = VerticalAlignment.Stretch;
 
@@ -724,6 +807,19 @@ internal sealed class MainWindowStyleInjector : IDisposable
             new Point(windowRoot.Bounds.Width / 2, windowRoot.Bounds.Height / 2);
     }
 
+    private double GetHanabiConstraintRadius()
+    {
+        var root = _islandRoot;
+        if (root == null)
+        {
+            return 220;
+        }
+
+        // The circle contains the island plus a comfortable bloom margin while
+        // ensuring the full-screen topmost effect never leaks across the desktop.
+        return Math.Clamp(Math.Max(root.Bounds.Width, root.Bounds.Height) * 1.4, 180, 560);
+    }
+
     private void AdvanceRipples()
     {
         foreach (var ripple in _ripples.ToArray())
@@ -779,10 +875,16 @@ internal sealed class MainWindowStyleInjector : IDisposable
                     border.CornerRadius = new CornerRadius(0);
                     break;
                 case IslandShape.RoundedRectangle:
-                    border.CornerRadius = new CornerRadius(_settings.CornerRadius);
-                    break;
                 case IslandShape.Capsule:
-                    border.CornerRadius = new CornerRadius(Math.Max(1, border.Bounds.Height / 2));
+                    border.CornerRadius = _settings.Shape == IslandShape.Capsule
+                        ? new CornerRadius(Math.Max(1, border.Bounds.Height / 2))
+                        : new CornerRadius(_settings.CornerRadius);
+                    break;
+                case IslandShape.HostDefault:
+                    // The shape picker was removed from the UI.  Treat the custom
+                    // radius as an explicit override so the basic editor remains
+                    // useful even for existing HostDefault configurations.
+                    border.CornerRadius = new CornerRadius(_settings.CornerRadius);
                     break;
             }
 
@@ -879,6 +981,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
     {
         _animationTimer.Stop();
         _stateTimer.Stop();
+        _albumColorTimer.Stop();
         _styleSheetWatcher?.Dispose();
         _styleSheetWatcher = null;
         RestoreDecorations();
@@ -915,6 +1018,12 @@ internal sealed class MainWindowStyleInjector : IDisposable
             _islandRoot.RenderTransform = _originalTransform;
             _islandRoot.Opacity = _originalOpacity;
             _islandRoot.Classes.Remove("classisland-injector-root");
+        }
+
+        foreach (var (control, originalSize) in _originalDisplaySizes)
+        {
+            control.Width = originalSize.Width;
+            control.Height = originalSize.Height;
         }
 
         _mainWindow?.Classes.Remove("classisland-injector");
