@@ -54,7 +54,13 @@ internal static class SmtcAlbumColorPicker
 
         try
         {
-            var result = await TryGetAccentColorsCoreAsync();
+            var bytes = await TryGetThumbnailBytesCoreAsync();
+            if (bytes == null)
+            {
+                return null;
+            }
+
+            var result = ExtractAccentColors(bytes);
             Log(result is { } c ? $"取色成功: 背景={c.Background}, 边框={c.Border}, 阴影={c.Shadow}" : "取色返回 null");
             return result;
         }
@@ -68,10 +74,30 @@ internal static class SmtcAlbumColorPicker
         }
     }
 
+    /// <summary>
+    /// 获取当前 SMTC 会话的专辑封面缩略图字节，供底图功能直接使用。
+    /// </summary>
+    public static async Task<byte[]?> TryGetAlbumThumbnailBytesAsync()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
+        try
+        {
+            return await TryGetThumbnailBytesCoreAsync();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     // 将 WinRT 相关调用隔离到独立方法中：若投影程序集无法加载，JIT 会在调用该方法时抛出异常，
-    // 该异常可被上方 TryGetAccentColorsAsync 的 try/catch 捕获，而不会让 async void 回调崩溃。
+    // 该异常可被上方各入口的 try/catch 捕获，而不会让 async void 回调崩溃。
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static async Task<AlbumAccentColors?> TryGetAccentColorsCoreAsync()
+    private static async Task<byte[]?> TryGetThumbnailBytesCoreAsync()
     {
         Log("RequestAsync() 开始");
         var manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
@@ -99,7 +125,7 @@ internal static class SmtcAlbumColorPicker
         var bytes = new byte[(int)randomAccessStream.Size];
         reader.ReadBytes(bytes);
         Log($"已读取缩略图字节数: {bytes.Length}");
-        return ExtractAccentColors(bytes);
+        return bytes;
     }
 
     private static AlbumAccentColors? ExtractAccentColors(byte[] bytes)

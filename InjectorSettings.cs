@@ -56,6 +56,28 @@ public enum RippleType
     Hanabi
 }
 
+/// <summary>
+/// 主界面底图的图片来源。
+/// </summary>
+public enum WallpaperSource
+{
+    None,
+    LocalImage,
+    FolderSlideshow,
+    SmtcAlbum
+}
+
+/// <summary>
+/// 主界面底图的显示方式。
+/// </summary>
+public enum WallpaperDisplayMode
+{
+    Fill,
+    Fit,
+    Stretch,
+    Tile
+}
+
 public enum StylePreset
 {
     GlassCapsule,
@@ -127,6 +149,15 @@ public sealed class InjectorSettings
     private bool _dynamicShadowColorEnabled;
     private double _albumColorPollingIntervalSeconds = 4;
     private double _albumColorTransitionSeconds = 0.6;
+    private bool _wallpaperEnabled;
+    private WallpaperSource _wallpaperSource = WallpaperSource.None;
+    private string _wallpaperPath = string.Empty;
+    private double _wallpaperOpacity = 0.6;
+    private WallpaperDisplayMode _wallpaperDisplayMode = WallpaperDisplayMode.Fill;
+    private double _wallpaperScale = 1;
+    private double _wallpaperOffsetX;
+    private double _wallpaperOffsetY;
+    private double _wallpaperSlideshowIntervalSeconds = 30;
     private bool _countdownArrowsEnabled = true;
     private string _countdownArrowColor = "#BFF8FAFC";
     private int _countdownArrowCount = 5;
@@ -184,6 +215,15 @@ public sealed class InjectorSettings
     public bool DynamicShadowColorEnabled { get => _dynamicShadowColorEnabled; set => Set(ref _dynamicShadowColorEnabled, value); }
     public double AlbumColorPollingIntervalSeconds { get => _albumColorPollingIntervalSeconds; set => Set(ref _albumColorPollingIntervalSeconds, Math.Clamp(value, 0.5, 120)); }
     public double AlbumColorTransitionSeconds { get => _albumColorTransitionSeconds; set => Set(ref _albumColorTransitionSeconds, Math.Clamp(value, 0, 10)); }
+    public bool WallpaperEnabled { get => _wallpaperEnabled; set => Set(ref _wallpaperEnabled, value); }
+    public WallpaperSource WallpaperSource { get => _wallpaperSource; set => Set(ref _wallpaperSource, value); }
+    public string WallpaperPath { get => _wallpaperPath; set => Set(ref _wallpaperPath, value.Trim()); }
+    public double WallpaperOpacity { get => _wallpaperOpacity; set => Set(ref _wallpaperOpacity, Math.Clamp(value, 0, 1)); }
+    public WallpaperDisplayMode WallpaperDisplayMode { get => _wallpaperDisplayMode; set => Set(ref _wallpaperDisplayMode, value); }
+    public double WallpaperScale { get => _wallpaperScale; set => Set(ref _wallpaperScale, Math.Clamp(value, 1, 5)); }
+    public double WallpaperOffsetX { get => _wallpaperOffsetX; set => Set(ref _wallpaperOffsetX, Math.Clamp(value, -0.5, 0.5)); }
+    public double WallpaperOffsetY { get => _wallpaperOffsetY; set => Set(ref _wallpaperOffsetY, Math.Clamp(value, -0.5, 0.5)); }
+    public double WallpaperSlideshowIntervalSeconds { get => _wallpaperSlideshowIntervalSeconds; set => Set(ref _wallpaperSlideshowIntervalSeconds, Math.Clamp(value, 2, 3600)); }
     public bool CountdownArrowsEnabled { get => _countdownArrowsEnabled; set => Set(ref _countdownArrowsEnabled, value); }
     public string CountdownArrowColor { get => _countdownArrowColor; set => Set(ref _countdownArrowColor, value.Trim()); }
     public int CountdownArrowCount { get => _countdownArrowCount; set => Set(ref _countdownArrowCount, Math.Clamp(value, 2, 24)); }
@@ -199,13 +239,16 @@ public sealed class InjectorSettings
 
     public void ApplyPreset(StylePreset preset)
     {
+        // 预设仅修改样式（形状、配色、阴影、边框、提醒效果），
+        // 绝不触碰基础变形（不透明度/缩放/位置/旋转/圆角）、固定尺寸、
+        // 动态取色与底图等设置，避免覆盖用户精心调整的布局。
         BeginUpdate();
+        var protectedSettings = CaptureProtectedSettings();
         ResetToDefaults();
         switch (preset)
         {
             case StylePreset.GlassCapsule:
                 Shape = IslandShape.Capsule;
-                CornerRadius = 28;
                 CustomBackgroundEnabled = true;
                 BackgroundColor = "#A81A2334";
                 GradientEnabled = true;
@@ -223,7 +266,6 @@ public sealed class InjectorSettings
                 break;
             case StylePreset.NeonPulse:
                 Shape = IslandShape.RoundedRectangle;
-                CornerRadius = 20;
                 CustomBackgroundEnabled = true;
                 BackgroundColor = "#E20C1020";
                 GradientEnabled = true;
@@ -244,8 +286,6 @@ public sealed class InjectorSettings
                 break;
             case StylePreset.MaimaiHanabi:
                 Shape = IslandShape.Capsule;
-                CornerRadius = 32;
-                CustomBackgroundEnabled = true;
                 BackgroundColor = "#D4141729";
                 GradientEnabled = true;
                 GradientEndColor = "#D5391458";
@@ -264,7 +304,6 @@ public sealed class InjectorSettings
                 break;
             case StylePreset.Minimal:
                 Shape = IslandShape.RoundedRectangle;
-                CornerRadius = 12;
                 ShadowEnabled = false;
                 BorderEnabled = true;
                 BorderColor = "#55FFFFFF";
@@ -274,7 +313,69 @@ public sealed class InjectorSettings
                 RippleType = RippleType.None;
                 break;
         }
+        RestoreProtectedSettings(protectedSettings);
         EndUpdate();
+    }
+
+    private sealed record ProtectedSettings(
+        double Opacity,
+        double Scale,
+        double Rotation,
+        double OffsetX,
+        double OffsetY,
+        double CornerRadius,
+        bool CustomSizeEnabled,
+        double MainWindowWidth,
+        double MainWindowHeight,
+        bool WallpaperEnabled,
+        WallpaperSource WallpaperSource,
+        string WallpaperPath,
+        double WallpaperOpacity,
+        WallpaperDisplayMode WallpaperDisplayMode,
+        double WallpaperScale,
+        double WallpaperOffsetX,
+        double WallpaperOffsetY,
+        double WallpaperSlideshowIntervalSeconds,
+        bool DynamicBackgroundColorEnabled,
+        bool DynamicBorderColorEnabled,
+        bool DynamicShadowColorEnabled,
+        double AlbumColorPollingIntervalSeconds,
+        double AlbumColorTransitionSeconds);
+
+    private ProtectedSettings CaptureProtectedSettings() => new(
+        Opacity, Scale, Rotation, OffsetX, OffsetY, CornerRadius,
+        CustomSizeEnabled, MainWindowWidth, MainWindowHeight,
+        WallpaperEnabled, WallpaperSource, WallpaperPath, WallpaperOpacity,
+        WallpaperDisplayMode, WallpaperScale, WallpaperOffsetX, WallpaperOffsetY,
+        WallpaperSlideshowIntervalSeconds,
+        DynamicBackgroundColorEnabled, DynamicBorderColorEnabled, DynamicShadowColorEnabled,
+        AlbumColorPollingIntervalSeconds, AlbumColorTransitionSeconds);
+
+    private void RestoreProtectedSettings(ProtectedSettings s)
+    {
+        Opacity = s.Opacity;
+        Scale = s.Scale;
+        Rotation = s.Rotation;
+        OffsetX = s.OffsetX;
+        OffsetY = s.OffsetY;
+        CornerRadius = s.CornerRadius;
+        CustomSizeEnabled = s.CustomSizeEnabled;
+        MainWindowWidth = s.MainWindowWidth;
+        MainWindowHeight = s.MainWindowHeight;
+        WallpaperEnabled = s.WallpaperEnabled;
+        WallpaperSource = s.WallpaperSource;
+        WallpaperPath = s.WallpaperPath;
+        WallpaperOpacity = s.WallpaperOpacity;
+        WallpaperDisplayMode = s.WallpaperDisplayMode;
+        WallpaperScale = s.WallpaperScale;
+        WallpaperOffsetX = s.WallpaperOffsetX;
+        WallpaperOffsetY = s.WallpaperOffsetY;
+        WallpaperSlideshowIntervalSeconds = s.WallpaperSlideshowIntervalSeconds;
+        DynamicBackgroundColorEnabled = s.DynamicBackgroundColorEnabled;
+        DynamicBorderColorEnabled = s.DynamicBorderColorEnabled;
+        DynamicShadowColorEnabled = s.DynamicShadowColorEnabled;
+        AlbumColorPollingIntervalSeconds = s.AlbumColorPollingIntervalSeconds;
+        AlbumColorTransitionSeconds = s.AlbumColorTransitionSeconds;
     }
 
     public void ApplyAnimationPreset(AnimationPreset preset)
@@ -443,6 +544,15 @@ public sealed class InjectorSettings
         RippleThickness = source.RippleThickness;
         HanabiConstraintEnabled = source.HanabiConstraintEnabled;
         DynamicBackgroundColorEnabled = source.DynamicBackgroundColorEnabled;
+        WallpaperEnabled = source.WallpaperEnabled;
+        WallpaperSource = source.WallpaperSource;
+        WallpaperPath = source.WallpaperPath;
+        WallpaperOpacity = source.WallpaperOpacity;
+        WallpaperDisplayMode = source.WallpaperDisplayMode;
+        WallpaperScale = source.WallpaperScale;
+        WallpaperOffsetX = source.WallpaperOffsetX;
+        WallpaperOffsetY = source.WallpaperOffsetY;
+        WallpaperSlideshowIntervalSeconds = source.WallpaperSlideshowIntervalSeconds;
         CountdownArrowsEnabled = source.CountdownArrowsEnabled;
         CountdownArrowColor = source.CountdownArrowColor;
         CountdownArrowCount = source.CountdownArrowCount;

@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
 using Avalonia.Styling;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
@@ -63,12 +64,28 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private readonly List<(Border Border, IBrush? Background, IBrush? BorderBrush)> _decorations = [];
     private DropShadowEffect? _shadowEffect;
 
+    private readonly DispatcherTimer _wallpaperTimer;
+    private Border? _wallpaperHost;
+    private readonly List<Border> _wallpaperLayers = [];
+    private int _wallpaperFront;
+    private Bitmap? _wallpaperBitmap;
+    private MemoryStream? _wallpaperStream;
+    private Bitmap? _wallpaperRetiredBitmap;
+    private MemoryStream? _wallpaperRetiredStream;
+    private WallpaperSource _wallpaperLoadedSource = WallpaperSource.None;
+    private string _wallpaperLoadedPath = string.Empty;
+    private readonly List<string> _wallpaperSlideshow = [];
+    private int _wallpaperSlideshowIndex;
+    private DateTime _wallpaperTransitionStart = DateTime.MinValue;
+    private bool _wallpaperTransitionActive;
+
     public MainWindowStyleInjector(InjectorSettings settings)
     {
         _settings = settings;
         _animationTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(16), DispatcherPriority.Render, OnAnimationTick);
         _stateTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(50), DispatcherPriority.Background, OnStateTick);
         _albumColorTimer = new DispatcherTimer(TimeSpan.FromSeconds(4), DispatcherPriority.Background, OnAlbumColorTimerTick);
+        _wallpaperTimer = new DispatcherTimer(TimeSpan.FromSeconds(30), DispatcherPriority.Background, OnWallpaperTimerTick);
     }
 
     public void Attach()
@@ -126,6 +143,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         ApplySize();
         ApplyTransform(0);
         ApplyDecorations();
+        ApplyWallpaper();
         ReloadStyleSheet();
         ReloadNotificationTransitionStyles();
         ConfigureStyleSheetWatcher();
@@ -273,6 +291,11 @@ internal sealed class MainWindowStyleInjector : IDisposable
             AdvanceColorTransition();
         }
 
+        if (_wallpaperTransitionActive)
+        {
+            AdvanceWallpaperTransition();
+        }
+
         var phase = _animationClock.Elapsed.TotalSeconds / _settings.AnimationPeriodSeconds * Math.Tau;
         ApplyTransform(Math.Sin(phase));
         AdvanceRipples();
@@ -400,7 +423,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         var hasTransientAnimation = GetEffectProgress(_visibilityStartedAt, _settings.VisibilityDurationSeconds) < 1 ||
                                    GetEffectProgress(_emphasisStartedAt, _settings.EmphasisDurationSeconds) < 1 ||
                                    _ripples.Count > 0 || _countdownArrows.Count > 0 ||
-                                   _colorTransitionActive;
+                                   _colorTransitionActive || _wallpaperTransitionActive;
         if (hasContinuousAnimation || hasTransientAnimation)
         {
             _animationTimer.Start();
@@ -416,6 +439,11 @@ internal sealed class MainWindowStyleInjector : IDisposable
         if (!_settings.Enabled || _mainWindow == null || _islandRoot == null)
         {
             return;
+        }
+
+        if (_wallpaperHost != null)
+        {
+            UpdateWallpaperBounds();
         }
 
         var contentRoot = _mainWindow.FindControl<Control>("GridRoot");
@@ -645,6 +673,439 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     private static Color ParseColorOrDefault(string text, Color fallback) =>
         TryParseColor(text, out var color) ? color : fallback;
+
+    // ============ 主界面底图 ============
+
+    private void ApplyWallpaper()
+    {
+        if (_mainWindow == null)
+        {
+            return;
+        }
+
+        var enabled = _settings.Enabled && _settings.WallpaperEnabled && _settings.WallpaperSource != WallpaperSource.None;
+        if (!enabled)
+        {
+            RemoveWallpaper();
+            return;
+        }
+
+        EnsureWallpaperHost();
+        UpdateWallpaperTimer();
+        ReloadWallpaperImageIfNeeded();
+        UpdateWallpaperPresentation();
+    }
+
+    private void EnsureWallpaperHost()
+    {
+        if (_wallpaperHost != null)
+        {
+            return;
+        }
+
+        var islandGrid = _mainWindow?.FindControl<Grid>("GridRoot");
+        if (islandGrid == null)
+        {
+            return;
+        }
+
+        _wallpaperLayers.Clear();
+        _wallpaperLayers.Add(new Border { IsHitTestVisible = false, VerticalAlignment = VerticalAlignment.Stretch, HorizontalAlignment = HorizontalAlignment.Stretch });
+        _wallpaperLayers.Add(new Border { IsHitTestVisible = false, VerticalAlignment = VerticalAlignment.Stretch, HorizontalAlignment = HorizontalAlignment.Stretch });
+        _wallpaperHost = new Border
+        {
+            IsHitTestVisible = false,
+            ClipToBounds = true,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Child = new Grid { IsHitTestVisible = false, Children = { _wallpaperLayers[0], _wallpaperLayers[1] } }
+        };
+        _wallpaperHost.SizeChanged += (_, _) => UpdateWallpaperClip();
+        islandGrid.SizeChanged += (_, _) => UpdateWallpaperBounds();
+        islandGrid.Children.Insert(0, _wallpaperHost);
+        UpdateWallpaperClip();
+        UpdateWallpaperBounds();
+    }
+
+    /// <summary>
+    /// 把底图约束到岛屿的实际可见边界内（各行的 BackgroundBorder 并集），
+    /// 避免底图溢出到整个窗口区域。
+    /// </summary>
+    private void UpdateWallpaperBounds()
+    {
+        if (_wallpaperHost == null || _mainWindow == null || _wallpaperHost.Parent is not Visual parent)
+        {
+            return;
+        }
+
+        var borders = _mainWindow.GetVisualDescendants().OfType<Border>()
+            .Where(x => x.Name == "BackgroundBorder" && x.IsVisible && x.Bounds.Width > 0 && x.Bounds.Height > 0)
+            .ToArray();
+        if (borders.Length == 0)
+        {
+            return;
+        }
+
+        var minX = double.MaxValue;
+        var minY = double.MaxValue;
+        var maxX = double.MinValue;
+        var maxY = double.MinValue;
+        foreach (var border in borders)
+        {
+            var topLeft = border.TranslatePoint(new Point(0, 0), parent);
+            var bottomRight = border.TranslatePoint(new Point(border.Bounds.Width, border.Bounds.Height), parent);
+            if (topLeft == null || bottomRight == null)
+            {
+                continue;
+            }
+
+            minX = Math.Min(minX, topLeft.Value.X);
+            minY = Math.Min(minY, topLeft.Value.Y);
+            maxX = Math.Max(maxX, bottomRight.Value.X);
+            maxY = Math.Max(maxY, bottomRight.Value.Y);
+        }
+
+        if (minX > maxX || minY > maxY)
+        {
+            return;
+        }
+
+        _wallpaperHost.Width = maxX - minX;
+        _wallpaperHost.Height = maxY - minY;
+        _wallpaperHost.HorizontalAlignment = HorizontalAlignment.Left;
+        _wallpaperHost.VerticalAlignment = VerticalAlignment.Top;
+        _wallpaperHost.Margin = new Thickness(minX, minY, 0, 0);
+        UpdateWallpaperClip();
+    }
+
+    private void UpdateWallpaperClip()
+    {
+        if (_wallpaperHost == null)
+        {
+            return;
+        }
+
+        var radius = _settings.Shape switch
+        {
+            IslandShape.Rectangle => new CornerRadius(0),
+            IslandShape.Capsule => new CornerRadius(Math.Max(1, _wallpaperHost.Bounds.Height / 2)),
+            _ => new CornerRadius(_settings.CornerRadius)
+        };
+        _wallpaperHost.CornerRadius = radius;
+    }
+
+    private void RemoveWallpaper()
+    {
+        _wallpaperTimer.Stop();
+        _wallpaperTransitionActive = false;
+        if (_wallpaperHost != null && _wallpaperHost.Parent is Panel panel)
+        {
+            panel.Children.Remove(_wallpaperHost);
+        }
+
+        _wallpaperHost = null;
+        _wallpaperLayers.Clear();
+        _wallpaperSlideshow.Clear();
+        _wallpaperSlideshowIndex = 0;
+        _wallpaperLoadedSource = WallpaperSource.None;
+        _wallpaperLoadedPath = string.Empty;
+        DisposeWallpaperBitmap();
+    }
+
+    private void DisposeWallpaperBitmap()
+    {
+        _wallpaperBitmap?.Dispose();
+        _wallpaperBitmap = null;
+        _wallpaperStream?.Dispose();
+        _wallpaperStream = null;
+        _wallpaperRetiredBitmap?.Dispose();
+        _wallpaperRetiredBitmap = null;
+        _wallpaperRetiredStream?.Dispose();
+        _wallpaperRetiredStream = null;
+    }
+
+    private void UpdateWallpaperTimer()
+    {
+        if (!_settings.Enabled || !_settings.WallpaperEnabled)
+        {
+            _wallpaperTimer.Stop();
+            return;
+        }
+
+        switch (_settings.WallpaperSource)
+        {
+            case WallpaperSource.FolderSlideshow:
+                _wallpaperTimer.Interval = TimeSpan.FromSeconds(Math.Clamp(_settings.WallpaperSlideshowIntervalSeconds, 2, 3600));
+                _wallpaperTimer.Start();
+                break;
+            case WallpaperSource.SmtcAlbum:
+                // SMTC 封面轮询间隔与现有动态取色设置绑定。
+                _wallpaperTimer.Interval = TimeSpan.FromSeconds(Math.Clamp(_settings.AlbumColorPollingIntervalSeconds, 0.5, 120));
+                _wallpaperTimer.Start();
+                break;
+            default:
+                _wallpaperTimer.Stop();
+                break;
+        }
+    }
+
+    private void OnWallpaperTimerTick(object? sender, EventArgs e)
+    {
+        if (!_settings.Enabled || !_settings.WallpaperEnabled)
+        {
+            return;
+        }
+
+        switch (_settings.WallpaperSource)
+        {
+            case WallpaperSource.FolderSlideshow:
+                AdvanceSlideshow();
+                break;
+            case WallpaperSource.SmtcAlbum:
+                _ = RefreshSmtcWallpaperAsync();
+                break;
+        }
+    }
+
+    private void ReloadWallpaperImageIfNeeded()
+    {
+        if (_wallpaperLoadedSource == _settings.WallpaperSource && _wallpaperLoadedPath == _settings.WallpaperPath)
+        {
+            return;
+        }
+
+        _wallpaperLoadedSource = _settings.WallpaperSource;
+        _wallpaperLoadedPath = _settings.WallpaperPath;
+        switch (_settings.WallpaperSource)
+        {
+            case WallpaperSource.LocalImage:
+                LoadWallpaperImage(_settings.WallpaperPath);
+                break;
+            case WallpaperSource.FolderSlideshow:
+                BuildSlideshowList();
+                if (_wallpaperSlideshow.Count > 0)
+                {
+                    _wallpaperSlideshowIndex = 0;
+                    LoadWallpaperImage(_wallpaperSlideshow[0]);
+                }
+                break;
+            case WallpaperSource.SmtcAlbum:
+                _ = RefreshSmtcWallpaperAsync();
+                break;
+        }
+    }
+
+    private void BuildSlideshowList()
+    {
+        _wallpaperSlideshow.Clear();
+        var directory = _settings.WallpaperPath;
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+        {
+            return;
+        }
+
+        var extensions = new[] { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp" };
+        _wallpaperSlideshow.AddRange(Directory.EnumerateFiles(directory)
+            .Where(f => extensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
+            .OrderBy(f => f, StringComparer.OrdinalIgnoreCase));
+    }
+
+    private void AdvanceSlideshow()
+    {
+        if (_wallpaperSlideshow.Count == 0)
+        {
+            return;
+        }
+
+        _wallpaperSlideshowIndex = (_wallpaperSlideshowIndex + 1) % _wallpaperSlideshow.Count;
+        LoadWallpaperImage(_wallpaperSlideshow[_wallpaperSlideshowIndex]);
+    }
+
+    private async Task RefreshSmtcWallpaperAsync()
+    {
+        var bytes = await SmtcAlbumColorPicker.TryGetAlbumThumbnailBytesAsync();
+        if (bytes is { Length: > 0 })
+        {
+            LoadWallpaperImage(bytes);
+        }
+    }
+
+    private void LoadWallpaperImage(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            DisposeWallpaperBitmap();
+            return;
+        }
+
+        try
+        {
+            var stream = new MemoryStream(File.ReadAllBytes(path));
+            stream.Position = 0;
+            var bitmap = new Bitmap(stream);
+            SetWallpaperImage(bitmap, stream);
+        }
+        catch
+        {
+            DisposeWallpaperBitmap();
+        }
+    }
+
+    private void LoadWallpaperImage(byte[] bytes)
+    {
+        if (bytes.Length == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var stream = new MemoryStream(bytes);
+            stream.Position = 0;
+            var bitmap = new Bitmap(stream);
+            SetWallpaperImage(bitmap, stream);
+        }
+        catch
+        {
+            DisposeWallpaperBitmap();
+        }
+    }
+
+    private void SetWallpaperImage(Bitmap bitmap, MemoryStream stream)
+    {
+        var duration = Math.Max(0, _settings.AlbumColorTransitionSeconds);
+        if (_wallpaperLayers.Count < 2 || duration <= 0)
+        {
+            // 立即切换：旧图不再被任何图层引用，可以安全释放。
+            DisposeWallpaperBitmap();
+            _wallpaperBitmap = bitmap;
+            _wallpaperStream = stream;
+            ApplyWallpaperLayer(_wallpaperFront, bitmap, _settings.WallpaperOpacity);
+            return;
+        }
+
+        // 交叉淡化：旧图保留在前层（不可提前释放），新图放到背面从 0 淡入。
+        var back = 1 - _wallpaperFront;
+        ApplyWallpaperLayer(back, bitmap, 0);
+        if (_wallpaperBitmap != null && _wallpaperBitmap != bitmap)
+        {
+            _wallpaperRetiredBitmap?.Dispose();
+            _wallpaperRetiredStream?.Dispose();
+            _wallpaperRetiredBitmap = _wallpaperBitmap;
+            _wallpaperRetiredStream = _wallpaperStream;
+        }
+
+        _wallpaperBitmap = bitmap;
+        _wallpaperStream = stream;
+        _wallpaperTransitionStart = DateTime.UtcNow;
+        _wallpaperTransitionActive = true;
+        UpdateAnimationTimer();
+    }
+
+    private void ApplyWallpaperLayer(int index, Bitmap bitmap, double opacity)
+    {
+        if (_wallpaperLayers.Count <= index)
+        {
+            return;
+        }
+
+        var layer = _wallpaperLayers[index];
+        layer.Background = BuildWallpaperBrush(bitmap);
+        layer.Opacity = opacity;
+    }
+
+    private void AdvanceWallpaperTransition()
+    {
+        var duration = Math.Max(0.001, _settings.AlbumColorTransitionSeconds);
+        var progress = Math.Clamp((DateTime.UtcNow - _wallpaperTransitionStart).TotalSeconds / duration, 0, 1);
+        var eased = 1 - Math.Pow(1 - progress, 3);
+        var front = _wallpaperLayers[_wallpaperFront];
+        var back = _wallpaperLayers[1 - _wallpaperFront];
+        front.Opacity = _settings.WallpaperOpacity * (1 - eased);
+        back.Opacity = _settings.WallpaperOpacity * eased;
+        if (progress >= 1)
+        {
+            front.Opacity = 0;
+            back.Opacity = _settings.WallpaperOpacity;
+            front.Background = null;
+            _wallpaperFront = 1 - _wallpaperFront;
+            _wallpaperTransitionActive = false;
+            _wallpaperRetiredBitmap?.Dispose();
+            _wallpaperRetiredBitmap = null;
+            _wallpaperRetiredStream?.Dispose();
+            _wallpaperRetiredStream = null;
+            UpdateAnimationTimer();
+        }
+    }
+
+    private void UpdateWallpaperPresentation()
+    {
+        if (_wallpaperBitmap == null || _wallpaperLayers.Count < 2)
+        {
+            return;
+        }
+
+        var front = _wallpaperLayers[_wallpaperFront];
+        front.Opacity = _settings.WallpaperOpacity;
+        if (front.Background is ImageBrush brush)
+        {
+            brush.Source = _wallpaperBitmap;
+            brush.Stretch = WallpaperStretch;
+            brush.TileMode = _settings.WallpaperDisplayMode == WallpaperDisplayMode.Tile ? TileMode.Tile : TileMode.None;
+            ApplyWallpaperBrushRegion(brush);
+        }
+        else
+        {
+            front.Background = BuildWallpaperBrush(_wallpaperBitmap);
+        }
+    }
+
+    private Stretch WallpaperStretch => _settings.WallpaperDisplayMode switch
+    {
+        WallpaperDisplayMode.Stretch => Stretch.Fill,
+        WallpaperDisplayMode.Fill => Stretch.UniformToFill,
+        WallpaperDisplayMode.Fit => Stretch.Uniform,
+        WallpaperDisplayMode.Tile => Stretch.None,
+        _ => Stretch.UniformToFill
+    };
+
+    private ImageBrush BuildWallpaperBrush(Bitmap bitmap)
+    {
+        var brush = new ImageBrush
+        {
+            Source = bitmap,
+            Stretch = WallpaperStretch,
+            TileMode = _settings.WallpaperDisplayMode == WallpaperDisplayMode.Tile ? TileMode.Tile : TileMode.None,
+            AlignmentX = AlignmentX.Center,
+            AlignmentY = AlignmentY.Center
+        };
+        ApplyWallpaperBrushRegion(brush);
+        return brush;
+    }
+
+    private void ApplyWallpaperBrushRegion(ImageBrush brush)
+    {
+        var scale = Math.Clamp(_settings.WallpaperScale, 1, 5);
+        var ox = Math.Clamp(_settings.WallpaperOffsetX, -0.5, 0.5);
+        var oy = Math.Clamp(_settings.WallpaperOffsetY, -0.5, 0.5);
+        if (_settings.WallpaperDisplayMode == WallpaperDisplayMode.Tile)
+        {
+            brush.SourceRect = RelativeRect.Fill;
+            brush.DestinationRect = new RelativeRect(0, 0, 1.0 / scale, 1.0 / scale, RelativeUnit.Relative);
+            return;
+        }
+
+        var s = 1.0 / scale;
+        var cx = 0.5 + ox * (0.5 - s / 2);
+        var cy = 0.5 + oy * (0.5 - s / 2);
+        brush.DestinationRect = RelativeRect.Fill;
+        brush.SourceRect = new RelativeRect(
+            Math.Clamp(cx - s / 2, 0, 1 - s),
+            Math.Clamp(cy - s / 2, 0, 1 - s),
+            s, s, RelativeUnit.Relative);
+    }
+
+    // ============ 主界面底图结束 ============
 
     private void UpdateCountdownArrows(Control line)
     {
@@ -1092,6 +1553,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
             };
             grid.Effect = _shadowEffect;
         }
+
+        UpdateWallpaperClip();
     }
 
     private void RestoreDecorations()
@@ -1154,6 +1617,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _shadowEffect = null;
         _colorTransitionActive = false;
         _dynamicColorsInitialized = false;
+        RemoveWallpaper();
         RemoveAllCountdownArrows();
         _lineMasks.Clear();
         foreach (var line in _observedLines)
