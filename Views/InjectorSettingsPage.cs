@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
+using Avalonia.Threading;
 using ClassIsland.Core.Abstractions.Controls;
 using ClassIsland.Core.Assists;
 using ClassIsland.Core.Attributes;
@@ -46,6 +47,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly Spin _albumColorTransition = Spinner(0, 10, 0.1);
     private readonly ToggleSwitch _gradient = Toggle();
     private readonly ColorPicker _gradientEndColor = ColorPicker();
+    private readonly ComboBox _gradientDirection = Combo(GradientDirections);
+    private readonly ComboBox _backgroundTextureType = Combo(BackgroundTextures);
+    private readonly ColorPicker _backgroundTextureColor = ColorPicker();
+    private readonly Spin _backgroundTextureSize = Spinner(8, 80, 2, "0");
 
     private readonly ToggleSwitch _shadow = Toggle();
     private readonly ColorPicker _shadowColor = ColorPicker();
@@ -79,12 +84,26 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly ColorPicker _rippleColor = ColorPicker();
     private readonly Spin _rippleDuration = Spinner(0.1, 10, 0.05);
     private readonly Spin _rippleThickness = Spinner(0.5, 40, 0.5);
-    private readonly ToggleSwitch _hanabiConstraint = Toggle();
-    private readonly ToggleSwitch _countdownArrows = Toggle();
+    private readonly Slider _rippleOpacity = Slider(0.1, 1, 0.05);
+    private readonly ToggleSwitch _rippleConstraint = Toggle();
+    private readonly Spin _rippleConstraintRadius = Spinner(0, 2000, 10, "0");
+    private readonly ComboBox _prepareOnClassStyle = Combo(PrepareOnClassStyles);
     private readonly ColorPicker _countdownArrowColor = ColorPicker();
-    private readonly Spin _countdownArrowCount = Spinner(2, 24, 1, "0");
+    private readonly Spin _countdownArrowCount = Spinner(1, 24, 1, "0");
+    private readonly Spin _countdownArrowPerGroup = Spinner(1, 12, 1, "0");
+    private readonly Spin _countdownArrowSpacing = Spinner(0, 100, 1, "0");
+    private readonly Spin _countdownArrowGroupSpacing = Spinner(0, 400, 1, "0");
     private readonly Spin _countdownArrowSpeed = Spinner(0.1, 12, 0.1);
-    private readonly Spin _countdownArrowThickness = Spinner(0.5, 8, 0.5);
+    private readonly Spin _countdownArrowThickness = Spinner(0.5, 20, 0.5);
+    private readonly ColorPicker _countdownPulseColor = ColorPicker();
+    private readonly Spin _countdownPulseThickness = Spinner(0.5, 20, 0.5);
+    private readonly Spin _countdownPulseSpeed = Spinner(0.1, 8, 0.1);
+    private readonly Spin _countdownPulseMaxRadius = Spinner(0.1, 1, 0.05);
+    private readonly ColorPicker _countdownScanColor = ColorPicker();
+    private readonly Spin _countdownScanThickness = Spinner(0.5, 20, 0.5);
+    private readonly Spin _countdownScanSpeed = Spinner(0.1, 8, 0.1);
+    private readonly ComboBox _countdownScanDirection = Combo(ScanDirections);
+    private readonly ToggleSwitch _countdownScanTailEnabled = Toggle();
     private readonly ComboBox _preset = Combo(StylePresets);
     private readonly TextBox _presetName = new() { MinWidth = 200, Watermark = "预设名称" };
     private readonly ComboBox _userPresetList = new()
@@ -93,6 +112,18 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         HorizontalContentAlignment = HorizontalAlignment.Left
     };
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.8 };
+    /// <summary>实时预览开关：开启后设置项修改立即保存应用（可视化编辑器仍为手动保存）。默认开启。</summary>
+    private readonly ToggleSwitch _livePreview = new()
+    {
+        IsChecked = true,
+        OnContent = "开",
+        OffContent = "关",
+        VerticalAlignment = VerticalAlignment.Center
+    };
+    /// <summary>实时预览防抖定时器，避免拖动控件时高频写盘。</summary>
+    private readonly DispatcherTimer _livePreviewTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
+    /// <summary>抑制实时预览（程序性修改控件时置 true，如加载 / 撤销 / 编辑器操作）。</summary>
+    private bool _suppressLivePreview;
     private IslandVisualEditorWindow? _visualEditorWindow;
     private readonly List<IslandPreviewState> _editorUndo = [];
     private readonly List<IslandPreviewState> _editorRedo = [];
@@ -177,10 +208,46 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         new(RippleType.Hanabi, "花火"),
     ];
 
+    private static readonly Choice<PrepareOnClassStyle>[] PrepareOnClassStyles =
+    [
+        new(PrepareOnClassStyle.None, "无"),
+        new(PrepareOnClassStyle.Arrows, "箭头"),
+        new(PrepareOnClassStyle.PulseRing, "扩散光环"),
+        new(PrepareOnClassStyle.Scanline, "扫描线"),
+    ];
+
+    private static readonly Choice<ScanlineDirection>[] ScanDirections =
+    [
+        new(ScanlineDirection.Horizontal, "横向（上下扫）"),
+        new(ScanlineDirection.Vertical, "纵向（左右扫）"),
+    ];
+
+    private static readonly Choice<GradientDirection>[] GradientDirections =
+    [
+        new(GradientDirection.TopLeftToBottomRight, "左上 → 右下"),
+        new(GradientDirection.TopToBottom, "上 → 下"),
+        new(GradientDirection.LeftToRight, "左 → 右"),
+        new(GradientDirection.BottomLeftToTopRight, "左下 → 右上"),
+        new(GradientDirection.BottomToTop, "下 → 上"),
+        new(GradientDirection.RightToLeft, "右 → 左"),
+        new(GradientDirection.TopRightToBottomLeft, "右上 → 左下"),
+        new(GradientDirection.BottomRightToTopLeft, "右下 → 左上"),
+    ];
+
+    private static readonly Choice<BackgroundTexture>[] BackgroundTextures =
+    [
+        new(BackgroundTexture.None, "无"),
+        new(BackgroundTexture.Grid, "网格线"),
+        new(BackgroundTexture.Dots, "点阵"),
+        new(BackgroundTexture.DiagonalLines, "斜线"),
+        new(BackgroundTexture.Cross, "十字网格"),
+    ];
+
     public InjectorSettingsPage()
     {
         Content = BuildContent();
         WireVisualEditor();
+        WireLivePreview();
         LoadFromSettings();
     }
 
@@ -193,6 +260,19 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         };
 
         panel.Children.Add(new IconText { Glyph = "\uEC4A", Text = "样式注入器", Margin = new Thickness(0, 0, 0, 4) });
+        panel.Children.Add(Setting("\uE161", "实时预览", "开启后，下方对设置项的修改会立即保存并应用到主界面；关闭时需手动点击「保存并应用」。可视化编辑器始终为手动保存，不受此开关影响。", _livePreview));
+        if (!SystemCapabilities.SmtcAvailable)
+        {
+            panel.Children.Add(new InfoBar
+            {
+                Severity = InfoBarSeverity.Warning,
+                Title = "当前系统不支持 SMTC 动态取色",
+                Message = $"检测到 Windows 版本过低（当前 build {Environment.OSVersion.Version.Build}，SMTC 需要 Windows 10 1809 / build 17763 或更高）。动态专辑取色、暂停恢复原色与 SMTC 专辑封面底图将无法工作，其余功能不受影响。",
+                IsOpen = true,
+                IsClosable = false
+            });
+        }
+
         panel.Children.Add(Setting("\uE84F", "运行时注入", "启用后由插件接管主界面根节点的视觉效果。", _enabled));
 
         AddSection(panel, "\uF42F", "预设");
@@ -235,15 +315,17 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("显示宽度", "主界面显示区域的固定宽度。", _mainWindowWidth),
             Item("显示高度", "主界面显示区域的固定高度。", _mainWindowHeight)));
 
-        AddSection(panel, "\uF265", "动画与提醒");
+        AddSection(panel, "\uEFFF", "动画");
         panel.Children.Add(SwitchableGroup("\uEFFF", "持续动画", "打开后才会使用下方的循环动画设置。", _animationEnabled,
             Item("动画类型", "选择循环动画的运动方式。", _animationMode),
             Item("动画幅度", "控制循环动画的强弱。", _animationAmount),
             Item("动画周期", "完成一次循环所需的时间（秒）。", _animationPeriod)));
-        panel.Children.Add(Setting("\uEFFF", "动画预设", "仅调整动效、提醒和 Ripple，不会改变形状、背景与阴影。", _animationPreset));
-        panel.Children.Add(Setting("\uE161", "应用动画预设", "立即应用当前选中的动画预设。", Button("应用动画预设", ApplyAnimationPreset)));
+        panel.Children.Add(Setting("\uEFFF", "动画预设", "仅调整动效、提醒和 Ripple，不会改变形状、背景与阴影。", PresetAnimationFooter()));
         panel.Children.Add(ChoiceGroup("\uEFFF", "主界面显示动画", "选择主界面出现或消失时使用的动画。", _visibilityAnimation, VisibilityAnimation.None,
             Item("显示动画时长", "主界面显示动画的时长（秒）。", _visibilityDuration)));
+
+        AddSection(panel, "\uEFFF", "提醒");
+        panel.Children.Add(Setting("\uEFFE", "预览提醒", "一次性预览强调动画、遮罩过渡与 Ripple 效果（持续约 2 秒）。", Button("预览提醒", PreviewNotification)));
         panel.Children.Add(ChoiceGroup("\uEFFF", "提醒强调动画", "选择收到提醒时使用的强调效果。", _emphasisAnimation, EmphasisAnimation.None,
             Item("强调幅度", "控制强调动画的强弱。", _emphasisAmount),
             Item("强调时长", "提醒强调动画的时长（秒）。", _emphasisDuration)));
@@ -252,18 +334,52 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         var rippleColorItem = Item("Ripple 颜色", "支持透明度的提醒扩散颜色。", _rippleColor);
         var rippleDurationItem = Item("Ripple 时长", "扩散效果的播放时长（秒）。", _rippleDuration);
         var rippleThicknessItem = Item("Ripple 线宽", "环形或方框 Ripple 的线条粗细。", _rippleThickness);
-        var hanabiConstraintItem = Item("限制花火扩散", "以 ClassIsland 为圆心创建圆形裁剪遮罩，避免花火扩张至整个屏幕。", _hanabiConstraint);
+        var rippleOpacityItem = Item("全局不透明度", "全局降低 Ripple 效果的透明度，避免上课时分心（1 为不降低）。", _rippleOpacity);
+        var rippleConstraintItem = Item("限制扩散范围", "以主界面中心为圆心创建圆形裁剪，约束所有类型 Ripple 的扩散范围。", _rippleConstraint);
+        var rippleConstraintRadiusItem = Item("约束半径", "Ripple 扩散的圆形约束半径（像素），0 为自动按主界面大小计算。", _rippleConstraintRadius, _rippleConstraint);
         var rippleGroup = ChoiceGroup("\uEFFF", "提醒 Ripple", "选择提醒时的扩散效果。花火使用固定的原始配色与线宽。", _rippleType, RippleType.None,
-            rippleColorItem, rippleDurationItem, rippleThicknessItem, hanabiConstraintItem);
+            rippleColorItem, rippleDurationItem, rippleThicknessItem, rippleOpacityItem, rippleConstraintItem, rippleConstraintRadiusItem);
         EnabledWhenNot(rippleColorItem, _rippleType, RippleType.Hanabi);
         EnabledWhenNot(rippleThicknessItem, _rippleType, RippleType.Hanabi);
-        VisibleWhen(hanabiConstraintItem, _rippleType, RippleType.Hanabi);
         panel.Children.Add(rippleGroup);
-        panel.Children.Add(SwitchableGroup("\uE4C4", "倒计时箭头", "即将上课时显示箭头滑动效果。", _countdownArrows,
-            Item("箭头颜色", "支持透明度的倒计时箭头颜色。", _countdownArrowColor),
-            Item("箭头组数", "每组显示为一对 >> 箭头。", _countdownArrowCount),
-            Item("滑动速度", "倒计时箭头的移动速度。", _countdownArrowSpeed),
-            Item("箭头线宽", "倒计时箭头的线条粗细。", _countdownArrowThickness)));
+        var hanabiInfoBar = new InfoBar
+        {
+            Severity = InfoBarSeverity.Informational,
+            Title = "关于花火（Hanabi）效果",
+            Message = "受当前技术限制，本插件无法实现类似 maimai でらっくす 的带光影的烟花效果，只能仿制经典旧版烟花效果。",
+            IsOpen = true,
+            IsClosable = false
+        };
+        VisibleWhen(hanabiInfoBar, _rippleType, RippleType.Hanabi);
+        panel.Children.Add(hanabiInfoBar);
+        AddSection(panel, "\uE4C4", "即将上课样式");
+        panel.Children.Add(Setting("\uE4C4", "预览即将上课样式", "立即预览 5 秒即将上课动画，无需真的处于即将上课状态。", Button("预览", PreviewPrepareOnClass)));
+        panel.Children.Add(Setting("\uE4C4", "即将上课样式", "选择即将上课倒计时期间显示的特效；选择「无」则不显示。", _prepareOnClassStyle));
+        var arrowGroup = Group("\uE4C4", "箭头", "斜向箭头从右向左滑动。",
+            Item("箭头颜色", "支持透明度的箭头颜色。", _countdownArrowColor),
+            Item("箭头组数", "屏幕上同时滑动的箭头组数量。", _countdownArrowCount),
+            Item("每组箭头数", "每组内包含的箭头数量，2 即经典的 >> 效果。", _countdownArrowPerGroup),
+            Item("组内箭头间距", "同一组内相邻箭头之间的距离（像素）。", _countdownArrowSpacing),
+            Item("组间间距", "相邻箭头组之间的额外间距（像素）。", _countdownArrowGroupSpacing),
+            Item("滑动速度", "箭头的移动速度。", _countdownArrowSpeed),
+            Item("箭头线宽", "箭头的线条粗细。", _countdownArrowThickness));
+        var pulseGroup = Group("\uE4C4", "扩散光环", "从主界面中心向外扩散并淡出的圆环。",
+            Item("光环颜色", "支持透明度的光环颜色。", _countdownPulseColor),
+            Item("光环线宽", "光环的线条粗细。", _countdownPulseThickness),
+            Item("扩散速度", "每秒扩散的圈数。", _countdownPulseSpeed),
+            Item("最大半径", "光环最大半径占主界面宽高中较小值的比例。", _countdownPulseMaxRadius));
+        var scanGroup = Group("\uE4C4", "扫描线", "一道带渐变尾迹的光线扫过主界面，进入 / 离开时自动渐显渐隐。",
+            Item("扫描方向", "横向为水平线上下扫，纵向为竖直线左右扫。", _countdownScanDirection),
+            Item("渐变尾迹", "关闭后只显示一条主线，不带渐变尾迹。", _countdownScanTailEnabled),
+            Item("扫描颜色", "支持透明度的扫描线颜色。", _countdownScanColor),
+            Item("扫描线宽", "扫描线的粗细。", _countdownScanThickness),
+            Item("扫描速度", "每秒扫描次数。", _countdownScanSpeed));
+        VisibleWhen(arrowGroup, _prepareOnClassStyle, PrepareOnClassStyle.Arrows);
+        VisibleWhen(pulseGroup, _prepareOnClassStyle, PrepareOnClassStyle.PulseRing);
+        VisibleWhen(scanGroup, _prepareOnClassStyle, PrepareOnClassStyle.Scanline);
+        panel.Children.Add(arrowGroup);
+        panel.Children.Add(pulseGroup);
+        panel.Children.Add(scanGroup);
 
         AddSection(panel, "\uEC4A", "背景、阴影与边框");
         var backgroundColorItem = Item("背景色", "支持透明度的主界面背景颜色。", _backgroundColor);
@@ -271,9 +387,14 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             backgroundColorItem,
             Item("动态专辑封面取色", "读取当前 SMTC 专辑封面，并使用 Material You（Monet）算法自动提取主题色。", _dynamicBackgroundColor),
             Item("线性渐变", "开启后会使用渐变终止色。", _gradient),
+            Item("渐变方向", "线性渐变从起始色到终止色的方向。", _gradientDirection, _gradient),
             Item("渐变终止色", "线性渐变背景的结束颜色。", _gradientEndColor, _gradient));
         EnabledWhenManualColor(backgroundColorItem, _customBackground, _dynamicBackgroundColor);
         panel.Children.Add(backgroundGroup);
+        panel.Children.Add(Group("\uE7B5", "背景纹理", "在背景色之上叠加可平铺的纹理图案，可与背景图片、背景色同时使用；纹理不受动态取色影响。",
+            Item("纹理图案", "选择填充纹理的类型，无 = 关闭纹理。", _backgroundTextureType),
+            Item("纹理颜色", "支持透明度的纹理线条颜色。", _backgroundTextureColor),
+            Item("纹理大小", "单个纹理单元的大小（像素）。", _backgroundTextureSize)));
         panel.Children.Add(Group("\uF361", "动态取色轮询", "SMTC 采用事件驱动：媒体变化（切歌/换封面）时即时更新；下方的间隔仅作为兜底刷新，应对个别应用事件不触发的情况。",
             Item("暂停/停止时恢复原色", "媒体暂停或停止播放时，把背景、边框、阴影从专辑取色平滑恢复为你配置的原始颜色，恢复播放后再跟随专辑。", _revertColorsWhenPaused),
             Item("兜底刷新间隔", "事件驱动失效时的兜底刷新间隔（秒）。", _albumColorPollingInterval),
@@ -328,7 +449,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 12, 0, 0) };
         actions.Children.Add(Button("保存并应用", SaveAndApply));
         actions.Children.Add(Button("重载样式表", ReloadStyleSheet));
-        actions.Children.Add(Button("预览 Ripple", PreviewRipple));
         panel.Children.Add(actions);
         panel.Children.Add(_status);
         return new ScrollViewer { Content = panel };
@@ -430,17 +550,32 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         Children = { _userPresetList, Button("套用", ApplyUserPreset), Button("删除", DeleteUserPreset) }
     };
 
+    private Control PresetAnimationFooter() => new StackPanel
+    {
+        Orientation = Orientation.Horizontal,
+        Spacing = 4,
+        VerticalAlignment = VerticalAlignment.Center,
+        Children = { _animationPreset, Button("应用动画预设", ApplyAnimationPreset) }
+    };
+
     private void ReloadStyleSheet()
     {
         InjectorRuntime.ReloadStyleSheet();
         _status.Text = "已请求重载样式表；若样式表存在语法错误，ClassIsland 会保留稳定运行状态。";
     }
 
-    private void PreviewRipple()
+    private void PreviewNotification()
     {
         SaveAndApply();
-        InjectorRuntime.PreviewRipple();
-        _status.Text = "正在主界面中心预览当前 Ripple。";
+        InjectorRuntime.PreviewNotification();
+        _status.Text = "正在预览提醒：强调动画、遮罩过渡与 Ripple 将依次演示。";
+    }
+
+    private void PreviewPrepareOnClass()
+    {
+        SaveAndApply();
+        InjectorRuntime.PreviewPrepareOnClass();
+        _status.Text = "正在预览即将上课样式（约 5 秒）。";
     }
 
     private async void DeleteAllData()
@@ -480,6 +615,58 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         }
     }
 
+    /// <summary>
+    /// 为全部设置输入控件挂接实时预览：开启开关时，任意控件值变化经防抖后立即保存应用。
+    /// </summary>
+    private void WireLivePreview()
+    {
+        _livePreviewTimer.Tick += (_, _) =>
+        {
+            _livePreviewTimer.Stop();
+            SaveAndApply();
+        };
+
+        foreach (var control in new Control[]
+                 {
+                     _enabled, _opacity, _scale, _rotation, _offsetX, _offsetY, _cornerRadius,
+                     _animationEnabled, _animationMode, _animationAmount, _animationPeriod,
+                     _customSize, _mainWindowWidth, _mainWindowHeight,
+                     _customBackground, _backgroundColor, _dynamicBackgroundColor, _dynamicBorderColor, _dynamicShadowColor,
+                     _revertColorsWhenPaused, _albumColorPollingInterval, _albumColorTransition,
+                     _gradient, _gradientEndColor, _gradientDirection, _backgroundTextureType, _backgroundTextureColor, _backgroundTextureSize,
+                     _shadow, _shadowColor, _shadowBlur, _shadowOffsetX, _shadowOffsetY, _shadowOpacity,
+                     _border, _borderColor, _borderThickness,
+                     _wallpaperEnabled, _wallpaperSource, _wallpaperPath, _wallpaperOpacity, _wallpaperDisplayMode,
+                     _wallpaperScale, _wallpaperOffsetX, _wallpaperOffsetY, _wallpaperSlideshowInterval,
+                     _visibilityAnimation, _visibilityDuration, _emphasisAnimation, _emphasisAmount, _emphasisDuration,
+                     _notificationTransition, _notificationTransitionDuration,
+                     _rippleType, _rippleColor, _rippleDuration, _rippleThickness, _rippleOpacity, _rippleConstraint, _rippleConstraintRadius,
+                     _prepareOnClassStyle,
+                     _countdownArrowColor, _countdownArrowCount, _countdownArrowPerGroup, _countdownArrowSpacing,
+                     _countdownArrowGroupSpacing, _countdownArrowSpeed, _countdownArrowThickness,
+                     _countdownPulseColor, _countdownPulseThickness, _countdownPulseSpeed, _countdownPulseMaxRadius,
+                     _countdownScanColor, _countdownScanThickness, _countdownScanSpeed, _countdownScanDirection, _countdownScanTailEnabled,
+                     _styleSheetPath, _watchStyleSheet
+                 })
+        {
+            control.PropertyChanged += (_, _) => TriggerLivePreview();
+        }
+    }
+
+    /// <summary>
+    /// 触发实时预览保存（带防抖）。程序性修改（加载 / 撤销 / 编辑器操作）时被抑制。
+    /// </summary>
+    private void TriggerLivePreview()
+    {
+        if (!_livePreview.IsChecked == true || _suppressLivePreview)
+        {
+            return;
+        }
+
+        _livePreviewTimer.Stop();
+        _livePreviewTimer.Start();
+    }
+
     private void RefreshVisualEditor()
     {
         var state = new IslandPreviewState(
@@ -496,6 +683,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             _backgroundColor.Color,
             _gradient.IsChecked == true,
             _gradientEndColor.Color,
+            Selected(_gradientDirection, GradientDirection.TopLeftToBottomRight),
             _shadow.IsChecked == true,
             _shadowColor.Color,
             _shadowBlur.DoubleValue,
@@ -523,6 +711,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _editorRedo.Clear();
         _editorDirty = false;
         window.UpdateUndoState(false, false);
+        // 编辑器采用暂存式编辑：期间禁止实时预览，避免把未保存的预览直接应用到主界面。
+        _suppressLivePreview = true;
 
         // 画布手势：手势开始时记录撤销快照；拖动期间只改控件做实时预览（不保存）。
         window.Editor.EditStarted += (_, _) => PushEditorUndo();
@@ -578,7 +768,11 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
         // 关闭前询问是否保存。
         window.Closing += OnEditorClosing;
-        window.Closed += (_, _) => _visualEditorWindow = null;
+        window.Closed += (_, _) =>
+        {
+            _visualEditorWindow = null;
+            _suppressLivePreview = false;
+        };
         RefreshVisualEditor();
         window.Show();
     }
@@ -590,6 +784,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _opacity.Value, _scale.DoubleValue, _rotation.DoubleValue, _offsetX.DoubleValue, _offsetY.DoubleValue,
         _cornerRadius.DoubleValue, _customSize.IsChecked == true, _mainWindowWidth.DoubleValue, _mainWindowHeight.DoubleValue,
         _customBackground.IsChecked == true, _backgroundColor.Color, _gradient.IsChecked == true, _gradientEndColor.Color,
+        Selected(_gradientDirection, GradientDirection.TopLeftToBottomRight),
         _shadow.IsChecked == true, _shadowColor.Color, _shadowBlur.DoubleValue, _shadowOffsetX.DoubleValue, _shadowOffsetY.DoubleValue,
         _shadowOpacity.Value, _border.IsChecked == true, _borderColor.Color, _borderThickness.DoubleValue);
 
@@ -621,6 +816,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _backgroundColor.Color = state.BackgroundColor;
         _gradient.IsChecked = state.Gradient;
         _gradientEndColor.Color = state.GradientEndColor;
+        Select(_gradientDirection, GradientDirections, state.GradientDirection);
         _shadow.IsChecked = state.ShadowEnabled;
         _shadowColor.Color = state.ShadowColor;
         _shadowBlur.DoubleValue = state.ShadowBlur;
@@ -722,6 +918,19 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
     private void LoadFromSettings()
     {
+        _suppressLivePreview = true;
+        try
+        {
+            LoadFromSettingsCore();
+        }
+        finally
+        {
+            _suppressLivePreview = false;
+        }
+    }
+
+    private void LoadFromSettingsCore()
+    {
         var settings = InjectorRuntime.Settings;
         _enabled.IsChecked = settings.Enabled;
         _opacity.Value = settings.Opacity;
@@ -749,6 +958,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _albumColorTransition.DoubleValue = settings.AlbumColorTransitionSeconds;
         _gradient.IsChecked = settings.GradientEnabled;
         _gradientEndColor.Color = ReadColor(settings.GradientEndColor, Color.FromArgb(0xCC, 0x40, 0x40, 0xA0));
+        Select(_gradientDirection, GradientDirections, settings.GradientDirection);
+        Select(_backgroundTextureType, BackgroundTextures, settings.BackgroundTextureType);
+        _backgroundTextureColor.Color = ReadColor(settings.BackgroundTextureColor, Color.FromArgb(0x2E, 0xFF, 0xFF, 0xFF));
+        _backgroundTextureSize.DoubleValue = settings.BackgroundTextureSize;
         _shadow.IsChecked = settings.ShadowEnabled;
         _shadowColor.Color = ReadColor(settings.ShadowColor, Color.FromArgb(0x99, 0, 0, 0));
         _shadowBlur.DoubleValue = settings.ShadowBlur;
@@ -778,12 +991,26 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _rippleColor.Color = ReadColor(settings.RippleColor, Color.FromArgb(0xAA, 0x7D, 0xD3, 0xFC));
         _rippleDuration.DoubleValue = settings.RippleDurationSeconds;
         _rippleThickness.DoubleValue = settings.RippleThickness;
-        _hanabiConstraint.IsChecked = settings.HanabiConstraintEnabled;
-        _countdownArrows.IsChecked = settings.CountdownArrowsEnabled;
+        _rippleOpacity.Value = settings.RippleOpacity;
+        _rippleConstraint.IsChecked = settings.RippleConstraintEnabled;
+        _rippleConstraintRadius.DoubleValue = settings.RippleConstraintRadius;
+        Select(_prepareOnClassStyle, PrepareOnClassStyles, settings.PrepareOnClassStyle);
         _countdownArrowColor.Color = ReadColor(settings.CountdownArrowColor, Color.FromArgb(0xBF, 0xF8, 0xFA, 0xFC));
         _countdownArrowCount.DoubleValue = settings.CountdownArrowCount;
+        _countdownArrowPerGroup.DoubleValue = settings.CountdownArrowPerGroup;
+        _countdownArrowSpacing.DoubleValue = settings.CountdownArrowSpacing;
+        _countdownArrowGroupSpacing.DoubleValue = settings.CountdownArrowGroupSpacing;
         _countdownArrowSpeed.DoubleValue = settings.CountdownArrowSpeed;
         _countdownArrowThickness.DoubleValue = settings.CountdownArrowThickness;
+        _countdownPulseColor.Color = ReadColor(settings.CountdownPulseColor, Color.FromArgb(0xBF, 0xF8, 0xFA, 0xFC));
+        _countdownPulseThickness.DoubleValue = settings.CountdownPulseThickness;
+        _countdownPulseSpeed.DoubleValue = settings.CountdownPulseSpeed;
+        _countdownPulseMaxRadius.DoubleValue = settings.CountdownPulseMaxRadius;
+        _countdownScanColor.Color = ReadColor(settings.CountdownScanColor, Color.FromArgb(0xBF, 0xF8, 0xFA, 0xFC));
+        _countdownScanThickness.DoubleValue = settings.CountdownScanThickness;
+        _countdownScanSpeed.DoubleValue = settings.CountdownScanSpeed;
+        Select(_countdownScanDirection, ScanDirections, settings.CountdownScanDirection);
+        _countdownScanTailEnabled.IsChecked = settings.CountdownScanTailEnabled;
         Select(_preset, StylePresets, StylePreset.GlassCapsule);
         Select(_animationPreset, AnimationPresets, AnimationPreset.Still);
         RefreshUserPresets();
@@ -829,6 +1056,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.AlbumColorTransitionSeconds = _albumColorTransition.DoubleValue;
             settings.GradientEnabled = _gradient.IsChecked == true;
             settings.GradientEndColor = _gradientEndColor.Color.ToString();
+            settings.GradientDirection = Selected(_gradientDirection, GradientDirection.TopLeftToBottomRight);
+            settings.BackgroundTextureType = Selected(_backgroundTextureType, BackgroundTexture.None);
+            settings.BackgroundTextureColor = _backgroundTextureColor.Color.ToString();
+            settings.BackgroundTextureSize = _backgroundTextureSize.DoubleValue;
             settings.ShadowEnabled = _shadow.IsChecked == true;
             settings.ShadowColor = _shadowColor.Color.ToString();
             settings.ShadowBlur = _shadowBlur.DoubleValue;
@@ -858,12 +1089,26 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.RippleColor = _rippleColor.Color.ToString();
             settings.RippleDurationSeconds = _rippleDuration.DoubleValue;
             settings.RippleThickness = _rippleThickness.DoubleValue;
-            settings.HanabiConstraintEnabled = _hanabiConstraint.IsChecked == true;
-            settings.CountdownArrowsEnabled = _countdownArrows.IsChecked == true;
+            settings.RippleOpacity = _rippleOpacity.Value;
+            settings.RippleConstraintEnabled = _rippleConstraint.IsChecked == true;
+            settings.RippleConstraintRadius = _rippleConstraintRadius.DoubleValue;
+            settings.PrepareOnClassStyle = Selected(_prepareOnClassStyle, PrepareOnClassStyle.None);
             settings.CountdownArrowColor = _countdownArrowColor.Color.ToString();
             settings.CountdownArrowCount = (int)Math.Round(_countdownArrowCount.DoubleValue);
+            settings.CountdownArrowPerGroup = (int)Math.Round(_countdownArrowPerGroup.DoubleValue);
+            settings.CountdownArrowSpacing = _countdownArrowSpacing.DoubleValue;
+            settings.CountdownArrowGroupSpacing = _countdownArrowGroupSpacing.DoubleValue;
             settings.CountdownArrowSpeed = _countdownArrowSpeed.DoubleValue;
             settings.CountdownArrowThickness = _countdownArrowThickness.DoubleValue;
+            settings.CountdownPulseColor = _countdownPulseColor.Color.ToString();
+            settings.CountdownPulseThickness = _countdownPulseThickness.DoubleValue;
+            settings.CountdownPulseSpeed = _countdownPulseSpeed.DoubleValue;
+            settings.CountdownPulseMaxRadius = _countdownPulseMaxRadius.DoubleValue;
+            settings.CountdownScanColor = _countdownScanColor.Color.ToString();
+            settings.CountdownScanThickness = _countdownScanThickness.DoubleValue;
+            settings.CountdownScanSpeed = _countdownScanSpeed.DoubleValue;
+            settings.CountdownScanDirection = Selected(_countdownScanDirection, ScanlineDirection.Horizontal);
+            settings.CountdownScanTailEnabled = _countdownScanTailEnabled.IsChecked == true;
         }
         finally
         {

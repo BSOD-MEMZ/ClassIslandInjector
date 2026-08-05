@@ -24,6 +24,9 @@ public sealed class UserPreset
 /// </summary>
 internal static class InjectorPresetStore
 {
+    /// <summary>内置「无预设」名称：套用后把全部设置重置为中性默认（不注入任何内容），并出现在预设列表中供设置页与自动化调用。</summary>
+    public const string NoPresetName = "无预设";
+
     private const string PresetsFileName = "presets.json";
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 

@@ -60,17 +60,28 @@ internal static class InjectorRuntime
         Dispatcher.UIThread.Post(() => _injector?.ReloadStyleSheet());
     }
 
-    public static void PreviewRipple()
+    public static void PreviewNotification()
     {
-        Dispatcher.UIThread.Post(() => _injector?.PreviewRipple());
+        Dispatcher.UIThread.Post(() => _injector?.PreviewNotification());
+    }
+
+    public static void PreviewPrepareOnClass()
+    {
+        Dispatcher.UIThread.Post(() => _injector?.PreviewPrepareOnClass());
     }
 
     #region 用户预设
 
     /// <summary>
-    /// 获取所有用户预设名称（保持保存顺序）。
+    /// 获取所有用户预设名称（保持保存顺序），并前置内置「无预设」，
+    /// 使其同样能被设置页与自动化「切换预设」行动调用。
     /// </summary>
-    public static IReadOnlyList<string> GetPresetNames() => _presets.Select(p => p.Name).ToList();
+    public static IReadOnlyList<string> GetPresetNames()
+    {
+        var names = new List<string> { InjectorPresetStore.NoPresetName };
+        names.AddRange(_presets.Select(p => p.Name));
+        return names;
+    }
 
     /// <summary>
     /// 将当前全部设置保存为命名预设（同名覆盖）。预设可被自动化“切换预设”行动套用。
@@ -79,6 +90,12 @@ internal static class InjectorRuntime
     {
         var trimmed = name.Trim();
         if (trimmed.Length == 0)
+        {
+            return;
+        }
+
+        // 内置「无预设」不可被用户预设覆盖。
+        if (string.Equals(trimmed, InjectorPresetStore.NoPresetName, StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
@@ -102,6 +119,15 @@ internal static class InjectorRuntime
     /// <returns>预设是否存在并成功套用。</returns>
     public static bool ApplyPreset(string name)
     {
+        // 内置「无预设」：把全部设置重置为中性默认（类似清除插件数据后的全新状态），
+        // 不注入任何内容；保留 StyleSheetPath 与 WatchStyleSheet。
+        if (string.Equals(name, InjectorPresetStore.NoPresetName, StringComparison.OrdinalIgnoreCase))
+        {
+            Settings.ResetToDefaults();
+            SaveAndApply();
+            return true;
+        }
+
         var preset = _presets.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
         if (preset == null)
         {
@@ -120,6 +146,12 @@ internal static class InjectorRuntime
     /// </summary>
     public static void DeletePreset(string name)
     {
+        // 内置「无预设」不可删除。
+        if (string.Equals(name, InjectorPresetStore.NoPresetName, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
         var removed = _presets.RemoveAll(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
         if (removed > 0)
         {
@@ -151,6 +183,19 @@ internal static class InjectorRuntime
     /// </summary>
     private static void UpdateSmtcWatcher()
     {
+        if (!SystemCapabilities.SmtcAvailable)
+        {
+            // 系统过旧（低于 Win10 1809），SMTC 不可用：不启动监听器，其余功能不受影响。
+            if (_smtcWatcher != null)
+            {
+                _smtcWatcher.MediaChanged -= OnSmtcMediaChanged;
+                _smtcWatcher.Dispose();
+                _smtcWatcher = null;
+            }
+
+            return;
+        }
+
         if (NeedsSmtc)
         {
             if (_smtcWatcher == null)

@@ -7,7 +7,9 @@ using Avalonia.Styling;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using ClassIsland.Core;
+using ClassIsland.Core.Models.Notification;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.Loader;
@@ -40,7 +42,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private readonly Dictionary<Control, object?> _nativeEffectPlayers = [];
     private object? _suppressingEffectPlayer;
     private readonly List<IslandRippleOverlay> _ripples = [];
-    private readonly Dictionary<Control, CountdownArrowOverlay> _countdownArrows = [];
+    private readonly Dictionary<Control, PrepareOnClassOverlay> _prepareOnClassOverlays = [];
+    /// <summary>「预览即将上课」的激活截止时间（5 秒）。</summary>
+    private DateTime _prepareOnClassPreviewUntil = DateTime.MinValue;
     // A custom ripple normally lives in ClassIsland's full-screen topmost effect
     // window.  This map lets us remove it from the same host when it completes.
     private readonly Dictionary<IslandRippleOverlay, IList> _rippleHosts = [];
@@ -64,6 +68,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     private readonly DispatcherTimer _wallpaperTimer;
     private Border? _wallpaperHost;
+    private Border? _textureHost;
     private readonly List<Border> _wallpaperLayers = [];
     private int _wallpaperFront;
     private Bitmap? _wallpaperBitmap;
@@ -76,6 +81,12 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private int _wallpaperSlideshowIndex;
     private DateTime _wallpaperTransitionStart = DateTime.MinValue;
     private bool _wallpaperTransitionActive;
+
+    // 宿主反射元数据缓存：MainWindowLine 等宿主类型固定，避免每 50ms 轮询重复反射。
+    private static readonly ConcurrentDictionary<Type, FieldInfo?> EffectPlayerFieldCache = new();
+    private static readonly ConcurrentDictionary<Type, PropertyInfo?> MaskContentPropertyCache = new();
+    private static readonly ConcurrentDictionary<Type, PropertyInfo?> CurrentNotificationRequestPropertyCache = new();
+    private static readonly ConcurrentDictionary<Type, PropertyInfo?> ChannelIdPropertyCache = new();
 
     public MainWindowStyleInjector(InjectorSettings settings)
     {
@@ -98,9 +109,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
             RestoreHostState();
             _originalDisplaySizes.Clear();
             _mainWindow = mainWindow;
-            _islandRoot = mainWindow.FindControl<Control>("StackPanelRootContainer");
-            _windowRoot = mainWindow.FindControl<Grid>("WindowRoot");
-            _styleHost = mainWindow.FindControl<Border>("ResourceLoaderBorder");
+            _islandRoot = mainWindow.FindControl<Control>(HostContract.StackPanelRootContainer);
+            _windowRoot = mainWindow.FindControl<Grid>(HostContract.WindowRoot);
+            _styleHost = mainWindow.FindControl<Border>(HostContract.ResourceLoaderBorder);
             if (_islandRoot == null)
             {
                 return;
@@ -111,12 +122,12 @@ internal sealed class MainWindowStyleInjector : IDisposable
             // WorkingRoot is the actual client surface in ClassIsland. The
             // previous implementation only sized descendants, which were then
             // measured back to the host's full client rectangle by this parent.
-            CaptureDisplaySize(mainWindow.FindControl<Control>("WorkingRoot"));
+            CaptureDisplaySize(mainWindow.FindControl<Control>(HostContract.WorkingRoot));
             CaptureDisplaySize(_islandRoot);
-            CaptureDisplaySize(mainWindow.FindControl<Control>("RootLayoutTransformControl"));
-            CaptureDisplaySize(mainWindow.FindControl<Control>("GridRoot"));
-            mainWindow.Classes.Add("classisland-injector");
-            _islandRoot.Classes.Add("classisland-injector-root");
+            CaptureDisplaySize(mainWindow.FindControl<Control>(HostContract.RootLayoutTransformControl));
+            CaptureDisplaySize(mainWindow.FindControl<Control>(HostContract.GridRoot));
+            mainWindow.Classes.Add(HostContract.InjectorWindowClass);
+            _islandRoot.Classes.Add(HostContract.InjectorRootClass);
         }
 
         Apply();
@@ -141,6 +152,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         ApplyTransform(0);
         ApplyDecorations();
         ApplyWallpaper();
+        ApplyTextureHost();
         ReloadStyleSheet();
         ReloadNotificationTransitionStyles();
         ConfigureStyleSheetWatcher();
@@ -189,8 +201,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
         // than by PluginSdk. Resolve it from the already-loaded host to keep the
         // plugin aligned with the exact Avalonia version ClassIsland is running.
         var loaderAssembly = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(x =>
-            x.GetName().Name == "Avalonia.Markup.Xaml.Loader") ?? TryLoadHostRuntimeLoader();
-        var loaderType = loaderAssembly?.GetType("Avalonia.Markup.Xaml.AvaloniaRuntimeXamlLoader");
+            x.GetName().Name == HostContract.AvaloniaXamlLoaderAssembly) ?? TryLoadHostRuntimeLoader();
+        var loaderType = loaderAssembly?.GetType(HostContract.AvaloniaRuntimeXamlLoaderType);
         var loadMethod = loaderType?.GetMethod("Load", BindingFlags.Public | BindingFlags.Static,
             [typeof(string), typeof(Assembly), typeof(object), typeof(Uri), typeof(bool)]);
         return loadMethod?.Invoke(null, [xaml, typeof(Plugin).Assembly, null, uri, false]) as Styles;
@@ -263,7 +275,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         try
         {
             var hostDirectory = Path.GetDirectoryName(typeof(Application).Assembly.Location);
-            var loaderPath = hostDirectory == null ? null : Path.Combine(hostDirectory, "Avalonia.Markup.Xaml.Loader.dll");
+            var loaderPath = hostDirectory == null ? null : Path.Combine(hostDirectory, HostContract.AvaloniaXamlLoaderAssembly + ".dll");
             return loaderPath is { } path && File.Exists(path)
                 ? AssemblyLoadContext.Default.LoadFromAssemblyPath(path)
                 : null;
@@ -295,6 +307,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         var phase = _animationClock.Elapsed.TotalSeconds / _settings.AnimationPeriodSeconds * Math.Tau;
         ApplyTransform(Math.Sin(phase));
         AdvanceRipples();
+        AdvancePrepareOnClassOverlays();
         UpdateAnimationTimer();
     }
 
@@ -418,7 +431,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         var hasContinuousAnimation = _settings.AnimationEnabled && _settings.AnimationMode != IslandAnimationMode.None;
         var hasTransientAnimation = GetEffectProgress(_visibilityStartedAt, _settings.VisibilityDurationSeconds) < 1 ||
                                    GetEffectProgress(_emphasisStartedAt, _settings.EmphasisDurationSeconds) < 1 ||
-                                   _ripples.Count > 0 || _countdownArrows.Count > 0 ||
+                                   _ripples.Count > 0 || _prepareOnClassOverlays.Count > 0 ||
                                    _colorTransitionActive || _wallpaperTransitionActive;
         if (hasContinuousAnimation || hasTransientAnimation)
         {
@@ -437,12 +450,19 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
+        // 一次全树遍历同时服务底图边界与 MainWindowLine 发现，避免每 tick 遍历两次。
+        var descendants = _mainWindow.GetVisualDescendants().OfType<Control>().ToArray();
         if (_wallpaperHost != null)
         {
-            UpdateWallpaperBounds();
+            UpdateWallpaperBounds(descendants);
         }
 
-        var contentRoot = _mainWindow.FindControl<Control>("GridRoot");
+        if (_textureHost != null)
+        {
+            UpdateTextureBounds(descendants);
+        }
+
+        var contentRoot = _mainWindow.FindControl<Control>(HostContract.GridRoot);
         var isVisible = contentRoot?.IsVisible == true;
         if (isVisible && !_lastContentVisible)
         {
@@ -451,15 +471,15 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
         _lastContentVisible = isVisible;
 
-        var currentLines = _mainWindow.GetVisualDescendants().OfType<Control>()
-                     .Where(x => x.GetType().FullName == "ClassIsland.Controls.MainWindowLine")
-                     .ToArray();
+        var currentLines = descendants
+            .Where(x => x.GetType().FullName == HostContract.MainWindowLineTypeName)
+            .ToArray();
         foreach (var line in currentLines)
         {
             ConfigureNativeRipplePlayer(line);
             ObserveLine(line);
-            UpdateCountdownArrows(line);
-            var mask = line.GetType().GetProperty("MaskContent")?.GetValue(line);
+            UpdatePrepareOnClassOverlay(line);
+            var mask = GetMaskContentProperty(line.GetType())?.GetValue(line);
             if (!_lineMasks.TryGetValue(line, out var previousMask))
             {
                 _lineMasks[line] = mask;
@@ -480,9 +500,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
             }
         }
 
-        foreach (var line in _countdownArrows.Keys.Except(currentLines).ToArray())
+        foreach (var line in _prepareOnClassOverlays.Keys.Except(currentLines).ToArray())
         {
-            RemoveCountdownArrows(line);
+            RemovePrepareOnClassOverlay(line);
         }
         UpdateAnimationTimer();
     }
@@ -711,7 +731,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
-        var islandGrid = _mainWindow?.FindControl<Grid>("GridRoot");
+        var islandGrid = _mainWindow?.FindControl<Grid>(HostContract.GridRoot);
         if (islandGrid == null)
         {
             return;
@@ -739,15 +759,50 @@ internal sealed class MainWindowStyleInjector : IDisposable
     /// 把底图约束到岛屿的实际可见边界内（各行的 BackgroundBorder 并集），
     /// 避免底图溢出到整个窗口区域。
     /// </summary>
-    private void UpdateWallpaperBounds()
+    private void UpdateWallpaperBounds(IEnumerable<Control>? descendants = null)
     {
-        if (_wallpaperHost == null || _mainWindow == null || _wallpaperHost.Parent is not Visual parent)
+        if (_wallpaperHost == null)
         {
             return;
         }
 
-        var borders = _mainWindow.GetVisualDescendants().OfType<Border>()
-            .Where(x => x.Name == "BackgroundBorder" && x.IsVisible && x.Bounds.Width > 0 && x.Bounds.Height > 0)
+        var controls = descendants ?? _mainWindow?.GetVisualDescendants().OfType<Control>();
+        if (controls != null)
+        {
+            ApplyOverlayHostBounds(_wallpaperHost, controls);
+        }
+
+        UpdateWallpaperClip();
+    }
+
+    private void UpdateTextureBounds(IEnumerable<Control>? descendants = null)
+    {
+        if (_textureHost == null)
+        {
+            return;
+        }
+
+        var controls = descendants ?? _mainWindow?.GetVisualDescendants().OfType<Control>();
+        if (controls != null)
+        {
+            ApplyOverlayHostBounds(_textureHost, controls);
+        }
+
+        UpdateTextureClip();
+    }
+
+    /// <summary>
+    /// 把覆盖层宿主（底图 / 纹理）约束到主界面各行的 BackgroundBorder 并集边界内。
+    /// </summary>
+    private void ApplyOverlayHostBounds(Border host, IEnumerable<Control> descendants)
+    {
+        if (host.Parent is not Visual parent)
+        {
+            return;
+        }
+
+        var borders = descendants.OfType<Border>()
+            .Where(x => x.Name == HostContract.BackgroundBorder && x.IsVisible && x.Bounds.Width > 0 && x.Bounds.Height > 0)
             .ToArray();
         if (borders.Length == 0)
         {
@@ -778,30 +833,32 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
-        _wallpaperHost.Width = maxX - minX;
-        _wallpaperHost.Height = maxY - minY;
-        _wallpaperHost.HorizontalAlignment = HorizontalAlignment.Left;
-        _wallpaperHost.VerticalAlignment = VerticalAlignment.Top;
-        _wallpaperHost.Margin = new Thickness(minX, minY, 0, 0);
-        UpdateWallpaperClip();
+        host.Width = maxX - minX;
+        host.Height = maxY - minY;
+        host.HorizontalAlignment = HorizontalAlignment.Left;
+        host.VerticalAlignment = VerticalAlignment.Top;
+        host.Margin = new Thickness(minX, minY, 0, 0);
     }
 
-    private void UpdateWallpaperClip()
+    private void ApplyOverlayClip(Border? host)
     {
-        if (_wallpaperHost == null)
+        if (host == null)
         {
             return;
         }
 
-        var radius = _settings.Shape switch
+        host.CornerRadius = _settings.Shape switch
         {
             IslandShape.Rectangle => new CornerRadius(0),
-            IslandShape.Capsule => new CornerRadius(Math.Max(1, _wallpaperHost.Bounds.Height / 2)),
+            IslandShape.Capsule => new CornerRadius(Math.Max(1, host.Bounds.Height / 2)),
             IslandShape.HostDefault => new CornerRadius(0),
             _ => new CornerRadius(_settings.CornerRadius)
         };
-        _wallpaperHost.CornerRadius = radius;
     }
+
+    private void UpdateWallpaperClip() => ApplyOverlayClip(_wallpaperHost);
+
+    private void UpdateTextureClip() => ApplyOverlayClip(_textureHost);
 
     private void RemoveWallpaper()
     {
@@ -819,6 +876,113 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _wallpaperLoadedSource = WallpaperSource.None;
         _wallpaperLoadedPath = string.Empty;
         DisposeWallpaperBitmap();
+    }
+
+    // ============ 背景填充纹理 ============
+
+    private void ApplyTextureHost()
+    {
+        if (_mainWindow == null)
+        {
+            return;
+        }
+
+        var enabled = _settings.Enabled && _settings.BackgroundTextureType != BackgroundTexture.None;
+        if (!enabled)
+        {
+            RemoveTextureHost();
+            return;
+        }
+
+        EnsureTextureHost();
+        if (_textureHost == null)
+        {
+            return;
+        }
+
+        var color = TryParseColor(_settings.BackgroundTextureColor, out var parsed)
+            ? parsed
+            : Color.FromArgb(0x2E, 0xFF, 0xFF, 0xFF);
+        _textureHost.Background = BuildTextureBrush(_settings.BackgroundTextureType, color, _settings.BackgroundTextureSize);
+        UpdateTextureClip();
+    }
+
+    private void EnsureTextureHost()
+    {
+        if (_textureHost != null)
+        {
+            return;
+        }
+
+        var islandGrid = _mainWindow?.FindControl<Grid>(HostContract.GridRoot);
+        if (islandGrid == null)
+        {
+            return;
+        }
+
+        _textureHost = new Border
+        {
+            IsHitTestVisible = false,
+            ClipToBounds = true,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            HorizontalAlignment = HorizontalAlignment.Stretch
+        };
+        _textureHost.SizeChanged += (_, _) => UpdateTextureClip();
+        // 层级：背景图片（index 0）之上、行背景色之下。
+        islandGrid.Children.Insert(_wallpaperHost != null ? 1 : 0, _textureHost);
+        UpdateTextureBounds();
+        UpdateTextureClip();
+    }
+
+    private void RemoveTextureHost()
+    {
+        if (_textureHost != null && _textureHost.Parent is Panel panel)
+        {
+            panel.Children.Remove(_textureHost);
+        }
+
+        _textureHost = null;
+    }
+
+    /// <summary>
+    /// 构建可平铺的纹理画刷（网格 / 点阵 / 斜线 / 十字）。
+    /// </summary>
+    private static IBrush BuildTextureBrush(BackgroundTexture type, Color color, double size)
+    {
+        size = Math.Max(8, size);
+        var pen = new Pen(new SolidColorBrush(color), Math.Max(0.5, size / 12));
+        var group = new DrawingGroup();
+        switch (type)
+        {
+            case BackgroundTexture.Grid:
+                group.Children.Add(new GeometryDrawing { Geometry = new LineGeometry(new Point(0, 0), new Point(size, 0)), Pen = pen });
+                group.Children.Add(new GeometryDrawing { Geometry = new LineGeometry(new Point(0, 0), new Point(0, size)), Pen = pen });
+                break;
+            case BackgroundTexture.Dots:
+            {
+                var dot = Math.Max(0.5, size / 12);
+                group.Children.Add(new GeometryDrawing
+                {
+                    Geometry = new EllipseGeometry(new Rect(size / 2 - dot, size / 2 - dot, dot * 2, dot * 2)),
+                    Brush = pen.Brush
+                });
+                break;
+            }
+            case BackgroundTexture.DiagonalLines:
+                group.Children.Add(new GeometryDrawing { Geometry = new LineGeometry(new Point(0, size), new Point(size, 0)), Pen = pen });
+                break;
+            case BackgroundTexture.Cross:
+                group.Children.Add(new GeometryDrawing { Geometry = new LineGeometry(new Point(0, size), new Point(size, 0)), Pen = pen });
+                group.Children.Add(new GeometryDrawing { Geometry = new LineGeometry(new Point(0, 0), new Point(size, size)), Pen = pen });
+                break;
+        }
+
+        return new DrawingBrush
+        {
+            Drawing = group,
+            TileMode = TileMode.Tile,
+            DestinationRect = new RelativeRect(0, 0, size, size, RelativeUnit.Absolute)
+        };
     }
 
     private void DisposeWallpaperBitmap()
@@ -1104,57 +1268,154 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     // ============ 主界面底图结束 ============
 
-    private void UpdateCountdownArrows(Control line)
+    /// <summary>
+    /// 由 16ms 动画时钟驱动「即将上课」覆盖层：以当前时间按各自速度更新相位并重绘，
+    /// 保证 60fps 平滑。OnStateTick 的 50ms 轮询只负责创建与参数同步，不再承担帧推进。
+    /// </summary>
+    private void AdvancePrepareOnClassOverlays()
     {
-        if (!_settings.CountdownArrowsEnabled || !IsPrepareOnClassCountdown(line))
+        if (_prepareOnClassOverlays.Count == 0)
         {
-            RemoveCountdownArrows(line);
             return;
         }
 
-        if (!_countdownArrows.TryGetValue(line, out var arrows))
+        var phase = DateTime.UtcNow.TimeOfDay.TotalSeconds;
+        foreach (var (line, overlay) in _prepareOnClassOverlays.ToArray())
         {
+            overlay.Phase = phase * overlay.Speed;
+            // 进入主界面时淡入、离开时淡出。
+            overlay.Opacity = overlay.FadeOpacity;
+            overlay.InvalidateVisual();
+            if (overlay.IsFadeComplete)
+            {
+                RemovePrepareOnClassOverlay(line);
+            }
+        }
+    }
+
+    private void UpdatePrepareOnClassOverlay(Control line)
+    {
+        var style = _settings.PrepareOnClassStyle;
+        if (style == PrepareOnClassStyle.None || !(IsPrepareOnClassCountdown(line) || IsPreviewingPrepareOnClass()))
+        {
+            // 离开即将上课状态：先淡出，淡出完成后由动画时钟移除。
+            if (_prepareOnClassOverlays.TryGetValue(line, out var leaving) && !leaving.IsFadingOut)
+            {
+                leaving.BeginFadeOut();
+            }
+            return;
+        }
+
+        if (_prepareOnClassOverlays.TryGetValue(line, out var overlay) && !IsOverlayOfStyle(overlay, style))
+        {
+            // 样式类型变化时替换旧覆盖层。
+            RemovePrepareOnClassOverlay(line);
+            overlay = null;
+        }
+
+        if (overlay == null)
+        {
+            overlay = CreatePrepareOnClassOverlay(style);
+            if (overlay == null)
+            {
+                return;
+            }
+
             var overlayHost = line.GetVisualDescendants().OfType<Grid>()
-                .FirstOrDefault(x => x.Name == "GridOverlay");
+                .FirstOrDefault(x => x.Name == HostContract.GridOverlay);
             if (overlayHost == null)
             {
                 return;
             }
 
-            arrows = new CountdownArrowOverlay();
-            overlayHost.Children.Add(arrows);
-            _countdownArrows[line] = arrows;
+            overlayHost.Children.Add(overlay);
+            _prepareOnClassOverlays[line] = overlay;
+        }
+        else if (overlay.IsFadingOut)
+        {
+            // 重新进入即将上课状态：取消淡出，重新淡入。
+            overlay.CancelFadeOut();
         }
 
-        arrows.Phase = DateTime.UtcNow.TimeOfDay.TotalSeconds * _settings.CountdownArrowSpeed;
-        arrows.ArrowColor = TryParseColor(_settings.CountdownArrowColor, out var color) ? color : Colors.White;
-        arrows.ArrowCount = _settings.CountdownArrowCount;
-        arrows.ArrowThickness = _settings.CountdownArrowThickness;
-        arrows.InvalidateVisual();
+        ApplyPrepareOnClassOverlayParams(overlay, style);
+        overlay.InvalidateVisual();
     }
+
+    private static bool IsOverlayOfStyle(PrepareOnClassOverlay overlay, PrepareOnClassStyle style) => style switch
+    {
+        PrepareOnClassStyle.Arrows => overlay is CountdownArrowOverlay,
+        PrepareOnClassStyle.PulseRing => overlay is CountdownPulseRingOverlay,
+        PrepareOnClassStyle.Scanline => overlay is CountdownScanlineOverlay,
+        _ => false
+    };
+
+    private static PrepareOnClassOverlay? CreatePrepareOnClassOverlay(PrepareOnClassStyle style) => style switch
+    {
+        PrepareOnClassStyle.Arrows => new CountdownArrowOverlay(),
+        PrepareOnClassStyle.PulseRing => new CountdownPulseRingOverlay(),
+        PrepareOnClassStyle.Scanline => new CountdownScanlineOverlay(),
+        _ => null
+    };
+
+    private void ApplyPrepareOnClassOverlayParams(PrepareOnClassOverlay overlay, PrepareOnClassStyle style)
+    {
+        switch (overlay)
+        {
+            case CountdownArrowOverlay arrows:
+                arrows.Speed = _settings.CountdownArrowSpeed;
+                arrows.ArrowColor = TryParseColor(_settings.CountdownArrowColor, out var arrowColor) ? arrowColor : Colors.White;
+                arrows.ArrowCount = _settings.CountdownArrowCount;
+                arrows.ArrowsPerGroup = _settings.CountdownArrowPerGroup;
+                arrows.ArrowSpacing = _settings.CountdownArrowSpacing;
+                arrows.ArrowGroupSpacing = _settings.CountdownArrowGroupSpacing;
+                arrows.ArrowThickness = _settings.CountdownArrowThickness;
+                break;
+            case CountdownPulseRingOverlay pulse:
+                pulse.Speed = _settings.CountdownPulseSpeed;
+                pulse.Color = TryParseColor(_settings.CountdownPulseColor, out var pulseColor) ? pulseColor : Colors.White;
+                pulse.Thickness = _settings.CountdownPulseThickness;
+                pulse.MaxRadius = _settings.CountdownPulseMaxRadius;
+                break;
+            case CountdownScanlineOverlay scan:
+                scan.Speed = _settings.CountdownScanSpeed;
+                scan.Color = TryParseColor(_settings.CountdownScanColor, out var scanColor) ? scanColor : Colors.White;
+                scan.Thickness = _settings.CountdownScanThickness;
+                scan.Direction = _settings.CountdownScanDirection;
+                scan.TailEnabled = _settings.CountdownScanTailEnabled;
+                break;
+        }
+    }
+
+    /// <summary>「预览即将上课」激活期间（5 秒）视为即将上课状态。</summary>
+    private bool IsPreviewingPrepareOnClass() => DateTime.UtcNow < _prepareOnClassPreviewUntil;
 
     private static bool IsPrepareOnClassCountdown(Control line)
     {
-        var request = line.GetType().GetProperty("CurrentNotificationRequest")?.GetValue(line);
-        return request?.GetType().GetProperty("ChannelId")?.GetValue(request) is Guid channelId &&
-               channelId == new Guid("CDDFE7FF-B904-4C73-B458-82793B2F66E9");
+        var request = GetCurrentNotificationRequestProperty(line.GetType())?.GetValue(line);
+        if (request == null)
+        {
+            return false;
+        }
+
+        return GetChannelIdProperty(request.GetType())?.GetValue(request) is Guid channelId &&
+               channelId == HostContract.PrepareOnClassChannelId;
     }
 
-    private void RemoveCountdownArrows(Control line)
+    private void RemovePrepareOnClassOverlay(Control line)
     {
-        if (!_countdownArrows.Remove(line, out var arrows))
+        if (!_prepareOnClassOverlays.Remove(line, out var overlay))
         {
             return;
         }
 
-        (arrows.Parent as Panel)?.Children.Remove(arrows);
+        (overlay.Parent as Panel)?.Children.Remove(overlay);
     }
 
-    private void RemoveAllCountdownArrows()
+    private void RemoveAllPrepareOnClassOverlays()
     {
-        foreach (var line in _countdownArrows.Keys.ToArray())
+        foreach (var line in _prepareOnClassOverlays.Keys.ToArray())
         {
-            RemoveCountdownArrows(line);
+            RemovePrepareOnClassOverlay(line);
         }
     }
 
@@ -1168,7 +1429,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     private void LineOnPropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
     {
-        if (!_settings.Enabled || e.Property.Name != "MaskContent" || sender is not Control line)
+        if (!_settings.Enabled || e.Property.Name != HostContract.MaskContentProperty || sender is not Control line)
         {
             return;
         }
@@ -1189,8 +1450,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     private void ConfigureNativeRipplePlayer(Control line)
     {
-        var field = line.GetType().GetField("<TopmostEffectWindow>k__BackingField",
-            BindingFlags.Instance | BindingFlags.NonPublic);
+        var field = GetEffectPlayerField(line.GetType());
         if (field == null)
         {
             return;
@@ -1244,8 +1504,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
     {
         foreach (var (line, player) in _nativeEffectPlayers.ToArray())
         {
-            var field = line.GetType().GetField("<TopmostEffectWindow>k__BackingField",
-                BindingFlags.Instance | BindingFlags.NonPublic);
+            var field = GetEffectPlayerField(line.GetType());
             RestoreNativeRipplePlayer(line, field, player);
         }
         _nativeEffectPlayers.Clear();
@@ -1269,17 +1528,109 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _nativeEffectPlayers.Remove(line);
     }
 
-    public void PreviewRipple()
+    /// <summary>
+    /// 预览一次完整提醒：对每行注入临时遮罩内容，触发宿主遮罩过渡动画；
+    /// 遮罩内容变化会经 <see cref="LineOnPropertyChanged"/> 同时触发强调动画与 Ripple。
+    /// </summary>
+    public void PreviewNotification()
     {
         if (_mainWindow == null)
         {
             Attach();
         }
 
-        // Capture the original full-screen effect player before creating the
-        // preview. It may not have been discovered by the regular 50 ms poll yet.
+        // 先跑一次状态轮询，确保 MainWindowLine 已被发现、原生 Ripple 播放器已被劫持，
+        // 这样预览的 Ripple 才能进入全屏特效窗口。
         OnStateTick(null, EventArgs.Empty);
-        CreateRipple();
+        foreach (var line in GetMainWindowLines())
+        {
+            PlayPreviewMask(line);
+        }
+    }
+
+    /// <summary>「预览即将上课」：接下来 5 秒按即将上课状态显示所选样式。</summary>
+    public void PreviewPrepareOnClass()
+    {
+        if (_mainWindow == null)
+        {
+            Attach();
+        }
+
+        _prepareOnClassPreviewUntil = DateTime.UtcNow.AddSeconds(5);
+        // 立即创建覆盖层；5 秒后 OnStateTick 的轮询会自动移除。
+        OnStateTick(null, EventArgs.Empty);
+    }
+
+    private Control[] GetMainWindowLines() =>
+        _mainWindow?.GetVisualDescendants().OfType<Control>()
+            .Where(x => x.GetType().FullName == HostContract.MainWindowLineTypeName)
+            .ToArray() ?? [];
+
+    private void PlayPreviewMask(Control line)
+    {
+        var maskProperty = GetMaskContentProperty(line.GetType());
+        if (maskProperty == null || maskProperty.GetValue(line) != null)
+        {
+            return;
+        }
+
+        var content = new NotificationContent
+        {
+            Content = new TextBlock { Text = "提醒预览", FontSize = 18, FontWeight = FontWeight.SemiBold },
+            Duration = TimeSpan.FromSeconds(1.2),
+            Color = TryParseColor(_settings.RippleColor, out var rippleColor)
+                ? new SolidColorBrush(rippleColor)
+                : new SolidColorBrush(Colors.White)
+        };
+        // 设置遮罩内容会触发 LineOnPropertyChanged → 强调动画 + Ripple。
+        maskProperty.SetValue(line, content);
+        SetPseudoClass(line, ":mask-in", true);
+        _ = ClearPreviewMaskAsync(line, maskProperty);
+    }
+
+    /// <summary>
+    /// 反射设置宿主控件的伪类（StyledElement.PseudoClasses 对插件不可直接访问）。
+    /// </summary>
+    private static void SetPseudoClass(Control line, string name, bool value)
+    {
+        try
+        {
+            var property = line.GetType().GetProperty("PseudoClasses",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (property?.GetValue(line) is Classes classes)
+            {
+                classes.Set(name, value);
+            }
+        }
+        catch
+        {
+            // 宿主版本变化时忽略伪类设置（仅影响预览动画完整性）。
+        }
+    }
+
+    private static async Task ClearPreviewMaskAsync(Control line, PropertyInfo maskProperty)
+    {
+        try
+        {
+            await Task.Delay(1200);
+            if (!line.IsAttachedToVisualTree())
+            {
+                return;
+            }
+
+            maskProperty.SetValue(line, null);
+            SetPseudoClass(line, ":mask-in", false);
+            SetPseudoClass(line, ":mask-out", true);
+            await Task.Delay(300);
+            if (line.IsAttachedToVisualTree())
+            {
+                SetPseudoClass(line, ":mask-out", false);
+            }
+        }
+        catch
+        {
+            // 预览期间宿主重建布局等异常一律忽略。
+        }
     }
 
     private void CreateRipple()
@@ -1305,14 +1656,16 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
         var center = GetRippleCenter(effectWindow);
-        double? hanabiClipRadius = isHanabi && _settings.HanabiConstraintEnabled
-            ? GetHanabiConstraintRadius()
+        // 所有类型的 Ripple 都支持圆形约束扩散；半径 0 时按主界面大小自动计算。
+        double? clipRadius = _settings.RippleConstraintEnabled
+            ? (_settings.RippleConstraintRadius > 0 ? _settings.RippleConstraintRadius : GetAutomaticConstraintRadius())
             : null;
         var ripple = new IslandRippleOverlay(center, _settings.RippleType,
             isHanabi ? Colors.White : color,
             TimeSpan.FromSeconds(_settings.RippleDurationSeconds),
             isHanabi ? 2.5 : _settings.RippleThickness,
-            hanabiClipRadius);
+            clipRadius,
+            _settings.RippleOpacity);
         ripple.HorizontalAlignment = HorizontalAlignment.Stretch;
         ripple.VerticalAlignment = VerticalAlignment.Stretch;
 
@@ -1348,7 +1701,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         // per-line player has been observed, avoiding the island-sized fallback
         // window that used to crop the Hanabi centre ball.
         var topmostEffectWindow = _mainWindow?.GetType()
-            .GetProperty("TopmostEffectWindow", BindingFlags.Instance | BindingFlags.Public)
+            .GetProperty(HostContract.TopmostEffectWindowProperty, BindingFlags.Instance | BindingFlags.Public)
             ?.GetValue(_mainWindow);
         if (TryGetEffectControls(topmostEffectWindow, out effectWindow) is { } controlsFromMainWindow)
         {
@@ -1366,9 +1719,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return null;
         }
 
-        var viewModel = player!.GetType().GetProperty("ViewModel", BindingFlags.Instance | BindingFlags.Public)
+        var viewModel = player!.GetType().GetProperty(HostContract.ViewModelProperty, BindingFlags.Instance | BindingFlags.Public)
             ?.GetValue(player);
-        if (viewModel?.GetType().GetProperty("EffectControls", BindingFlags.Instance | BindingFlags.Public)
+        if (viewModel?.GetType().GetProperty(HostContract.EffectControlsProperty, BindingFlags.Instance | BindingFlags.Public)
                 ?.GetValue(viewModel) is IList controls)
         {
             return controls;
@@ -1411,7 +1764,11 @@ internal sealed class MainWindowStyleInjector : IDisposable
             new Point(windowRoot.Bounds.Width / 2, windowRoot.Bounds.Height / 2);
     }
 
-    private double GetHanabiConstraintRadius()
+    /// <summary>
+    /// 自动约束半径：包含主界面岛屿并留出舒适的扩散余量，同时确保全屏特效窗口里的
+    /// Ripple 不会扩散到整块桌面。
+    /// </summary>
+    private double GetAutomaticConstraintRadius()
     {
         var root = _islandRoot;
         if (root == null)
@@ -1419,8 +1776,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return 220;
         }
 
-        // The circle contains the island plus a comfortable bloom margin while
-        // ensuring the full-screen topmost effect never leaks across the desktop.
         return Math.Clamp(Math.Max(root.Bounds.Width, root.Bounds.Height) * 1.4, 180, 560);
     }
 
@@ -1472,7 +1827,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
             : ParseColorOrDefault(_settings.ShadowColor, _dynamicShadowColor);
 
         foreach (var borderControl in _mainWindow.GetVisualDescendants().OfType<Border>()
-                     .Where(x => x.Name is "BackgroundBorder" or "BackgroundBorderOverlayMask" or "OverlayMask"))
+                     .Where(x => x.Name is HostContract.BackgroundBorder or HostContract.BackgroundBorderOverlayMask or HostContract.OverlayMask))
         {
             var originalCornerRadius = borderControl.CornerRadius;
             var originalBackground = borderControl.Background;
@@ -1508,12 +1863,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
             if (borderControl.Name == "BackgroundBorder" && _settings.CustomBackgroundEnabled)
             {
                 backgroundBrush = _settings.GradientEnabled && TryParseColor(_settings.GradientEndColor, out var endColor)
-                    ? new LinearGradientBrush
-                    {
-                        StartPoint = RelativePoint.TopLeft,
-                        EndPoint = RelativePoint.BottomRight,
-                        GradientStops = [new GradientStop(background, 0), new GradientStop(endColor, 1)]
-                    }
+                    ? BuildGradientBrush(background, endColor)
                     : new SolidColorBrush(background);
                 borderControl.Background = backgroundBrush;
             }
@@ -1535,7 +1885,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         foreach (var grid in _mainWindow.GetVisualDescendants().OfType<Grid>()
-                     .Where(x => x.Name == "GridRoot" && x.FindAncestorOfType<Control>()?.GetType().FullName == "ClassIsland.Controls.MainWindowLine"))
+                     .Where(x => x.Name == HostContract.GridRoot && x.FindAncestorOfType<Control>()?.GetType().FullName == HostContract.MainWindowLineTypeName))
         {
             var originalEffect = grid.Effect;
             _decorationRestorers.Add(() => grid.Effect = originalEffect);
@@ -1562,10 +1912,40 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _decorationRestorers.Clear();
     }
 
+    /// <summary>按用户配置的渐变方向构建线性渐变画刷。</summary>
+    private LinearGradientBrush BuildGradientBrush(Color start, Color end)
+    {
+        var (startPoint, endPoint) = GradientGeometry.Points(_settings.GradientDirection);
+        return new LinearGradientBrush
+        {
+            StartPoint = startPoint,
+            EndPoint = endPoint,
+            GradientStops = [new GradientStop(start, 0), new GradientStop(end, 1)]
+        };
+    }
+
     private static bool TryParseColor(string text, out Color color)
     {
         return Color.TryParse(text, out color);
     }
+
+    // ============ 宿主反射元数据缓存 ============
+
+    private static FieldInfo? GetEffectPlayerField(Type type) =>
+        EffectPlayerFieldCache.GetOrAdd(type, static t => t.GetField(
+            HostContract.TopmostEffectWindowBackingField, BindingFlags.Instance | BindingFlags.NonPublic));
+
+    private static PropertyInfo? GetMaskContentProperty(Type type) =>
+        MaskContentPropertyCache.GetOrAdd(type, static t => t.GetProperty(
+            HostContract.MaskContentProperty, BindingFlags.Instance | BindingFlags.Public));
+
+    private static PropertyInfo? GetCurrentNotificationRequestProperty(Type type) =>
+        CurrentNotificationRequestPropertyCache.GetOrAdd(type, static t => t.GetProperty(
+            HostContract.CurrentNotificationRequestProperty, BindingFlags.Instance | BindingFlags.Public));
+
+    private static PropertyInfo? GetChannelIdProperty(Type type) =>
+        ChannelIdPropertyCache.GetOrAdd(type, static t => t.GetProperty(
+            HostContract.ChannelIdProperty, BindingFlags.Instance | BindingFlags.Public));
 
     private void ConfigureStyleSheetWatcher()
     {
@@ -1613,7 +1993,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _colorTransitionActive = false;
         _dynamicColorsInitialized = false;
         RemoveWallpaper();
-        RemoveAllCountdownArrows();
+        RemoveTextureHost();
+        RemoveAllPrepareOnClassOverlays();
         _lineMasks.Clear();
         foreach (var line in _observedLines)
         {
@@ -1645,7 +2026,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         {
             _islandRoot.RenderTransform = _originalTransform;
             _islandRoot.Opacity = _originalOpacity;
-            _islandRoot.Classes.Remove("classisland-injector-root");
+            _islandRoot.Classes.Remove(HostContract.InjectorRootClass);
         }
 
         foreach (var (control, originalSize) in _originalDisplaySizes)
@@ -1654,7 +2035,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
             control.Height = originalSize.Height;
         }
 
-        _mainWindow?.Classes.Remove("classisland-injector");
+        _mainWindow?.Classes.Remove(HostContract.InjectorWindowClass);
         _windowRoot = null;
         _styleHost = null;
     }

@@ -20,10 +20,11 @@ internal sealed class IslandRippleOverlay : Control
     private readonly Color _color;
     private readonly double _thickness;
     private readonly Point _center;
-    private readonly double? _hanabiClipRadius;
+    private readonly double? _clipRadius;
+    private readonly double _opacityScale = 1;
 
     public IslandRippleOverlay(Point center, RippleType type, Color color, TimeSpan duration, double thickness,
-        double? hanabiClipRadius = null)
+        double? clipRadius = null, double opacityScale = 1)
     {
         _center = center;
         _type = type;
@@ -34,7 +35,8 @@ internal sealed class IslandRippleOverlay : Control
             ? TimeSpan.FromSeconds(HanabiClipDuration)
             : duration;
         _thickness = thickness;
-        _hanabiClipRadius = hanabiClipRadius;
+        _clipRadius = clipRadius;
+        _opacityScale = Math.Clamp(opacityScale, 0, 1);
         IsHitTestVisible = false;
         ClipToBounds = false;
     }
@@ -46,7 +48,8 @@ internal sealed class IslandRippleOverlay : Control
         var progress = Math.Clamp((DateTime.UtcNow - _startedAt).TotalMilliseconds / _duration.TotalMilliseconds, 0, 1);
         // Hanabi owns separate opacity curves for its core and burst. Applying the
         // ordinary ripple fade here would multiply those curves and hide it early.
-        Opacity = _type == RippleType.Hanabi ? 1 : 1 - progress;
+        // _opacityScale 是「全局降低不透明度」，作用于所有类型。
+        Opacity = _type == RippleType.Hanabi ? _opacityScale : (1 - progress) * _opacityScale;
         InvalidateVisual();
     }
 
@@ -58,37 +61,43 @@ internal sealed class IslandRippleOverlay : Control
         var brush = new SolidColorBrush(_color);
         var rect = new Rect(_center.X - radius, _center.Y - radius, radius * 2, radius * 2);
 
-        switch (_type)
+        void Draw()
         {
-            case RippleType.Ring:
-                context.DrawEllipse(null, new Pen(brush, _thickness), rect);
-                break;
-            case RippleType.DoubleRing:
-                context.DrawEllipse(null, new Pen(brush, _thickness), rect);
-                var delayed = radius * Math.Max(0, progress - 0.22) / Math.Max(progress, 0.001);
-                context.DrawEllipse(null, new Pen(brush, _thickness * 0.65),
-                    new Rect(_center.X - delayed, _center.Y - delayed, delayed * 2, delayed * 2));
-                break;
-            case RippleType.Glow:
-                context.DrawEllipse(brush, null, rect);
-                break;
-            case RippleType.Square:
-                context.DrawRectangle(null, new Pen(brush, _thickness), rect);
-                break;
-            case RippleType.Hanabi:
-                if (_hanabiClipRadius is { } clipRadius)
-                {
-                    using (context.PushGeometryClip(new EllipseGeometry(new Rect(
-                               _center.X - clipRadius, _center.Y - clipRadius, clipRadius * 2, clipRadius * 2))))
-                    {
-                        DrawHanabi(context, progress);
-                    }
-                }
-                else
-                {
+            switch (_type)
+            {
+                case RippleType.Ring:
+                    context.DrawEllipse(null, new Pen(brush, _thickness), rect);
+                    break;
+                case RippleType.DoubleRing:
+                    context.DrawEllipse(null, new Pen(brush, _thickness), rect);
+                    var delayed = radius * Math.Max(0, progress - 0.22) / Math.Max(progress, 0.001);
+                    context.DrawEllipse(null, new Pen(brush, _thickness * 0.65),
+                        new Rect(_center.X - delayed, _center.Y - delayed, delayed * 2, delayed * 2));
+                    break;
+                case RippleType.Glow:
+                    context.DrawEllipse(brush, null, rect);
+                    break;
+                case RippleType.Square:
+                    context.DrawRectangle(null, new Pen(brush, _thickness), rect);
+                    break;
+                case RippleType.Hanabi:
                     DrawHanabi(context, progress);
-                }
-                break;
+                    break;
+            }
+        }
+
+        // 所有类型的 Ripple 都支持圆形约束扩散（用户可自定义半径，0 为自动按主界面大小）。
+        if (_clipRadius is { } clipRadius)
+        {
+            using (context.PushGeometryClip(new EllipseGeometry(new Rect(
+                       _center.X - clipRadius, _center.Y - clipRadius, clipRadius * 2, clipRadius * 2))))
+            {
+                Draw();
+            }
+        }
+        else
+        {
+            Draw();
         }
     }
 

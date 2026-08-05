@@ -57,6 +57,53 @@ public enum RippleType
 }
 
 /// <summary>
+/// 「即将上课」倒计时期间显示的特效样式。
+/// </summary>
+public enum PrepareOnClassStyle
+{
+    None,
+    Arrows,
+    PulseRing,
+    Scanline
+}
+
+/// <summary>
+/// 「即将上课样式 · 扫描线」的运动方向。
+/// </summary>
+public enum ScanlineDirection
+{
+    Horizontal,
+    Vertical
+}
+
+/// <summary>
+/// 自定义背景的渐变方向。
+/// </summary>
+public enum GradientDirection
+{
+    TopLeftToBottomRight,
+    TopToBottom,
+    LeftToRight,
+    BottomLeftToTopRight,
+    BottomToTop,
+    RightToLeft,
+    TopRightToBottomLeft,
+    BottomRightToTopLeft
+}
+
+/// <summary>
+/// 背景填充纹理类型（叠加在背景色之上，可与背景图片同时使用）。
+/// </summary>
+public enum BackgroundTexture
+{
+    None,
+    Grid,
+    Dots,
+    DiagonalLines,
+    Cross
+}
+
+/// <summary>
 /// 主界面底图的图片来源。
 /// </summary>
 public enum WallpaperSource
@@ -123,6 +170,10 @@ public sealed class InjectorSettings
     private string _backgroundColor = "#CC202020";
     private bool _gradientEnabled;
     private string _gradientEndColor = "#CC4040A0";
+    private GradientDirection _gradientDirection = GradientDirection.TopLeftToBottomRight;
+    private BackgroundTexture _backgroundTextureType = BackgroundTexture.None;
+    private string _backgroundTextureColor = "#2EFFFFFF";
+    private double _backgroundTextureSize = 24;
     private bool _shadowEnabled;
     private string _shadowColor = "#99000000";
     private double _shadowBlur = 16;
@@ -143,12 +194,14 @@ public sealed class InjectorSettings
     private string _rippleColor = "#AA7DD3FC";
     private double _rippleDurationSeconds = 0.65;
     private double _rippleThickness = 3;
-    private bool _hanabiConstraintEnabled = true;
+    private double _rippleOpacity = 1;
+    private bool _rippleConstraintEnabled = true;
+    private double _rippleConstraintRadius;
     private bool _dynamicBackgroundColorEnabled;
     private bool _dynamicBorderColorEnabled;
     private bool _dynamicShadowColorEnabled;
     private bool _revertColorsWhenPaused;
-    private double _albumColorPollingIntervalSeconds = 4;
+    private double _albumColorPollingIntervalSeconds = 10;
     private double _albumColorTransitionSeconds = 0.6;
     private bool _wallpaperEnabled;
     private WallpaperSource _wallpaperSource = WallpaperSource.None;
@@ -159,11 +212,23 @@ public sealed class InjectorSettings
     private double _wallpaperOffsetX;
     private double _wallpaperOffsetY;
     private double _wallpaperSlideshowIntervalSeconds = 30;
-    private bool _countdownArrowsEnabled;
+    private PrepareOnClassStyle _prepareOnClassStyle = PrepareOnClassStyle.None;
     private string _countdownArrowColor = "#BFF8FAFC";
     private int _countdownArrowCount = 5;
+    private int _countdownArrowPerGroup = 2;
+    private double _countdownArrowSpacing = 12;
+    private double _countdownArrowGroupSpacing = 24;
     private double _countdownArrowSpeed = 2.4;
-    private double _countdownArrowThickness = 3;
+    private double _countdownArrowThickness = 8;
+    private string _countdownPulseColor = "#BFF8FAFC";
+    private double _countdownPulseThickness = 3;
+    private double _countdownPulseSpeed = 1;
+    private double _countdownPulseMaxRadius = 0.5;
+    private string _countdownScanColor = "#BFF8FAFC";
+    private double _countdownScanThickness = 2;
+    private double _countdownScanSpeed = 1;
+    private ScanlineDirection _countdownScanDirection = ScanlineDirection.Horizontal;
+    private bool _countdownScanTailEnabled = true;
     private int _updateDepth;
     private bool _changePending;
 
@@ -190,6 +255,10 @@ public sealed class InjectorSettings
     public string BackgroundColor { get => _backgroundColor; set => Set(ref _backgroundColor, value.Trim()); }
     public bool GradientEnabled { get => _gradientEnabled; set => Set(ref _gradientEnabled, value); }
     public string GradientEndColor { get => _gradientEndColor; set => Set(ref _gradientEndColor, value.Trim()); }
+    public GradientDirection GradientDirection { get => _gradientDirection; set => Set(ref _gradientDirection, value); }
+    public BackgroundTexture BackgroundTextureType { get => _backgroundTextureType; set => Set(ref _backgroundTextureType, value); }
+    public string BackgroundTextureColor { get => _backgroundTextureColor; set => Set(ref _backgroundTextureColor, value.Trim()); }
+    public double BackgroundTextureSize { get => _backgroundTextureSize; set => Set(ref _backgroundTextureSize, Math.Clamp(value, 8, 80)); }
     public bool ShadowEnabled { get => _shadowEnabled; set => Set(ref _shadowEnabled, value); }
     public string ShadowColor { get => _shadowColor; set => Set(ref _shadowColor, value.Trim()); }
     public double ShadowBlur { get => _shadowBlur; set => Set(ref _shadowBlur, Math.Clamp(value, 0, 200)); }
@@ -210,7 +279,9 @@ public sealed class InjectorSettings
     public string RippleColor { get => _rippleColor; set => Set(ref _rippleColor, value.Trim()); }
     public double RippleDurationSeconds { get => _rippleDurationSeconds; set => Set(ref _rippleDurationSeconds, Math.Clamp(value, 0.1, 10)); }
     public double RippleThickness { get => _rippleThickness; set => Set(ref _rippleThickness, Math.Clamp(value, 0.5, 40)); }
-    public bool HanabiConstraintEnabled { get => _hanabiConstraintEnabled; set => Set(ref _hanabiConstraintEnabled, value); }
+    public double RippleOpacity { get => _rippleOpacity; set => Set(ref _rippleOpacity, Math.Clamp(value, 0.1, 1)); }
+    public bool RippleConstraintEnabled { get => _rippleConstraintEnabled; set => Set(ref _rippleConstraintEnabled, value); }
+    public double RippleConstraintRadius { get => _rippleConstraintRadius; set => Set(ref _rippleConstraintRadius, Math.Clamp(value, 0, 2000)); }
     public bool DynamicBackgroundColorEnabled { get => _dynamicBackgroundColorEnabled; set => Set(ref _dynamicBackgroundColorEnabled, value); }
     public bool DynamicBorderColorEnabled { get => _dynamicBorderColorEnabled; set => Set(ref _dynamicBorderColorEnabled, value); }
     public bool DynamicShadowColorEnabled { get => _dynamicShadowColorEnabled; set => Set(ref _dynamicShadowColorEnabled, value); }
@@ -226,11 +297,23 @@ public sealed class InjectorSettings
     public double WallpaperOffsetX { get => _wallpaperOffsetX; set => Set(ref _wallpaperOffsetX, Math.Clamp(value, -0.5, 0.5)); }
     public double WallpaperOffsetY { get => _wallpaperOffsetY; set => Set(ref _wallpaperOffsetY, Math.Clamp(value, -0.5, 0.5)); }
     public double WallpaperSlideshowIntervalSeconds { get => _wallpaperSlideshowIntervalSeconds; set => Set(ref _wallpaperSlideshowIntervalSeconds, Math.Clamp(value, 2, 3600)); }
-    public bool CountdownArrowsEnabled { get => _countdownArrowsEnabled; set => Set(ref _countdownArrowsEnabled, value); }
+    public PrepareOnClassStyle PrepareOnClassStyle { get => _prepareOnClassStyle; set => Set(ref _prepareOnClassStyle, value); }
     public string CountdownArrowColor { get => _countdownArrowColor; set => Set(ref _countdownArrowColor, value.Trim()); }
-    public int CountdownArrowCount { get => _countdownArrowCount; set => Set(ref _countdownArrowCount, Math.Clamp(value, 2, 24)); }
+    public int CountdownArrowCount { get => _countdownArrowCount; set => Set(ref _countdownArrowCount, Math.Clamp(value, 1, 24)); }
+    public int CountdownArrowPerGroup { get => _countdownArrowPerGroup; set => Set(ref _countdownArrowPerGroup, Math.Clamp(value, 1, 12)); }
+    public double CountdownArrowSpacing { get => _countdownArrowSpacing; set => Set(ref _countdownArrowSpacing, Math.Clamp(value, 0, 100)); }
+    public double CountdownArrowGroupSpacing { get => _countdownArrowGroupSpacing; set => Set(ref _countdownArrowGroupSpacing, Math.Clamp(value, 0, 400)); }
     public double CountdownArrowSpeed { get => _countdownArrowSpeed; set => Set(ref _countdownArrowSpeed, Math.Clamp(value, 0.1, 12)); }
-    public double CountdownArrowThickness { get => _countdownArrowThickness; set => Set(ref _countdownArrowThickness, Math.Clamp(value, 0.5, 8)); }
+    public double CountdownArrowThickness { get => _countdownArrowThickness; set => Set(ref _countdownArrowThickness, Math.Clamp(value, 0.5, 20)); }
+    public string CountdownPulseColor { get => _countdownPulseColor; set => Set(ref _countdownPulseColor, value.Trim()); }
+    public double CountdownPulseThickness { get => _countdownPulseThickness; set => Set(ref _countdownPulseThickness, Math.Clamp(value, 0.5, 20)); }
+    public double CountdownPulseSpeed { get => _countdownPulseSpeed; set => Set(ref _countdownPulseSpeed, Math.Clamp(value, 0.1, 8)); }
+    public double CountdownPulseMaxRadius { get => _countdownPulseMaxRadius; set => Set(ref _countdownPulseMaxRadius, Math.Clamp(value, 0.1, 1)); }
+    public string CountdownScanColor { get => _countdownScanColor; set => Set(ref _countdownScanColor, value.Trim()); }
+    public double CountdownScanThickness { get => _countdownScanThickness; set => Set(ref _countdownScanThickness, Math.Clamp(value, 0.5, 20)); }
+    public double CountdownScanSpeed { get => _countdownScanSpeed; set => Set(ref _countdownScanSpeed, Math.Clamp(value, 0.1, 8)); }
+    public ScanlineDirection CountdownScanDirection { get => _countdownScanDirection; set => Set(ref _countdownScanDirection, value); }
+    public bool CountdownScanTailEnabled { get => _countdownScanTailEnabled; set => Set(ref _countdownScanTailEnabled, value); }
 
     public void ResetToDefaults()
     {
@@ -533,6 +616,10 @@ public sealed class InjectorSettings
         BackgroundColor = source.BackgroundColor;
         GradientEnabled = source.GradientEnabled;
         GradientEndColor = source.GradientEndColor;
+        GradientDirection = source.GradientDirection;
+        BackgroundTextureType = source.BackgroundTextureType;
+        BackgroundTextureColor = source.BackgroundTextureColor;
+        BackgroundTextureSize = source.BackgroundTextureSize;
         ShadowEnabled = source.ShadowEnabled;
         ShadowColor = source.ShadowColor;
         ShadowBlur = source.ShadowBlur;
@@ -558,7 +645,9 @@ public sealed class InjectorSettings
         AlbumColorTransitionSeconds = source.AlbumColorTransitionSeconds;
         RippleDurationSeconds = source.RippleDurationSeconds;
         RippleThickness = source.RippleThickness;
-        HanabiConstraintEnabled = source.HanabiConstraintEnabled;
+        RippleOpacity = source.RippleOpacity;
+        RippleConstraintEnabled = source.RippleConstraintEnabled;
+        RippleConstraintRadius = source.RippleConstraintRadius;
         DynamicBackgroundColorEnabled = source.DynamicBackgroundColorEnabled;
         WallpaperEnabled = source.WallpaperEnabled;
         WallpaperSource = source.WallpaperSource;
@@ -569,11 +658,23 @@ public sealed class InjectorSettings
         WallpaperOffsetX = source.WallpaperOffsetX;
         WallpaperOffsetY = source.WallpaperOffsetY;
         WallpaperSlideshowIntervalSeconds = source.WallpaperSlideshowIntervalSeconds;
-        CountdownArrowsEnabled = source.CountdownArrowsEnabled;
+        PrepareOnClassStyle = source.PrepareOnClassStyle;
         CountdownArrowColor = source.CountdownArrowColor;
         CountdownArrowCount = source.CountdownArrowCount;
+        CountdownArrowPerGroup = source.CountdownArrowPerGroup;
+        CountdownArrowSpacing = source.CountdownArrowSpacing;
+        CountdownArrowGroupSpacing = source.CountdownArrowGroupSpacing;
         CountdownArrowSpeed = source.CountdownArrowSpeed;
         CountdownArrowThickness = source.CountdownArrowThickness;
+        CountdownPulseColor = source.CountdownPulseColor;
+        CountdownPulseThickness = source.CountdownPulseThickness;
+        CountdownPulseSpeed = source.CountdownPulseSpeed;
+        CountdownPulseMaxRadius = source.CountdownPulseMaxRadius;
+        CountdownScanColor = source.CountdownScanColor;
+        CountdownScanThickness = source.CountdownScanThickness;
+        CountdownScanSpeed = source.CountdownScanSpeed;
+        CountdownScanDirection = source.CountdownScanDirection;
+        CountdownScanTailEnabled = source.CountdownScanTailEnabled;
         EndUpdate();
     }
 

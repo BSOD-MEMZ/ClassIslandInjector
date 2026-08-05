@@ -166,6 +166,7 @@ internal sealed class IslandVisualEditor : UserControl
             }
         };
 
+        // 舞台（中间视图）与底部操作区保持固定布局（仅右侧检查器可拖动手柄调整宽度）。
         Content = new Grid
         {
             RowDefinitions = new RowDefinitions("*,Auto"),
@@ -178,11 +179,12 @@ internal sealed class IslandVisualEditor : UserControl
     public void Update(IslandPreviewState state)
     {
         _state = state;
+        var (gradientStart, gradientEnd) = GradientGeometry.Points(state.GradientDirection);
         IBrush background = state.CustomBackground && state.Gradient
             ? new LinearGradientBrush
             {
-                StartPoint = RelativePoint.TopLeft,
-                EndPoint = RelativePoint.BottomRight,
+                StartPoint = gradientStart,
+                EndPoint = gradientEnd,
                 GradientStops = [new GradientStop(state.BackgroundColor, 0), new GradientStop(state.GradientEndColor, 1)]
             }
             : new SolidColorBrush(state.CustomBackground ? state.BackgroundColor : Color.FromArgb(220, 48, 48, 48));
@@ -635,46 +637,57 @@ internal sealed class IslandVisualEditorWindow : Window
 
         var inspector = new StackPanel
         {
-            Spacing = 6,
+            Spacing = 8,
             Children =
             {
-                new TextBlock { Text = "检查器", FontSize = 18, FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 0, 0, 6) },
+                new TextBlock { Text = "检查器", FontSize = 18, FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 0, 0, 4) },
                 SectionTitle("\uE113", "变换"),
-                RowCard("\uE113", "不透明度", OpacitySpin),
-                RowCard("\uE113", "缩放", ScaleSpin),
-                RowCard("\uE113", "旋转角度", RotationSpin),
-                RowCard("\uE113", "水平偏移", OffsetXSpin),
-                RowCard("\uE113", "垂直偏移", OffsetYSpin),
+                CompactRow("不透明度", OpacitySpin),
+                CompactRow("缩放", ScaleSpin),
+                CompactRow("旋转角度", RotationSpin),
+                CompactRow("水平偏移", OffsetXSpin),
+                CompactRow("垂直偏移", OffsetYSpin),
                 SectionTitle("\uEE83", "尺寸与圆角"),
-                RowCard("\uEE83", "固定显示大小", CustomSizeToggle),
-                RowCard("\uEE83", "显示宽度", WidthSpin, CustomSizeToggle),
-                RowCard("\uEE83", "显示高度", HeightSpin, CustomSizeToggle),
-                RowCard("\uEE83", "圆角半径", CornerRadiusSpin),
+                CompactRow("固定显示大小", CustomSizeToggle),
+                CompactRow("显示宽度", WidthSpin, CustomSizeToggle),
+                CompactRow("显示高度", HeightSpin, CustomSizeToggle),
+                CompactRow("圆角半径", CornerRadiusSpin),
                 SectionTitle("\uE520", "背景"),
-                RowCard("\uE520", "自定义背景", BackgroundToggle),
-                RowCard("\uE520", "起始颜色", BackgroundColorPicker, BackgroundToggle),
-                RowCard("\uE520", "线性渐变", GradientToggle, BackgroundToggle),
-                RowCard("\uE520", "渐变终止色", GradientEndColorPicker, GradientToggle),
+                CompactRow("自定义背景", BackgroundToggle),
+                CompactRow("起始颜色", BackgroundColorPicker, BackgroundToggle),
+                CompactRow("线性渐变", GradientToggle, BackgroundToggle),
+                CompactRow("渐变终止色", GradientEndColorPicker, GradientToggle),
                 SectionTitle("\uE472", "阴影"),
-                RowCard("\uE472", "启用阴影", ShadowToggle),
-                RowCard("\uE472", "阴影颜色", ShadowColorPicker, ShadowToggle),
-                RowCard("\uE472", "模糊半径", ShadowBlurSpin, ShadowToggle),
-                RowCard("\uE472", "水平偏移", ShadowOffsetXSpin, ShadowToggle),
-                RowCard("\uE472", "垂直偏移", ShadowOffsetYSpin, ShadowToggle),
-                RowCard("\uE472", "阴影不透明度", ShadowOpacitySpin, ShadowToggle),
+                CompactRow("启用阴影", ShadowToggle),
+                CompactRow("阴影颜色", ShadowColorPicker, ShadowToggle),
+                CompactRow("模糊半径", ShadowBlurSpin, ShadowToggle),
+                CompactRow("水平偏移", ShadowOffsetXSpin, ShadowToggle),
+                CompactRow("垂直偏移", ShadowOffsetYSpin, ShadowToggle),
+                CompactRow("阴影不透明度", ShadowOpacitySpin, ShadowToggle),
                 SectionTitle("\uE254", "岛屿边框"),
-                RowCard("\uE254", "启用边框", BorderToggle),
-                RowCard("\uE254", "边框颜色", BorderColorPicker, BorderToggle),
-                RowCard("\uE254", "边框线宽", BorderThicknessSpin, BorderToggle)
+                CompactRow("启用边框", BorderToggle),
+                CompactRow("边框颜色", BorderColorPicker, BorderToggle),
+                CompactRow("边框线宽", BorderThicknessSpin, BorderToggle)
             }
         };
+        // 中间视图（编辑器）与右侧检查器之间加垂直分割手柄，用户可左右拖动调整检查器宽度。
+        var columnSplitter = new GridSplitter
+        {
+            Width = 6,
+            ResizeDirection = GridResizeDirection.Columns,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            Background = Brushes.Transparent
+        };
+        var inspectorScroll = new ScrollViewer { Content = inspector };
         var body = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("*,280"),
-            ColumnSpacing = 18,
-            Children = { Editor, new ScrollViewer { Content = inspector } }
+            ColumnDefinitions = new ColumnDefinitions("*,Auto,300"),
+            ColumnSpacing = 8,
+            Children = { Editor, columnSplitter, inspectorScroll }
         };
-        Grid.SetColumn(body.Children[1], 1);
+        Grid.SetColumn(columnSplitter, 1);
+        Grid.SetColumn(inspectorScroll, 2);
         var dangerInfo = new InfoBar
         {
             Severity = InfoBarSeverity.Warning,
@@ -760,24 +773,28 @@ internal sealed class IslandVisualEditorWindow : Window
     }
 
     /// <summary>
-    /// 与设置页同款的普通一行式设置卡片（不分组展开）。
+    /// 紧凑式检查器行：左侧标签 + 右侧控件，一行一个（不用卡片/展开分组）。
     /// </summary>
-    private static SettingsExpander RowCard(string glyph, string header, Control footer, ToggleSwitch? dependency = null)
+    private static Control CompactRow(string label, Control control, ToggleSwitch? dependency = null)
     {
-        var card = new SettingsExpander
+        var row = new Grid
         {
-            IconSource = new FluentIconSource(glyph),
-            Header = header,
-            Footer = footer
+            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+            Children =
+            {
+                new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center, Opacity = 0.9 },
+                control
+            }
         };
+        Grid.SetColumn(control, 1);
         if (dependency != null)
         {
-            void Sync() => card.IsEnabled = dependency.IsChecked == true;
+            void Sync() => row.IsEnabled = dependency.IsChecked == true;
             dependency.PropertyChanged += (_, _) => Sync();
             Sync();
         }
 
-        return card;
+        return row;
     }
 
     private static IconText SectionTitle(string glyph, string text) => new()
@@ -811,7 +828,7 @@ internal sealed class IslandVisualEditorWindow : Window
 internal readonly record struct IslandPreviewState(
     double Opacity, double Scale, double Rotation, double OffsetX, double OffsetY, double CornerRadius,
     bool CustomSize, double Width, double Height, bool CustomBackground, Color BackgroundColor, bool Gradient,
-    Color GradientEndColor, bool ShadowEnabled, Color ShadowColor, double ShadowBlur, double ShadowOffsetX,
+    Color GradientEndColor, GradientDirection GradientDirection, bool ShadowEnabled, Color ShadowColor, double ShadowBlur, double ShadowOffsetX,
     double ShadowOffsetY, double ShadowOpacity, bool BorderEnabled, Color BorderColor, double BorderThickness);
 
 internal sealed class IslandTransformEditedEventArgs(double offsetX, double offsetY, double scale, double rotation) : EventArgs
