@@ -23,18 +23,4 @@ public sealed class SwitchPresetActionSettings
     public string PresetName { get; set; } = string.Empty;
 }
 
-/// <summary>
-/// 「应用样式预设」行动：套用内置样式预设（玻璃/霓虹/花火/极简）。
-/// </summary>
-public sealed class ApplyStylePresetActionSettings
-{
-    public StylePreset Preset { get; set; } = StylePreset.GlassCapsule;
-}
 
-/// <summary>
-/// 「应用动画预设」行动：套用内置动画预设。
-/// </summary>
-public sealed class ApplyAnimationPresetActionSettings
-{
-    public AnimationPreset Preset { get; set; } = AnimationPreset.Still;
-}

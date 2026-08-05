@@ -20,8 +20,6 @@ public static class InjectorAutomation
         // 所有设置项共用同一个「修改设置」行动，通过菜单项预设 PropertyName 区分。
         services.AddAction<SetInjectorSettingAction, SetInjectorSettingActionSettingsControl>();
         services.AddAction<SwitchPresetAction, SwitchPresetActionSettingsControl>();
-        services.AddAction<ApplyStylePresetAction, ApplyStylePresetActionSettingsControl>();
-        services.AddAction<ApplyAnimationPresetAction, ApplyAnimationPresetActionSettingsControl>();
 
         BuildMenuTree();
     }
@@ -31,14 +29,10 @@ public static class InjectorAutomation
         // 根分组：样式注入器
         var root = GetOrCreateGroup(IActionService.ActionMenuTree, InjectorSettingCatalog.RootGroupName, InjectorSettingCatalog.RootGroupIcon);
 
-        // 预设子组：切换用户预设 / 应用样式预设 / 应用动画预设
+        // 预设子组：切换用户预设
         var presetGroup = new ActionMenuTreeGroup("预设", "\uF42F",
             new ActionMenuTreeItem<SwitchPresetActionSettings>(
-                SwitchPresetAction.Id, "切换用户预设", "\uF42F", s => s.PresetName = string.Empty),
-            new ActionMenuTreeItem<ApplyStylePresetActionSettings>(
-                ApplyStylePresetAction.Id, "应用样式预设", "\uF42F", s => s.Preset = StylePreset.GlassCapsule),
-            new ActionMenuTreeItem<ApplyAnimationPresetActionSettings>(
-                ApplyAnimationPresetAction.Id, "应用动画预设", "\uEFFF", s => s.Preset = AnimationPreset.Still));
+                SwitchPresetAction.Id, "切换用户预设", "\uF42F", s => s.PresetName = string.Empty));
         root.Add(presetGroup);
 
         // 设置项分组：按目录中的分类生成层叠子菜单

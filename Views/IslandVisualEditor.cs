@@ -170,10 +170,10 @@ internal sealed class IslandVisualEditor : UserControl
             Spacing = 8,
             Children =
             {
-                OperationButton("\uE161", "居中", Center),
-                OperationButton("\uE161", "还原变形", ResetTransform),
-                OperationButton("\uE7F8", "重置视图缩放", ResetViewZoom),
-                OperationButton("\uE787", "显示网格", ToggleGrid)
+                OperationButton("\uE033", "居中", Center),
+                OperationButton("\uE0BD", "还原变形", ResetTransform),
+                OperationButton("\uE12F", "重置视图缩放", ResetViewZoom),
+                OperationButton("\uE929", "显示网格", ToggleGrid)
             }
         };
 
@@ -535,8 +535,8 @@ internal sealed class IslandVisualEditorWindow : Window
         MinHeight = 560;
 
         ConfigureInspectorEvents();
-        _undoButton = IconButton("\uE7A7", "撤销", () => UndoRequested?.Invoke(this, EventArgs.Empty));
-        _redoButton = IconButton("\uE7A6", "重做", () => RedoRequested?.Invoke(this, EventArgs.Empty));
+        _undoButton = IconButton("\uE195", "撤销", () => UndoRequested?.Invoke(this, EventArgs.Empty));
+        _redoButton = IconButton("\uE121", "重做", () => RedoRequested?.Invoke(this, EventArgs.Empty));
         _undoButton.IsEnabled = false;
         _redoButton.IsEnabled = false;
         var toolbar = new StackPanel

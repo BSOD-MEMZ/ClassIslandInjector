@@ -154,7 +154,7 @@ internal static class InjectorActionStateStore
 [ActionInfo(SetInjectorSettingAction.Id, "修改设置", "\uE161", addDefaultToMenu: false)]
 public sealed class SetInjectorSettingAction : ActionBase<SetInjectorSettingActionSettings>
 {
-    public const string Id = "miku.classisland.injector.setSetting";
+    public const string Id = "classisland.injector.setSetting";
 
     protected override async Task OnInvoke()
     {
@@ -206,7 +206,7 @@ public sealed class SetInjectorSettingAction : ActionBase<SetInjectorSettingActi
 [ActionInfo(SwitchPresetAction.Id, "切换用户预设", "\uF42F", addDefaultToMenu: false)]
 public sealed class SwitchPresetAction : ActionBase<SwitchPresetActionSettings>
 {
-    public const string Id = "miku.classisland.injector.switchPreset";
+    public const string Id = "classisland.injector.switchPreset";
 
     protected override async Task OnInvoke()
     {
@@ -242,46 +242,4 @@ public sealed class SwitchPresetAction : ActionBase<SwitchPresetActionSettings>
     }
 }
 
-/// <summary>
-/// 「应用样式预设」行动：套用内置样式预设（玻璃/霓虹/花火/极简），可恢复。
-/// </summary>
-[ActionInfo(ApplyStylePresetAction.Id, "应用样式预设", "\uF42F", addDefaultToMenu: false)]
-public sealed class ApplyStylePresetAction : ActionBase<ApplyStylePresetActionSettings>
-{
-    public const string Id = "miku.classisland.injector.applyStylePreset";
 
-    protected override async Task OnInvoke()
-    {
-        await base.OnInvoke();
-        InjectorActionStateStore.SaveSnapshot(ActionSet.Guid, Id);
-        InjectorRuntime.Settings.ApplyPreset(Settings.Preset);
-    }
-
-    protected override async Task OnRevert()
-    {
-        await base.OnRevert();
-        SwitchPresetAction.RestoreSnapshot(ActionSet.Guid, Id);
-    }
-}
-
-/// <summary>
-/// 「应用动画预设」行动：套用内置动画预设，可恢复。
-/// </summary>
-[ActionInfo(ApplyAnimationPresetAction.Id, "应用动画预设", "\uEFFF", addDefaultToMenu: false)]
-public sealed class ApplyAnimationPresetAction : ActionBase<ApplyAnimationPresetActionSettings>
-{
-    public const string Id = "miku.classisland.injector.applyAnimationPreset";
-
-    protected override async Task OnInvoke()
-    {
-        await base.OnInvoke();
-        InjectorActionStateStore.SaveSnapshot(ActionSet.Guid, Id);
-        InjectorRuntime.Settings.ApplyAnimationPreset(Settings.Preset);
-    }
-
-    protected override async Task OnRevert()
-    {
-        await base.OnRevert();
-        SwitchPresetAction.RestoreSnapshot(ActionSet.Guid, Id);
-    }
-}

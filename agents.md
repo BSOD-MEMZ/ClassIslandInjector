@@ -38,13 +38,13 @@ dotnet build ClassIslandInjector.csproj -c Release -p:CreateCipx=false
 
 # 部署到宿主（先关闭 ClassIsland，否则 DLL 被占用）
 Stop-Process -Name "ClassIsland*" -Force
-Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Plugins\miku.classisland.injector" -Recurse -Force
+Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Plugins\classisland.injector" -Recurse -Force
 ```
 
 路径速查：
 
-- 插件目录：`D:\Dev\ClassIsland\data\Plugins\miku.classisland.injector`
-- 插件配置目录：`D:\Dev\ClassIsland\data\Config\Plugins\miku.classisland.injector`（`settings.json`、`Overrides.axaml`、诊断日志 `album-color.log`）
+- 插件目录：`D:\Dev\ClassIsland\data\Plugins\classisland.injector`
+- 插件配置目录：`D:\Dev\ClassIsland\data\Config\Plugins\classisland.injector`（`settings.json`、`Overrides.axaml`、诊断日志 `album-color.log`）
 
 ## 关键约束（务必遵守）
 

@@ -4,6 +4,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
+using ClassIsland.Core;
 using ClassIsland.Core.Abstractions.Controls;
 using ClassIsland.Core.Assists;
 using ClassIsland.Core.Attributes;
@@ -16,7 +17,7 @@ namespace ClassIslandInjector.Views;
 /// The settings page deliberately follows the layout used by ClassIsland's built-in appearance page.
 /// Settings are edited locally and applied together by the button at the bottom of the page.
 /// </summary>
-[SettingsPageInfo("miku.classisland.injector", "样式注入器", "\uEC4A", "\uEC4A")]
+[SettingsPageInfo("classisland.injector", "样式注入器", "\uEC4A", "\uEC4A")]
 public sealed class InjectorSettingsPage : SettingsPageBase
 {
     private readonly ToggleSwitch _enabled = Toggle();
@@ -28,7 +29,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly ComboBox _animationMode = Combo(IslandAnimationModes);
     private readonly Slider _animationAmount = Slider(0, 1, 0.01);
     private readonly Spin _animationPeriod = Spinner(0.2, 60, 0.1);
-    private readonly ComboBox _animationPreset = Combo(AnimationPresets);
     private readonly TextBox _styleSheetPath = new() { MinWidth = 280 };
     private readonly ToggleSwitch _watchStyleSheet = Toggle();
 
@@ -101,7 +101,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly Spin _countdownScanSpeed = Spinner(0.1, 8, 0.1);
     private readonly ComboBox _countdownScanDirection = Combo(ScanDirections);
     private readonly ToggleSwitch _countdownScanTailEnabled = Toggle();
-    private readonly ComboBox _preset = Combo(StylePresets);
     private readonly TextBox _presetName = new() { MinWidth = 200, Watermark = "预设名称" };
     private readonly ComboBox _userPresetList = new()
     {
@@ -126,14 +125,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly List<IslandPreviewState> _editorRedo = [];
     private bool _editorDirty;
 
-    private static readonly Choice<StylePreset>[] StylePresets =
-    [
-        new(StylePreset.GlassCapsule, "玻璃主题"),
-        new(StylePreset.NeonPulse, "霓虹主题"),
-        new(StylePreset.MaimaiHanabi, "花火主题"),
-        new(StylePreset.Minimal, "极简主题"),
-    ];
-
     private static readonly Choice<WallpaperSource>[] WallpaperSources =
     [
         new(WallpaperSource.LocalImage, "本地图片"),
@@ -147,16 +138,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         new(WallpaperDisplayMode.Fit, "适应（完整显示）"),
         new(WallpaperDisplayMode.Stretch, "拉伸（变形）"),
         new(WallpaperDisplayMode.Tile, "平铺"),
-    ];
-
-    private static readonly Choice<AnimationPreset>[] AnimationPresets =
-    [
-        new(AnimationPreset.Still, "静止"),
-        new(AnimationPreset.SoftBreathe, "柔和呼吸"),
-        new(AnimationPreset.GentleFloat, "轻柔浮动"),
-        new(AnimationPreset.DynamicWave, "动态波浪"),
-        new(AnimationPreset.AlertShake, "提醒摇晃"),
-        new(AnimationPreset.HanabiCelebration, "花火庆祝"),
     ];
 
     private static readonly Choice<IslandAnimationMode>[] IslandAnimationModes =
@@ -257,7 +238,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         };
 
         panel.Children.Add(new IconText { Glyph = "\uEC4A", Text = "样式注入器", Margin = new Thickness(0, 0, 0, 4) });
-        panel.Children.Add(Setting("\uE161", "实时预览", "开启后，下方对设置项的修改会立即保存并应用到主界面；关闭时需手动点击「保存并应用」。可视化编辑器始终为手动保存，不受此开关影响。", _livePreview));
+        panel.Children.Add(Setting("\uE813", "实时预览", "开启后，下方对设置项的修改会立即保存并应用到主界面；关闭时需手动点击「保存并应用」。可视化编辑器始终为手动保存，不受此开关影响。", _livePreview));
         if (!SystemCapabilities.SmtcAvailable)
         {
             panel.Children.Add(new InfoBar
@@ -270,12 +251,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             });
         }
 
-        panel.Children.Add(Setting("\uE84F", "运行时注入", "启用后由插件接管主界面根节点的视觉效果。", _enabled));
-
-        AddSection(panel, "\uF42F", "预设");
-        panel.Children.Add(Setting("\uF42F", "样式预设", "一键套用形状、配色、阴影、边框与提醒效果；不会修改不透明度、缩放、位置、旋转与圆角半径等基础变形设置。", _preset));
-        var presetActions = Actions("应用样式预设", ApplyStylePreset, "恢复插件默认", ResetToDefaults);
-        panel.Children.Add(Setting("\uE161", "预设操作", "恢复默认不会修改 Overrides.axaml。", presetActions));
+        panel.Children.Add(Setting("\uEDC7", "运行时注入", "启用后由插件接管主界面根节点的视觉效果。", _enabled));
 
         AddSection(panel, "\uF42F", "用户预设");
         panel.Children.Add(new InfoBar
@@ -288,6 +264,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         });
         panel.Children.Add(Setting("\uF42F", "保存当前为预设", "把插件当前全部设置项保存为一个命名预设（同名覆盖）。", PresetSaveFooter()));
         panel.Children.Add(Setting("\uF42F", "套用 / 删除预设", "套用会把全部设置项替换为该预设保存时的状态。", PresetManageFooter()));
+        panel.Children.Add(Setting("\uE0BD", "恢复插件默认", "把全部设置恢复为插件默认（不会修改 Overrides.axaml）。", Button("恢复默认", ResetToDefaults)));
 
         AddSection(panel, "\uE288", "可视化编辑器");
         panel.Children.Add(Setting("\uE288", "打开可视化编辑器", "在独立窗口中像编辑演示文稿一样拖动、旋转、缩放岛屿，并即时应用到主界面。", Button("打开编辑器", OpenVisualEditor)));
@@ -318,7 +295,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("渐变终止色", "线性渐变背景的结束颜色。", _gradientEndColor, _gradient));
         EnabledWhenManualColor(backgroundColorItem, _customBackground, _dynamicBackgroundColor);
         panel.Children.Add(backgroundGroup);
-        panel.Children.Add(Group("\uE7B5", "底纹纹理", "在底色之上叠加可平铺的纹理图案，可与背景图片、背景色同时使用；纹理不受动态取色影响。",
+        panel.Children.Add(Group("\uE92B", "底纹纹理", "在底色之上叠加可平铺的纹理图案，可与背景图片、背景色同时使用；纹理不受动态取色影响。",
             Item("纹理图案", "选择填充纹理的类型，无 = 关闭纹理。", _backgroundTextureType),
             Item("纹理颜色", "支持透明度的纹理线条颜色。", _backgroundTextureColor),
             Item("纹理大小", "单个纹理单元的大小（像素）。", _backgroundTextureSize)));
@@ -359,21 +336,20 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("边框线宽", "控制岛屿边框的粗细。", _borderThickness)));
         EnabledWhenManualColor(borderColorItem, _border, _dynamicBorderColor);
 
-        AddSection(panel, "\uEFFF", "动画");
-        panel.Children.Add(SwitchableGroup("\uEFFF", "持续动画", "打开后才会使用下方的循环动画设置。", _animationEnabled,
+        AddSection(panel, "\uE82B", "动画");
+        panel.Children.Add(SwitchableGroup("\uEDB9", "持续动画", "打开后才会使用下方的循环动画设置。", _animationEnabled,
             Item("动画类型", "选择循环动画的运动方式。", _animationMode),
             Item("动画幅度", "控制循环动画的强弱。", _animationAmount),
             Item("动画周期", "完成一次循环所需的时间（秒）。", _animationPeriod)));
-        panel.Children.Add(Setting("\uEFFF", "动画预设", "仅调整动效、提醒和 Ripple，不会改变形状、背景与阴影。", PresetAnimationFooter()));
-        panel.Children.Add(ChoiceGroup("\uEFFF", "主界面显示动画", "选择主界面出现或消失时使用的动画。", _visibilityAnimation, VisibilityAnimation.None,
+        panel.Children.Add(ChoiceGroup("\uEFED", "主界面显示动画", "选择主界面出现或消失时使用的动画。", _visibilityAnimation, VisibilityAnimation.None,
             Item("显示动画时长", "主界面显示动画的时长（秒）。", _visibilityDuration)));
 
-        AddSection(panel, "\uEFFF", "提醒");
+        AddSection(panel, "\uE025", "提醒");
         panel.Children.Add(Setting("\uEFFE", "预览提醒", "一次性预览强调动画、遮罩过渡与 Ripple 效果（持续约 2 秒）。", Button("预览提醒", PreviewNotification)));
-        panel.Children.Add(ChoiceGroup("\uEFFF", "提醒强调动画", "选择收到提醒时使用的强调效果。", _emphasisAnimation, EmphasisAnimation.None,
+        panel.Children.Add(ChoiceGroup("\uE02B", "提醒强调动画", "选择收到提醒时使用的强调效果。", _emphasisAnimation, EmphasisAnimation.None,
             Item("强调幅度", "控制强调动画的强弱。", _emphasisAmount),
             Item("强调时长", "提醒强调动画的时长（秒）。", _emphasisDuration)));
-        panel.Children.Add(ChoiceGroup("\uEFFF", "提醒遮罩动画", "选择提醒遮罩出现和消失时的过渡效果。", _notificationTransition, NotificationTransition.HostDefault,
+        panel.Children.Add(ChoiceGroup("\uE833", "提醒遮罩动画", "选择提醒遮罩出现和消失时的过渡效果。", _notificationTransition, NotificationTransition.HostDefault,
             Item("遮罩动画时长", "提醒遮罩动画的时长（秒）。", _notificationTransitionDuration)));
         var rippleColorItem = Item("Ripple 颜色", "支持透明度的提醒扩散颜色。", _rippleColor);
         var rippleDurationItem = Item("Ripple 时长", "扩散效果的播放时长（秒）。", _rippleDuration);
@@ -399,7 +375,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         AddSection(panel, "\uE4C4", "即将上课样式");
         panel.Children.Add(Setting("\uE4C4", "预览即将上课样式", "立即预览 5 秒即将上课动画，无需真的处于即将上课状态。", Button("预览", PreviewPrepareOnClass)));
         panel.Children.Add(Setting("\uE4C4", "即将上课样式", "选择即将上课倒计时期间显示的特效；选择「无」则不显示。", _prepareOnClassStyle));
-        var arrowGroup = Group("\uE4C4", "箭头", "斜向箭头从右向左滑动。",
+        var arrowGroup = Group("\uE0F7", "箭头", "斜向箭头从右向左滑动。",
             Item("箭头颜色", "支持透明度的箭头颜色。", _countdownArrowColor),
             Item("箭头组数", "屏幕上同时滑动的箭头组数量。", _countdownArrowCount),
             Item("每组箭头数", "每组内包含的箭头数量，2 即经典的 >> 效果。", _countdownArrowPerGroup),
@@ -407,12 +383,12 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("组间间距", "相邻箭头组之间的额外间距（像素）。", _countdownArrowGroupSpacing),
             Item("滑动速度", "箭头的移动速度。", _countdownArrowSpeed),
             Item("箭头线宽", "箭头的线条粗细。", _countdownArrowThickness));
-        var pulseGroup = Group("\uE4C4", "扩散光环", "从主界面中心向外扩散并淡出的圆环。",
+        var pulseGroup = Group("\uEE35", "扩散光环", "从主界面中心向外扩散并淡出的圆环。",
             Item("光环颜色", "支持透明度的光环颜色。", _countdownPulseColor),
             Item("光环线宽", "光环的线条粗细。", _countdownPulseThickness),
             Item("扩散速度", "每秒扩散的圈数。", _countdownPulseSpeed),
             Item("最大半径", "光环最大半径占主界面宽高中较小值的比例。", _countdownPulseMaxRadius));
-        var scanGroup = Group("\uE4C4", "扫描线", "一道带渐变尾迹的光线扫过主界面，进入 / 离开时自动渐显渐隐。",
+        var scanGroup = Group("\uEECD", "扫描线", "一道带渐变尾迹的光线扫过主界面，进入 / 离开时自动渐显渐隐。",
             Item("扫描方向", "横向为水平线上下扫，纵向为竖直线左右扫。", _countdownScanDirection),
             Item("渐变尾迹", "关闭后只显示一条主线，不带渐变尾迹。", _countdownScanTailEnabled),
             Item("扫描颜色", "支持透明度的扫描线颜色。", _countdownScanColor),
@@ -429,7 +405,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(Setting("\uF263", "覆盖样式表路径", "填写 .axaml 样式表的完整路径。", _styleSheetPath));
         panel.Children.Add(Setting("\uE161", "自动热重载", "保存样式表后自动重新加载。", _watchStyleSheet));
 
-        AddSection(panel, "\uE74D", "卸载与数据清理");
+        AddSection(panel, "\uE61D", "卸载与数据清理");
         panel.Children.Add(new InfoBar
         {
             Severity = InfoBarSeverity.Error,
@@ -438,7 +414,43 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             IsOpen = true,
             IsClosable = false
         });
-        panel.Children.Add(Setting("\uE74D", "删除所有数据", "一键清空插件全部数据并恢复主界面，让插件回到“全新安装”状态，之后可安全卸载。", Button("删除所有数据", DeleteAllData)));
+        panel.Children.Add(Setting("\uE61D", "删除所有数据", "一键清空插件全部数据并恢复主界面，让插件回到“全新安装”状态，之后可安全卸载。", Button("删除所有数据", DeleteAllData)));
+
+        AddSection(panel, "\uE9E4", "关于");
+        var manifest = Plugin.Manifest;
+        panel.Children.Add(new SettingsExpander
+        {
+            IconSource = new FluentIconSource("\uE9E4"),
+            Header = manifest?.Name ?? "ClassIsland 样式注入器",
+            Description = manifest?.Description ?? "以运行时注入和可热重载 Avalonia 样式表深度重塑 ClassIsland 主界面。",
+            IsExpanded = true,
+            Footer = new TextBlock
+            {
+                Text = $"版本 {manifest?.Version ?? "未知"}",
+                FontSize = 12,
+                Foreground = new SolidColorBrush(Color.FromArgb(160, 255, 255, 255)),
+                VerticalAlignment = VerticalAlignment.Center
+            },
+            Items =
+            {
+                new SettingsExpanderItem
+                {
+                    Content = "作者",
+                    Description = manifest?.Author ?? "未知",
+                    Footer = string.IsNullOrEmpty(manifest?.Url) ? null : LinkButton("项目主页", manifest.Url)
+                },
+                new SettingsExpanderItem
+                {
+                    Content = "依赖",
+                    Description = $"插件 ID：{manifest?.Id ?? "未知"} · 目标 ClassIsland API：{manifest?.ApiVersion ?? "未知"}"
+                },
+                new SettingsExpanderItem
+                {
+                    Content = "对一切违规补课和提前开学致以最强烈的谴责",
+                    Footer = LinkButton("加入我们的行动", "")                       
+                }
+            }
+        });
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 12, 0, 0) };
         actions.Children.Add(Button("保存并应用", SaveAndApply));
@@ -446,22 +458,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(actions);
         panel.Children.Add(_status);
         return new ScrollViewer { Content = panel };
-    }
-
-    private void ApplyStylePreset()
-    {
-        var preset = Selected(_preset, StylePreset.GlassCapsule);
-        InjectorRuntime.Settings.ApplyPreset(preset);
-        LoadFromSettings();
-        _status.Text = $"已应用“{Display(StylePresets, preset)}”预设；不透明度、缩放、位置、旋转与圆角半径保持不变。";
-    }
-
-    private void ApplyAnimationPreset()
-    {
-        var preset = Selected(_animationPreset, AnimationPreset.Still);
-        InjectorRuntime.Settings.ApplyAnimationPreset(preset);
-        LoadFromSettings();
-        _status.Text = $"已应用“{Display(AnimationPresets, preset)}”动画预设；形状、背景和阴影保持不变。";
     }
 
     private void ResetToDefaults()
@@ -542,14 +538,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         Spacing = 4,
         VerticalAlignment = VerticalAlignment.Center,
         Children = { _userPresetList, Button("套用", ApplyUserPreset), Button("删除", DeleteUserPreset) }
-    };
-
-    private Control PresetAnimationFooter() => new StackPanel
-    {
-        Orientation = Orientation.Horizontal,
-        Spacing = 4,
-        VerticalAlignment = VerticalAlignment.Center,
-        Children = { _animationPreset, Button("应用动画预设", ApplyAnimationPreset) }
     };
 
     private void ReloadStyleSheet()
@@ -982,8 +970,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _countdownScanSpeed.DoubleValue = settings.CountdownScanSpeed;
         Select(_countdownScanDirection, ScanDirections, settings.CountdownScanDirection);
         _countdownScanTailEnabled.IsChecked = settings.CountdownScanTailEnabled;
-        Select(_preset, StylePresets, StylePreset.GlassCapsule);
-        Select(_animationPreset, AnimationPresets, AnimationPreset.Still);
         RefreshUserPresets();
     }
 
@@ -1344,6 +1330,29 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         var button = new Button { Content = text };
         button.Click += (_, _) => action();
         return button;
+    }
+
+    private static Button LinkButton(string text, string url)
+    {
+        var button = new Button { Content = text };
+        button.Click += (_, _) => OpenUrl(url);
+        return button;
+    }
+
+    private static void OpenUrl(string url)
+    {
+        try
+        {
+            var topLevel = TopLevel.GetTopLevel(AppBase.Current.MainWindow);
+            if (topLevel != null)
+            {
+                _ = topLevel.Launcher.LaunchUriAsync(new Uri(url));
+            }
+        }
+        catch
+        {
+            // 打开链接失败不应影响插件。
+        }
     }
 
     private static Color ReadColor(string value, Color fallback)

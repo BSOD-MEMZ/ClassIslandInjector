@@ -125,30 +125,6 @@ Check("无预设 RippleConstraintRadius=0", 0.0, noPreset.RippleConstraintRadius
 Check("无预设保留 StyleSheetPath", @"D:\cfg\Overrides.axaml", noPreset.StyleSheetPath);
 Check("无预设保留 WatchStyleSheet", false, noPreset.WatchStyleSheet);
 
-// ===== 7. 样式预设不修改基础变形（Capture/RestoreProtectedSettings）=====
-var withProtection = new InjectorSettings();
-withProtection.BeginUpdate();
-withProtection.Opacity = 0.7;
-withProtection.Rotation = 20;
-withProtection.OffsetX = 50;
-withProtection.OffsetY = -30;
-withProtection.CornerRadius = 12;
-withProtection.WallpaperEnabled = true;
-withProtection.WallpaperSource = WallpaperSource.LocalImage;
-withProtection.WallpaperPath = @"D:\bg.png";
-withProtection.DynamicBackgroundColorEnabled = true;
-withProtection.EndUpdate();
-withProtection.ApplyPreset(StylePreset.NeonPulse);
-Check("样式预设保护 Opacity", 0.7, withProtection.Opacity);
-Check("样式预设保护 Rotation", 20.0, withProtection.Rotation);
-Check("样式预设保护 OffsetX", 50.0, withProtection.OffsetX);
-Check("样式预设保护 OffsetY", -30.0, withProtection.OffsetY);
-Check("样式预设保护 CornerRadius", 12.0, withProtection.CornerRadius);
-Check("样式预设保护 WallpaperEnabled", true, withProtection.WallpaperEnabled);
-Check("样式预设保护 WallpaperPath", @"D:\bg.png", withProtection.WallpaperPath);
-Check("样式预设保护 DynamicBackgroundColorEnabled", true, withProtection.DynamicBackgroundColorEnabled);
-Check("样式预设生效 Shape=RoundedRectangle", IslandShape.RoundedRectangle, withProtection.Shape);
-
 // ===== 8. 全新安装默认值中性 + 兜底刷新默认 10s + 内置无预设名称 =====
 var fresh = new InjectorSettings { StyleSheetPath = @"D:\cfg\Overrides.axaml" };
 Check("全新默认 Enabled=true", true, fresh.Enabled);
@@ -173,6 +149,6 @@ Check("全新默认 兜底刷新=10s", 10.0, fresh.AlbumColorPollingIntervalSeco
 Check("内置无预设名称=无预设", "无预设", InjectorPresetStore.NoPresetName);
 
 Console.WriteLine(failures == 0
-    ? "=== 全部通过：设置模型 / 无预设 / 默认值 / 预设保护 验证 OK ==="
+    ? "=== 全部通过：设置模型 / 无预设 / 默认值 / 用户预设 验证 OK ==="
     : $"=== 有 {failures} 项失败 ===");
 return failures == 0 ? 0 : 1;
