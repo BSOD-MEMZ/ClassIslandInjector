@@ -71,6 +71,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly Spin _wallpaperOffsetX = Spinner(-0.5, 0.5, 0.01);
     private readonly Spin _wallpaperOffsetY = Spinner(-0.5, 0.5, 0.01);
     private readonly Spin _wallpaperSlideshowInterval = Spinner(2, 3600, 1, "0");
+    private readonly Spin _wallpaperBlur = Spinner(0, 60, 1);
 
     private readonly ComboBox _visibilityAnimation = Combo(VisibilityAnimations);
     private readonly Spin _visibilityDuration = Spinner(0.1, 10, 0.05);
@@ -426,6 +427,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("缩放", "底图的缩放倍率（1 为按显示方式适应，大于 1 放大裁剪）。", _wallpaperScale),
             Item("水平偏移", "底图的水平偏移（相对图片宽度，-0.5 到 0.5）。", _wallpaperOffsetX),
             Item("垂直偏移", "底图的垂直偏移（相对图片高度，-0.5 到 0.5）。", _wallpaperOffsetY),
+            Item("模糊", "对底图应用高斯模糊（0 为关闭）。模糊边缘会被岛屿边界裁剪。", _wallpaperBlur),
             wallpaperSlideshowItem);
         VisibleWhenAny(wallpaperPathItem, _wallpaperSource, WallpaperSource.LocalImage, WallpaperSource.FolderSlideshow);
         VisibleWhen(wallpaperSlideshowItem, _wallpaperSource, WallpaperSource.FolderSlideshow);
@@ -637,7 +639,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                      _shadow, _shadowColor, _shadowBlur, _shadowOffsetX, _shadowOffsetY, _shadowOpacity,
                      _border, _borderColor, _borderThickness,
                      _wallpaperEnabled, _wallpaperSource, _wallpaperPath, _wallpaperOpacity, _wallpaperDisplayMode,
-                     _wallpaperScale, _wallpaperOffsetX, _wallpaperOffsetY, _wallpaperSlideshowInterval,
+                     _wallpaperScale, _wallpaperOffsetX, _wallpaperOffsetY, _wallpaperSlideshowInterval, _wallpaperBlur,
                      _visibilityAnimation, _visibilityDuration, _emphasisAnimation, _emphasisAmount, _emphasisDuration,
                      _notificationTransition, _notificationTransitionDuration,
                      _rippleType, _rippleColor, _rippleDuration, _rippleThickness, _rippleOpacity, _rippleConstraint, _rippleConstraintRadius,
@@ -980,6 +982,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _wallpaperOffsetX.DoubleValue = settings.WallpaperOffsetX;
         _wallpaperOffsetY.DoubleValue = settings.WallpaperOffsetY;
         _wallpaperSlideshowInterval.DoubleValue = settings.WallpaperSlideshowIntervalSeconds;
+        _wallpaperBlur.DoubleValue = settings.WallpaperBlurRadius;
         Select(_visibilityAnimation, VisibilityAnimations, settings.VisibilityAnimation);
         _visibilityDuration.DoubleValue = settings.VisibilityDurationSeconds;
         Select(_emphasisAnimation, EmphasisAnimations, settings.EmphasisAnimation);
@@ -1078,6 +1081,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.WallpaperOffsetX = _wallpaperOffsetX.DoubleValue;
             settings.WallpaperOffsetY = _wallpaperOffsetY.DoubleValue;
             settings.WallpaperSlideshowIntervalSeconds = _wallpaperSlideshowInterval.DoubleValue;
+            settings.WallpaperBlurRadius = _wallpaperBlur.DoubleValue;
             settings.VisibilityAnimation = Selected(_visibilityAnimation, VisibilityAnimation.None);
             settings.VisibilityDurationSeconds = _visibilityDuration.DoubleValue;
             settings.EmphasisAnimation = Selected(_emphasisAnimation, EmphasisAnimation.None);

@@ -314,6 +314,8 @@ public static class InjectorSettingCatalog
                     "底图的垂直偏移（相对图片高度，-0.5 到 0.5）。"),
                 Spec("WallpaperSlideshowIntervalSeconds", "幻灯片间隔", "\uF42D", SettingValueKind.Double, 2, 3600, "0",
                     "文件夹幻灯片切换间隔（秒）。"),
+                Spec("WallpaperBlurRadius", "模糊", "\uF42D", SettingValueKind.Double, 0, 60, "0.##",
+                    "对底图应用高斯模糊（0 为关闭）。"),
             ]
         },
         new()

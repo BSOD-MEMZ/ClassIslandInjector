@@ -30,6 +30,9 @@ internal static class HostContract
     /// <summary>每行主界面的背景 Border。</summary>
     public const string BackgroundBorder = "BackgroundBorder";
 
+    /// <summary>Fluent 主题中包裹 BackgroundBorder 的容器 Border。</summary>
+    public const string BackgroundBorderWrapper = "BackgroundBorderWrapper";
+
     /// <summary>背景遮罩 Border（通知遮罩动画用）。</summary>
     public const string BackgroundBorderOverlayMask = "BackgroundBorderOverlayMask";
 

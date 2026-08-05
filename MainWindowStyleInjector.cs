@@ -68,7 +68,12 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     private readonly DispatcherTimer _wallpaperTimer;
     private Border? _wallpaperHost;
-    private Border? _textureHost;
+    private BlurEffect? _wallpaperBlur;
+    /// <summary>每行主界面的底纹宿主（键为 MainWindowLine 模板 GridRoot），
+    /// 插在底色填充之上、组件内容之下。</summary>
+    private readonly Dictionary<Grid, Border> _textureHosts = [];
+    /// <summary>当前底纹画刷（随设置变更重建）。</summary>
+    private IBrush? _textureBrush;
     private readonly List<Border> _wallpaperLayers = [];
     private int _wallpaperFront;
     private Bitmap? _wallpaperBitmap;
@@ -457,7 +462,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
             UpdateWallpaperBounds(descendants);
         }
 
-        if (_textureHost != null)
+        if (_textureHosts.Count > 0 ||
+            (_settings.Enabled && _settings.BackgroundTextureType != BackgroundTexture.None))
         {
             UpdateTextureBounds(descendants);
         }
@@ -560,6 +566,11 @@ internal sealed class MainWindowStyleInjector : IDisposable
             if (isPlaying && thumbnailBytes is { Length: > 0 })
             {
                 LoadWallpaperImage(thumbnailBytes);
+            }
+            else if (!isPlaying && _settings.RevertColorsWhenPaused)
+            {
+                // 暂停/停止且“暂停恢复原色”开启：恢复原始颜色时一并移除底图封面。
+                ClearWallpaperImage();
             }
             else if (thumbnailBytes is not { Length: > 0 })
             {
@@ -719,6 +730,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         EnsureWallpaperHost();
+        ApplyWallpaperBlur();
         UpdateWallpaperTimer();
         ReloadWallpaperImageIfNeeded();
         UpdateWallpaperPresentation();
@@ -751,8 +763,31 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _wallpaperHost.SizeChanged += (_, _) => UpdateWallpaperClip();
         islandGrid.SizeChanged += (_, _) => UpdateWallpaperBounds();
         islandGrid.Children.Insert(0, _wallpaperHost);
+        ApplyWallpaperBlur();
         UpdateWallpaperClip();
         UpdateWallpaperBounds();
+    }
+
+    /// <summary>
+    /// 按设置对底图宿主应用高斯模糊（<see cref="InjectorSettings.WallpaperBlurRadius"/>，0 表示关闭）。
+    /// </summary>
+    private void ApplyWallpaperBlur()
+    {
+        if (_wallpaperHost == null)
+        {
+            return;
+        }
+
+        var radius = Math.Max(0, _settings.WallpaperBlurRadius);
+        if (radius <= 0)
+        {
+            _wallpaperHost.Effect = null;
+            return;
+        }
+
+        _wallpaperBlur ??= new BlurEffect();
+        _wallpaperBlur.Radius = radius;
+        _wallpaperHost.Effect = _wallpaperBlur;
     }
 
     /// <summary>
@@ -775,24 +810,79 @@ internal sealed class MainWindowStyleInjector : IDisposable
         UpdateWallpaperClip();
     }
 
+    /// <summary>
+    /// 按行同步/定位所有底纹宿主：为每个主界面行的模板 GridRoot 建立宿主，
+    /// 约束到该行 BackgroundBorder 边界，并清理已消失行的宿主。
+    /// </summary>
     private void UpdateTextureBounds(IEnumerable<Control>? descendants = null)
     {
-        if (_textureHost == null)
+        if (_mainWindow == null)
         {
             return;
         }
 
-        var controls = descendants ?? _mainWindow?.GetVisualDescendants().OfType<Control>();
-        if (controls != null)
+        if (!_settings.Enabled || _settings.BackgroundTextureType == BackgroundTexture.None)
         {
-            ApplyOverlayHostBounds(_textureHost, controls);
+            RemoveTextureHost();
+            return;
         }
 
-        UpdateTextureClip();
+        EnsureTextureBrush();
+
+        var controls = (descendants ?? _mainWindow.GetVisualDescendants().OfType<Control>()).ToArray();
+        var liveRoots = new HashSet<Grid>();
+        foreach (var gridRoot in controls.OfType<Grid>()
+                     .Where(x => x.Name == HostContract.GridRoot &&
+                                 x.FindAncestorOfType<Control>()?.GetType().FullName == HostContract.MainWindowLineTypeName))
+        {
+            liveRoots.Add(gridRoot);
+            var host = EnsureTextureHost(gridRoot);
+            if (host != null)
+            {
+                PositionTextureHost(host, gridRoot);
+            }
+        }
+
+        foreach (var stale in _textureHosts.Keys.Where(k => !liveRoots.Contains(k)).ToArray())
+        {
+            if (_textureHosts.Remove(stale, out var removed) && removed.Parent is Panel panel)
+            {
+                panel.Children.Remove(removed);
+            }
+        }
     }
 
     /// <summary>
-    /// 把覆盖层宿主（底图 / 纹理）约束到主界面各行的 BackgroundBorder 并集边界内。
+    /// 把单行底纹宿主约束到该行 BackgroundBorder 的实际可见边界内（行模板坐标空间）。
+    /// </summary>
+    private void PositionTextureHost(Border host, Grid gridRoot)
+    {
+        var background = gridRoot.GetVisualDescendants().OfType<Border>()
+            .FirstOrDefault(x => x.Name == HostContract.BackgroundBorder && x.IsVisible && x.Bounds.Width > 0 && x.Bounds.Height > 0);
+        if (background == null)
+        {
+            host.IsVisible = false;
+            return;
+        }
+
+        var topLeft = background.TranslatePoint(new Point(0, 0), gridRoot);
+        if (topLeft == null)
+        {
+            host.IsVisible = false;
+            return;
+        }
+
+        host.IsVisible = true;
+        host.Width = background.Bounds.Width;
+        host.Height = background.Bounds.Height;
+        host.HorizontalAlignment = HorizontalAlignment.Left;
+        host.VerticalAlignment = VerticalAlignment.Top;
+        host.Margin = new Thickness(topLeft.Value.X, topLeft.Value.Y, 0, 0);
+        UpdateTextureClip(host);
+    }
+
+    /// <summary>
+    /// 把覆盖层宿主（底图）约束到主界面各行的 BackgroundBorder 并集边界内。
     /// </summary>
     private void ApplyOverlayHostBounds(Border host, IEnumerable<Control> descendants)
     {
@@ -858,7 +948,15 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     private void UpdateWallpaperClip() => ApplyOverlayClip(_wallpaperHost);
 
-    private void UpdateTextureClip() => ApplyOverlayClip(_textureHost);
+    private void UpdateTextureClip()
+    {
+        foreach (var host in _textureHosts.Values)
+        {
+            ApplyOverlayClip(host);
+        }
+    }
+
+    private void UpdateTextureClip(Border host) => ApplyOverlayClip(host);
 
     private void RemoveWallpaper()
     {
@@ -894,8 +992,24 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
-        EnsureTextureHost();
-        if (_textureHost == null)
+        var color = TryParseColor(_settings.BackgroundTextureColor, out var parsed)
+            ? parsed
+            : Color.FromArgb(0x2E, 0xFF, 0xFF, 0xFF);
+        _textureBrush = BuildTextureBrush(_settings.BackgroundTextureType, color, _settings.BackgroundTextureSize);
+
+        // 设置变更时同步刷新既有宿主的画刷。
+        foreach (var host in _textureHosts.Values)
+        {
+            host.Background = _textureBrush;
+        }
+
+        UpdateTextureBounds();
+        UpdateTextureClip();
+    }
+
+    private void EnsureTextureBrush()
+    {
+        if (_textureBrush != null)
         {
             return;
         }
@@ -903,45 +1017,64 @@ internal sealed class MainWindowStyleInjector : IDisposable
         var color = TryParseColor(_settings.BackgroundTextureColor, out var parsed)
             ? parsed
             : Color.FromArgb(0x2E, 0xFF, 0xFF, 0xFF);
-        _textureHost.Background = BuildTextureBrush(_settings.BackgroundTextureType, color, _settings.BackgroundTextureSize);
-        UpdateTextureClip();
+        _textureBrush = BuildTextureBrush(_settings.BackgroundTextureType, color, _settings.BackgroundTextureSize);
     }
 
-    private void EnsureTextureHost()
+    /// <summary>
+    /// 为单个主界面行（MainWindowLine 模板 GridRoot）创建底纹宿主，
+    /// 插入到该行底色 Border 之后，使其渲染在底色填充之上、组件内容之下。
+    /// </summary>
+    private Border? EnsureTextureHost(Grid gridRoot)
     {
-        if (_textureHost != null)
+        if (_textureHosts.TryGetValue(gridRoot, out var existing))
         {
-            return;
+            return existing;
         }
 
-        var islandGrid = _mainWindow?.FindControl<Grid>(HostContract.GridRoot);
-        if (islandGrid == null)
-        {
-            return;
-        }
-
-        _textureHost = new Border
+        EnsureTextureBrush();
+        var host = new Border
         {
             IsHitTestVisible = false,
             ClipToBounds = true,
+            Background = _textureBrush,
             VerticalAlignment = VerticalAlignment.Stretch,
             HorizontalAlignment = HorizontalAlignment.Stretch
         };
-        _textureHost.SizeChanged += (_, _) => UpdateTextureClip();
-        // 层级：背景图片（index 0）之上、行背景色之下。
-        islandGrid.Children.Insert(_wallpaperHost != null ? 1 : 0, _textureHost);
-        UpdateTextureBounds();
-        UpdateTextureClip();
+        gridRoot.Children.Insert(FindTextureInsertIndex(gridRoot), host);
+        _textureHosts[gridRoot] = host;
+        return host;
+    }
+
+    /// <summary>
+    /// 在行模板 GridRoot 中定位底色 Border（或 Fluent 主题的包装层），
+    /// 返回其后的插入索引，使底纹恰好位于底色之上、组件之下。
+    /// </summary>
+    private static int FindTextureInsertIndex(Grid gridRoot)
+    {
+        for (var i = 0; i < gridRoot.Children.Count; i++)
+        {
+            if (gridRoot.Children[i] is Border border &&
+                border.Name is HostContract.BackgroundBorder or HostContract.BackgroundBorderWrapper)
+            {
+                return i + 1;
+            }
+        }
+
+        return 1;
     }
 
     private void RemoveTextureHost()
     {
-        if (_textureHost != null && _textureHost.Parent is Panel panel)
+        foreach (var host in _textureHosts.Values)
         {
-            panel.Children.Remove(_textureHost);
+            if (host.Parent is Panel panel)
+            {
+                panel.Children.Remove(host);
+            }
         }
 
-        _textureHost = null;
+        _textureHosts.Clear();
+        _textureBrush = null;
     }
 
     /// <summary>

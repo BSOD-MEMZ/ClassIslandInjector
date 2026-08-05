@@ -212,6 +212,7 @@ public sealed class InjectorSettings
     private double _wallpaperOffsetX;
     private double _wallpaperOffsetY;
     private double _wallpaperSlideshowIntervalSeconds = 30;
+    private double _wallpaperBlurRadius;
     private PrepareOnClassStyle _prepareOnClassStyle = PrepareOnClassStyle.None;
     private string _countdownArrowColor = "#BFF8FAFC";
     private int _countdownArrowCount = 5;
@@ -297,6 +298,7 @@ public sealed class InjectorSettings
     public double WallpaperOffsetX { get => _wallpaperOffsetX; set => Set(ref _wallpaperOffsetX, Math.Clamp(value, -0.5, 0.5)); }
     public double WallpaperOffsetY { get => _wallpaperOffsetY; set => Set(ref _wallpaperOffsetY, Math.Clamp(value, -0.5, 0.5)); }
     public double WallpaperSlideshowIntervalSeconds { get => _wallpaperSlideshowIntervalSeconds; set => Set(ref _wallpaperSlideshowIntervalSeconds, Math.Clamp(value, 2, 3600)); }
+    public double WallpaperBlurRadius { get => _wallpaperBlurRadius; set => Set(ref _wallpaperBlurRadius, Math.Clamp(value, 0, 60)); }
     public PrepareOnClassStyle PrepareOnClassStyle { get => _prepareOnClassStyle; set => Set(ref _prepareOnClassStyle, value); }
     public string CountdownArrowColor { get => _countdownArrowColor; set => Set(ref _countdownArrowColor, value.Trim()); }
     public int CountdownArrowCount { get => _countdownArrowCount; set => Set(ref _countdownArrowCount, Math.Clamp(value, 1, 24)); }
@@ -421,6 +423,7 @@ public sealed class InjectorSettings
         double WallpaperOffsetX,
         double WallpaperOffsetY,
         double WallpaperSlideshowIntervalSeconds,
+        double WallpaperBlurRadius,
         bool DynamicBackgroundColorEnabled,
         bool DynamicBorderColorEnabled,
         bool DynamicShadowColorEnabled,
@@ -433,7 +436,7 @@ public sealed class InjectorSettings
         CustomSizeEnabled, MainWindowWidth, MainWindowHeight,
         WallpaperEnabled, WallpaperSource, WallpaperPath, WallpaperOpacity,
         WallpaperDisplayMode, WallpaperScale, WallpaperOffsetX, WallpaperOffsetY,
-        WallpaperSlideshowIntervalSeconds,
+        WallpaperSlideshowIntervalSeconds, WallpaperBlurRadius,
         DynamicBackgroundColorEnabled, DynamicBorderColorEnabled, DynamicShadowColorEnabled,
         RevertColorsWhenPaused,
         AlbumColorPollingIntervalSeconds, AlbumColorTransitionSeconds);
@@ -458,6 +461,7 @@ public sealed class InjectorSettings
         WallpaperOffsetX = s.WallpaperOffsetX;
         WallpaperOffsetY = s.WallpaperOffsetY;
         WallpaperSlideshowIntervalSeconds = s.WallpaperSlideshowIntervalSeconds;
+        WallpaperBlurRadius = s.WallpaperBlurRadius;
         DynamicBackgroundColorEnabled = s.DynamicBackgroundColorEnabled;
         DynamicBorderColorEnabled = s.DynamicBorderColorEnabled;
         DynamicShadowColorEnabled = s.DynamicShadowColorEnabled;
@@ -658,6 +662,7 @@ public sealed class InjectorSettings
         WallpaperOffsetX = source.WallpaperOffsetX;
         WallpaperOffsetY = source.WallpaperOffsetY;
         WallpaperSlideshowIntervalSeconds = source.WallpaperSlideshowIntervalSeconds;
+        WallpaperBlurRadius = source.WallpaperBlurRadius;
         PrepareOnClassStyle = source.PrepareOnClassStyle;
         CountdownArrowColor = source.CountdownArrowColor;
         CountdownArrowCount = source.CountdownArrowCount;
