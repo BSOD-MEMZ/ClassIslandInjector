@@ -21,7 +21,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 {
     private readonly ToggleSwitch _enabled = Toggle();
     private readonly Slider _opacity = Slider(0, 1, 0.05);
-    private readonly Spin _scale = Spinner(0.1, 5, 0.05);
     private readonly Spin _rotation = Spinner(-360, 360, 1, "0");
     private readonly Spin _offsetX = Spinner(-2000, 2000, 1, "0");
     private readonly Spin _offsetY = Spinner(-2000, 2000, 1, "0");
@@ -33,10 +32,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly TextBox _styleSheetPath = new() { MinWidth = 280 };
     private readonly ToggleSwitch _watchStyleSheet = Toggle();
 
-    private readonly Spin _cornerRadius = Spinner(0, 500, 1, "0");
-    private readonly ToggleSwitch _customSize = Toggle();
-    private readonly Spin _mainWindowWidth = Spinner(160, 2000, 10, "0");
-    private readonly Spin _mainWindowHeight = Spinner(40, 800, 10, "0");
+    private readonly Spin _cornerRadius = Spinner(0, 20, 1, "0");
     private readonly ToggleSwitch _customBackground = Toggle();
     private readonly ColorPicker _backgroundColor = ColorPicker();
     private readonly ToggleSwitch _dynamicBackgroundColor = Toggle();
@@ -301,20 +297,67 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         {
             Severity = InfoBarSeverity.Warning,
             Title = "与 ClassIsland 原生设置重叠",
-            Message = "不透明度、缩放、位置与圆角均可在 ClassIsland 的外观页修改。在此再次覆盖可能与原生设置产生少量兼容性问题。",
+            Message = "不透明度、缩放与位置可在 ClassIsland 的外观页修改，在此覆盖可能与原生设置产生少量兼容性问题。圆角已改为同步写入 ClassIsland 原生圆角设置（0-20），与宿主内容裁切一致。",
             IsOpen = true,
             IsClosable = false
         });
         panel.Children.Add(Group("\uE113", "基础变形", "这些值会覆盖并叠加在 ClassIsland 的主界面外观设置之上。",
             Item("不透明度", "控制主界面的整体透明度。", _opacity),
-            Item("界面缩放", "控制主界面的显示大小。", _scale),
             Item("水平偏移", "向左或向右移动主界面。", _offsetX),
             Item("垂直偏移", "向上或向下移动主界面。", _offsetY),
-            Item("圆角半径", "控制岛屿边角的圆润程度。", _cornerRadius),
+            Item("圆角半径", "岛屿边角的圆润程度（0-20，20 为半圆）。该值会同步写入 ClassIsland 原生圆角设置，与宿主内容裁切保持一致。", _cornerRadius),
             Item("旋转角度", "以中心点旋转主界面。", _rotation)));
-        panel.Children.Add(SwitchableGroup("\uEE83", "固定显示大小", "启用后覆盖主界面根容器的宽度与高度；关闭时完全沿用 ClassIsland 原生布局。", _customSize,
-            Item("显示宽度", "主界面显示区域的固定宽度。", _mainWindowWidth),
-            Item("显示高度", "主界面显示区域的固定高度。", _mainWindowHeight)));
+
+        AddSection(panel, "\uE51F", "背景");
+        var backgroundColorItem = Item("背景色", "支持透明度的主界面背景颜色。", _backgroundColor);
+        var backgroundGroup = SwitchableGroup("\uE520", "底色填充", "关闭时保留 ClassIsland 自身的背景颜色。", _customBackground,
+            backgroundColorItem,
+            Item("动态专辑封面取色", "读取当前 SMTC 专辑封面，并使用 Material You（Monet）算法自动提取主题色。", _dynamicBackgroundColor),
+            Item("线性渐变", "开启后会使用渐变终止色。", _gradient),
+            Item("渐变方向", "线性渐变从起始色到终止色的方向。", _gradientDirection, _gradient),
+            Item("渐变终止色", "线性渐变背景的结束颜色。", _gradientEndColor, _gradient));
+        EnabledWhenManualColor(backgroundColorItem, _customBackground, _dynamicBackgroundColor);
+        panel.Children.Add(backgroundGroup);
+        panel.Children.Add(Group("\uE7B5", "底纹纹理", "在底色之上叠加可平铺的纹理图案，可与背景图片、背景色同时使用；纹理不受动态取色影响。",
+            Item("纹理图案", "选择填充纹理的类型，无 = 关闭纹理。", _backgroundTextureType),
+            Item("纹理颜色", "支持透明度的纹理线条颜色。", _backgroundTextureColor),
+            Item("纹理大小", "单个纹理单元的大小（像素）。", _backgroundTextureSize)));
+        var wallpaperPathItem = Item("图片 / 文件夹", "底图文件或幻灯片文件夹的路径。", WallpaperPathFooter());
+        var wallpaperSlideshowItem = Item("幻灯片间隔", "文件夹幻灯片切换间隔（秒）。", _wallpaperSlideshowInterval);
+        var wallpaperGroup = SwitchableGroup("\uF42D", "背景图片", "层级：底图 → 底色 → 组件。SMTC 来源由事件驱动即时更新，兜底刷新与图片过渡时长沿用“动态取色”设置。", _wallpaperEnabled,
+            Item("图片来源", "选择底图的来源：本地图片、文件夹幻灯片或 SMTC 专辑封面。", _wallpaperSource),
+            wallpaperPathItem,
+            Item("图片不透明度", "底图的整体透明度。", _wallpaperOpacity),
+            Item("显示方式", "图片在岛屿内的显示方式。", _wallpaperDisplayMode),
+            Item("缩放", "底图的缩放倍率（1 为按显示方式适应，大于 1 放大裁剪）。", _wallpaperScale),
+            Item("水平偏移", "底图的水平偏移（相对图片宽度，-0.5 到 0.5）。", _wallpaperOffsetX),
+            Item("垂直偏移", "底图的垂直偏移（相对图片高度，-0.5 到 0.5）。", _wallpaperOffsetY),
+            Item("模糊", "对底图应用高斯模糊（0 为关闭）。模糊边缘会被岛屿边界裁剪。", _wallpaperBlur),
+            wallpaperSlideshowItem);
+        VisibleWhenAny(wallpaperPathItem, _wallpaperSource, WallpaperSource.LocalImage, WallpaperSource.FolderSlideshow);
+        VisibleWhen(wallpaperSlideshowItem, _wallpaperSource, WallpaperSource.FolderSlideshow);
+        panel.Children.Add(wallpaperGroup);
+        panel.Children.Add(Group("\uF361", "动态取色", "SMTC 采用事件驱动：媒体变化（切歌/换封面）时即时更新；下方的间隔仅作为兜底刷新，应对个别应用事件不触发的情况。",
+            Item("暂停/停止时恢复原色", "媒体暂停或停止播放时，把背景、边框、阴影从专辑取色平滑恢复为你配置的原始颜色，恢复播放后再跟随专辑。", _revertColorsWhenPaused),
+            Item("兜底刷新间隔", "事件驱动失效时的兜底刷新间隔（秒）。", _albumColorPollingInterval),
+            Item("颜色过渡时长", "专辑颜色变化时，背景、边框、阴影平滑过渡到新颜色的时长（秒），0 为立即切换。", _albumColorTransition)));
+
+        AddSection(panel, "\uE254", "边框与阴影");
+        var shadowColorItem = Item("阴影颜色", "支持透明度的阴影颜色。", _shadowColor);
+        panel.Children.Add(SwitchableGroup("\uE472", "阴影", "为岛屿添加投影效果。", _shadow,
+            Item("动态取色", "阴影色调跟随专辑封面，使用 Material You 深色中性色；透明度沿用你配置的阴影颜色透明度。", _dynamicShadowColor),
+            shadowColorItem,
+            Item("阴影模糊", "控制投影的柔和程度。", _shadowBlur),
+            Item("阴影水平偏移", "控制投影向左或向右偏移。", _shadowOffsetX),
+            Item("阴影垂直偏移", "控制投影向上或向下偏移。", _shadowOffsetY),
+            Item("阴影不透明度", "控制投影的深浅。", _shadowOpacity)));
+        EnabledWhenManualColor(shadowColorItem, _shadow, _dynamicShadowColor);
+        var borderColorItem = Item("边框颜色", "支持透明度的边框颜色。", _borderColor);
+        panel.Children.Add(SwitchableGroup("\uE254", "岛屿边框", "为岛屿添加细边框。", _border,
+            Item("动态取色", "边框色调跟随专辑封面，使用 Material You 主色调；透明度沿用你配置的边框颜色透明度。", _dynamicBorderColor),
+            borderColorItem,
+            Item("边框线宽", "控制岛屿边框的粗细。", _borderThickness)));
+        EnabledWhenManualColor(borderColorItem, _border, _dynamicBorderColor);
 
         AddSection(panel, "\uEFFF", "动画");
         panel.Children.Add(SwitchableGroup("\uEFFF", "持续动画", "打开后才会使用下方的循环动画设置。", _animationEnabled,
@@ -381,57 +424,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(arrowGroup);
         panel.Children.Add(pulseGroup);
         panel.Children.Add(scanGroup);
-
-        AddSection(panel, "\uEC4A", "背景、阴影与边框");
-        var backgroundColorItem = Item("背景色", "支持透明度的主界面背景颜色。", _backgroundColor);
-        var backgroundGroup = SwitchableGroup("\uE520", "自定义背景色", "关闭时保留 ClassIsland 自身的背景颜色。", _customBackground,
-            backgroundColorItem,
-            Item("动态专辑封面取色", "读取当前 SMTC 专辑封面，并使用 Material You（Monet）算法自动提取主题色。", _dynamicBackgroundColor),
-            Item("线性渐变", "开启后会使用渐变终止色。", _gradient),
-            Item("渐变方向", "线性渐变从起始色到终止色的方向。", _gradientDirection, _gradient),
-            Item("渐变终止色", "线性渐变背景的结束颜色。", _gradientEndColor, _gradient));
-        EnabledWhenManualColor(backgroundColorItem, _customBackground, _dynamicBackgroundColor);
-        panel.Children.Add(backgroundGroup);
-        panel.Children.Add(Group("\uE7B5", "背景纹理", "在背景色之上叠加可平铺的纹理图案，可与背景图片、背景色同时使用；纹理不受动态取色影响。",
-            Item("纹理图案", "选择填充纹理的类型，无 = 关闭纹理。", _backgroundTextureType),
-            Item("纹理颜色", "支持透明度的纹理线条颜色。", _backgroundTextureColor),
-            Item("纹理大小", "单个纹理单元的大小（像素）。", _backgroundTextureSize)));
-        panel.Children.Add(Group("\uF361", "动态取色轮询", "SMTC 采用事件驱动：媒体变化（切歌/换封面）时即时更新；下方的间隔仅作为兜底刷新，应对个别应用事件不触发的情况。",
-            Item("暂停/停止时恢复原色", "媒体暂停或停止播放时，把背景、边框、阴影从专辑取色平滑恢复为你配置的原始颜色，恢复播放后再跟随专辑。", _revertColorsWhenPaused),
-            Item("兜底刷新间隔", "事件驱动失效时的兜底刷新间隔（秒）。", _albumColorPollingInterval),
-            Item("颜色过渡时长", "专辑颜色变化时，背景、边框、阴影平滑过渡到新颜色的时长（秒），0 为立即切换。", _albumColorTransition)));
-        var shadowColorItem = Item("阴影颜色", "支持透明度的阴影颜色。", _shadowColor);
-        panel.Children.Add(SwitchableGroup("\uE472", "阴影", "为岛屿添加投影效果。", _shadow,
-            Item("动态取色", "阴影色调跟随专辑封面，使用 Material You 深色中性色；透明度沿用你配置的阴影颜色透明度。", _dynamicShadowColor),
-            shadowColorItem,
-            Item("阴影模糊", "控制投影的柔和程度。", _shadowBlur),
-            Item("阴影水平偏移", "控制投影向左或向右偏移。", _shadowOffsetX),
-            Item("阴影垂直偏移", "控制投影向上或向下偏移。", _shadowOffsetY),
-            Item("阴影不透明度", "控制投影的深浅。", _shadowOpacity)));
-        EnabledWhenManualColor(shadowColorItem, _shadow, _dynamicShadowColor);
-        var borderColorItem = Item("边框颜色", "支持透明度的边框颜色。", _borderColor);
-        panel.Children.Add(SwitchableGroup("\uE254", "岛屿边框", "为岛屿添加细边框。", _border,
-            Item("动态取色", "边框色调跟随专辑封面，使用 Material You 主色调；透明度沿用你配置的边框颜色透明度。", _dynamicBorderColor),
-            borderColorItem,
-            Item("边框线宽", "控制岛屿边框的粗细。", _borderThickness)));
-        EnabledWhenManualColor(borderColorItem, _border, _dynamicBorderColor);
-
-        AddSection(panel, "\uF42D", "主界面底图");
-        var wallpaperPathItem = Item("图片 / 文件夹", "底图文件或幻灯片文件夹的路径。", WallpaperPathFooter());
-        var wallpaperSlideshowItem = Item("幻灯片间隔", "文件夹幻灯片切换间隔（秒）。", _wallpaperSlideshowInterval);
-        var wallpaperGroup = SwitchableGroup("\uF42D", "主界面底图", "层级：底图 → 底色 → 组件。SMTC 来源由事件驱动即时更新，兜底刷新与图片过渡时长沿用上方“动态取色轮询”设置。", _wallpaperEnabled,
-            Item("图片来源", "选择底图的来源：本地图片、文件夹幻灯片或 SMTC 专辑封面。", _wallpaperSource),
-            wallpaperPathItem,
-            Item("图片不透明度", "底图的整体透明度。", _wallpaperOpacity),
-            Item("显示方式", "图片在岛屿内的显示方式。", _wallpaperDisplayMode),
-            Item("缩放", "底图的缩放倍率（1 为按显示方式适应，大于 1 放大裁剪）。", _wallpaperScale),
-            Item("水平偏移", "底图的水平偏移（相对图片宽度，-0.5 到 0.5）。", _wallpaperOffsetX),
-            Item("垂直偏移", "底图的垂直偏移（相对图片高度，-0.5 到 0.5）。", _wallpaperOffsetY),
-            Item("模糊", "对底图应用高斯模糊（0 为关闭）。模糊边缘会被岛屿边界裁剪。", _wallpaperBlur),
-            wallpaperSlideshowItem);
-        VisibleWhenAny(wallpaperPathItem, _wallpaperSource, WallpaperSource.LocalImage, WallpaperSource.FolderSlideshow);
-        VisibleWhen(wallpaperSlideshowItem, _wallpaperSource, WallpaperSource.FolderSlideshow);
-        panel.Children.Add(wallpaperGroup);
 
         AddSection(panel, "\uF263", "高级样式表");
         panel.Children.Add(Setting("\uF263", "覆盖样式表路径", "填写 .axaml 样式表的完整路径。", _styleSheetPath));
@@ -606,7 +598,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     {
         foreach (var control in new Control[]
                  {
-                     _opacity, _scale, _rotation, _offsetX, _offsetY, _cornerRadius, _customSize, _mainWindowWidth, _mainWindowHeight,
+                     _opacity, _rotation, _offsetX, _offsetY, _cornerRadius,
                      _customBackground, _backgroundColor, _dynamicBackgroundColor, _dynamicBorderColor, _dynamicShadowColor,
                      _albumColorPollingInterval, _albumColorTransition, _gradient, _gradientEndColor,
                      _shadow, _shadowColor, _shadowBlur, _shadowOffsetX, _shadowOffsetY, _shadowOpacity,
@@ -630,9 +622,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
         foreach (var control in new Control[]
                  {
-                     _enabled, _opacity, _scale, _rotation, _offsetX, _offsetY, _cornerRadius,
+                     _enabled, _opacity, _rotation, _offsetX, _offsetY, _cornerRadius,
                      _animationEnabled, _animationMode, _animationAmount, _animationPeriod,
-                     _customSize, _mainWindowWidth, _mainWindowHeight,
                      _customBackground, _backgroundColor, _dynamicBackgroundColor, _dynamicBorderColor, _dynamicShadowColor,
                      _revertColorsWhenPaused, _albumColorPollingInterval, _albumColorTransition,
                      _gradient, _gradientEndColor, _gradientDirection, _backgroundTextureType, _backgroundTextureColor, _backgroundTextureSize,
@@ -673,14 +664,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     {
         var state = new IslandPreviewState(
             _opacity.Value,
-            _scale.DoubleValue,
             _rotation.DoubleValue,
             _offsetX.DoubleValue,
             _offsetY.DoubleValue,
             _cornerRadius.DoubleValue,
-            _customSize.IsChecked == true,
-            _mainWindowWidth.DoubleValue,
-            _mainWindowHeight.DoubleValue,
             _customBackground.IsChecked == true,
             _backgroundColor.Color,
             _gradient.IsChecked == true,
@@ -722,14 +709,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         {
             _offsetX.DoubleValue = e.OffsetX;
             _offsetY.DoubleValue = e.OffsetY;
-            _scale.DoubleValue = e.Scale;
             _rotation.DoubleValue = e.Rotation;
-        };
-        window.Editor.SizeEdited += (_, e) =>
-        {
-            _customSize.IsChecked = true;
-            _mainWindowWidth.DoubleValue = e.Width;
-            _mainWindowHeight.DoubleValue = e.Height;
         };
         window.Editor.CornerRadiusEdited += (_, e) => _cornerRadius.DoubleValue = e.Value;
 
@@ -755,13 +735,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         window.OpacityEdited += value => { PushEditorUndo(); _opacity.Value = value; };
         window.CornerRadiusEdited += value => { PushEditorUndo(); _cornerRadius.DoubleValue = value; };
         window.BackgroundEdited += enabled => { PushEditorUndo(); _customBackground.IsChecked = enabled; };
-        window.ScaleEdited += value => { PushEditorUndo(); _scale.DoubleValue = value; };
         window.RotationEdited += value => { PushEditorUndo(); _rotation.DoubleValue = value; };
         window.OffsetXEdited += value => { PushEditorUndo(); _offsetX.DoubleValue = value; };
         window.OffsetYEdited += value => { PushEditorUndo(); _offsetY.DoubleValue = value; };
-        window.CustomSizeEdited += enabled => { PushEditorUndo(); _customSize.IsChecked = enabled; };
-        window.WidthEdited += value => { PushEditorUndo(); _customSize.IsChecked = true; _mainWindowWidth.DoubleValue = value; };
-        window.HeightEdited += value => { PushEditorUndo(); _customSize.IsChecked = true; _mainWindowHeight.DoubleValue = value; };
         window.BorderEdited += enabled => { PushEditorUndo(); _border.IsChecked = enabled; };
         window.BorderColorEdited += color => { PushEditorUndo(); _border.IsChecked = true; _dynamicBorderColor.IsChecked = false; _borderColor.Color = color; };
         window.BorderThicknessEdited += value => { PushEditorUndo(); _border.IsChecked = true; _borderThickness.DoubleValue = value; };
@@ -783,8 +759,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     /// 捕获编辑器可编辑的全部设置项当前值（即撤销/重做的快照）。
     /// </summary>
     private IslandPreviewState CaptureEditorState() => new(
-        _opacity.Value, _scale.DoubleValue, _rotation.DoubleValue, _offsetX.DoubleValue, _offsetY.DoubleValue,
-        _cornerRadius.DoubleValue, _customSize.IsChecked == true, _mainWindowWidth.DoubleValue, _mainWindowHeight.DoubleValue,
+        _opacity.Value, _rotation.DoubleValue, _offsetX.DoubleValue, _offsetY.DoubleValue,
+        _cornerRadius.DoubleValue,
         _customBackground.IsChecked == true, _backgroundColor.Color, _gradient.IsChecked == true, _gradientEndColor.Color,
         Selected(_gradientDirection, GradientDirection.TopLeftToBottomRight),
         _shadow.IsChecked == true, _shadowColor.Color, _shadowBlur.DoubleValue, _shadowOffsetX.DoubleValue, _shadowOffsetY.DoubleValue,
@@ -806,14 +782,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private void RestoreEditorState(IslandPreviewState state)
     {
         _opacity.Value = state.Opacity;
-        _scale.DoubleValue = state.Scale;
         _rotation.DoubleValue = state.Rotation;
         _offsetX.DoubleValue = state.OffsetX;
         _offsetY.DoubleValue = state.OffsetY;
         _cornerRadius.DoubleValue = state.CornerRadius;
-        _customSize.IsChecked = state.CustomSize;
-        _mainWindowWidth.DoubleValue = state.Width;
-        _mainWindowHeight.DoubleValue = state.Height;
         _customBackground.IsChecked = state.CustomBackground;
         _backgroundColor.Color = state.BackgroundColor;
         _gradient.IsChecked = state.Gradient;
@@ -936,7 +908,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         var settings = InjectorRuntime.Settings;
         _enabled.IsChecked = settings.Enabled;
         _opacity.Value = settings.Opacity;
-        _scale.DoubleValue = settings.Scale;
         _rotation.DoubleValue = settings.Rotation;
         _offsetX.DoubleValue = settings.OffsetX;
         _offsetY.DoubleValue = settings.OffsetY;
@@ -947,9 +918,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _styleSheetPath.Text = settings.StyleSheetPath;
         _watchStyleSheet.IsChecked = settings.WatchStyleSheet;
         _cornerRadius.DoubleValue = settings.CornerRadius;
-        _customSize.IsChecked = settings.CustomSizeEnabled;
-        _mainWindowWidth.DoubleValue = settings.MainWindowWidth;
-        _mainWindowHeight.DoubleValue = settings.MainWindowHeight;
         _customBackground.IsChecked = settings.CustomBackgroundEnabled;
         _backgroundColor.Color = ReadColor(settings.BackgroundColor, Color.FromArgb(0xCC, 0x20, 0x20, 0x20));
         _dynamicBackgroundColor.IsChecked = settings.DynamicBackgroundColorEnabled;
@@ -1027,7 +995,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         {
             settings.Enabled = _enabled.IsChecked == true;
             settings.Opacity = _opacity.Value;
-            settings.Scale = _scale.DoubleValue;
             settings.Rotation = _rotation.DoubleValue;
             settings.OffsetX = _offsetX.DoubleValue;
             settings.OffsetY = _offsetY.DoubleValue;
@@ -1046,9 +1013,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                 settings.Shape = IslandShape.RoundedRectangle;
             }
 
-            settings.CustomSizeEnabled = _customSize.IsChecked == true;
-            settings.MainWindowWidth = _mainWindowWidth.DoubleValue;
-            settings.MainWindowHeight = _mainWindowHeight.DoubleValue;
             settings.CustomBackgroundEnabled = _customBackground.IsChecked == true;
             settings.BackgroundColor = _backgroundColor.Color.ToString();
             settings.DynamicBackgroundColorEnabled = _dynamicBackgroundColor.IsChecked == true;

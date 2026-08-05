@@ -31,7 +31,14 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private Border? _styleHost;
     private ITransform? _originalTransform;
     private double _originalOpacity = 1;
-    private readonly Dictionary<Control, (double Width, double Height)> _originalDisplaySizes = [];
+    // 圆角接管宿主原生设置：记录原始值用于还原，_effectiveCornerRadius 供
+    // 底图/纹理宿主裁切跟随宿主 RadiusX。
+    private double _originalHostRadiusX;
+    private double _originalHostRadiusY;
+    private bool _hostShapeCaptured;
+    private double _effectiveCornerRadius;
+    private Type? _hostSettingsType;
+    private PropertyInfo? _hostSettingsProperty;
     private Styles? _loadedStyles;
     private Styles? _notificationStyles;
     private FileSystemWatcher? _styleSheetWatcher;
@@ -112,7 +119,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
         if (_mainWindow != mainWindow)
         {
             RestoreHostState();
-            _originalDisplaySizes.Clear();
             _mainWindow = mainWindow;
             _islandRoot = mainWindow.FindControl<Control>(HostContract.StackPanelRootContainer);
             _windowRoot = mainWindow.FindControl<Grid>(HostContract.WindowRoot);
@@ -124,13 +130,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
             _originalTransform = _islandRoot.RenderTransform;
             _originalOpacity = _islandRoot.Opacity;
-            // WorkingRoot is the actual client surface in ClassIsland. The
-            // previous implementation only sized descendants, which were then
-            // measured back to the host's full client rectangle by this parent.
-            CaptureDisplaySize(mainWindow.FindControl<Control>(HostContract.WorkingRoot));
-            CaptureDisplaySize(_islandRoot);
-            CaptureDisplaySize(mainWindow.FindControl<Control>(HostContract.RootLayoutTransformControl));
-            CaptureDisplaySize(mainWindow.FindControl<Control>(HostContract.GridRoot));
+            CaptureHostShape();
             mainWindow.Classes.Add(HostContract.InjectorWindowClass);
             _islandRoot.Classes.Add(HostContract.InjectorRootClass);
         }
@@ -153,9 +153,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         _islandRoot.Opacity = _originalOpacity * _settings.Opacity;
-        ApplySize();
         ApplyTransform(0);
         ApplyDecorations();
+        ApplyShapeToHost();
         ApplyWallpaper();
         ApplyTextureHost();
         ReloadStyleSheet();
@@ -323,7 +323,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
-        var scale = _settings.Scale;
+        var scale = 1.0;
         var rotation = _settings.Rotation;
         var x = _settings.OffsetX;
         var y = _settings.OffsetY;
@@ -511,28 +511,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
             RemovePrepareOnClassOverlay(line);
         }
         UpdateAnimationTimer();
-    }
-
-    private void ApplySize()
-    {
-        if (_islandRoot == null)
-        {
-            return;
-        }
-
-        foreach (var (control, originalSize) in _originalDisplaySizes)
-        {
-            control.Width = _settings.CustomSizeEnabled ? _settings.MainWindowWidth : originalSize.Width;
-            control.Height = _settings.CustomSizeEnabled ? _settings.MainWindowHeight : originalSize.Height;
-        }
-    }
-
-    private void CaptureDisplaySize(Control? control)
-    {
-        if (control != null)
-        {
-            _originalDisplaySizes.TryAdd(control, (control.Width, control.Height));
-        }
     }
 
     private bool IsAnyDynamicColorEnabled() =>
@@ -937,13 +915,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
-        host.CornerRadius = _settings.Shape switch
-        {
-            IslandShape.Rectangle => new CornerRadius(0),
-            IslandShape.Capsule => new CornerRadius(Math.Max(1, host.Bounds.Height / 2)),
-            IslandShape.HostDefault => new CornerRadius(0),
-            _ => new CornerRadius(_settings.CornerRadius)
-        };
+        // 底图/纹理宿主的圆角跟随当前生效圆角（与宿主 RadiusX 保持一致），
+        // 避免覆盖层与宿主内容裁切不一致。
+        host.CornerRadius = new CornerRadius(_effectiveCornerRadius);
     }
 
     private void UpdateWallpaperClip() => ApplyOverlayClip(_wallpaperHost);
@@ -1938,6 +1912,132 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _windowRoot?.Children.Remove(ripple);
     }
 
+    // ============ 圆角绑定到 ClassIsland 原生设置 ============
+
+    /// <summary>
+    /// 反射获取宿主 App 的 Settings 对象（宿主主程序集插件无法直接引用，故用反射）。
+    /// 缓存类型与属性信息，避免重复反射。
+    /// </summary>
+    private object? GetHostSettings()
+    {
+        try
+        {
+            var app = AppBase.Current;
+            if (app == null)
+            {
+                return null;
+            }
+
+            var appType = app.GetType();
+            if (_hostSettingsType != appType || _hostSettingsProperty == null)
+            {
+                _hostSettingsType = appType;
+                _hostSettingsProperty = appType.GetProperty("Settings", BindingFlags.Instance | BindingFlags.Public);
+            }
+
+            return _hostSettingsProperty?.GetValue(app);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static double ReadHostRadius(object settings, string name)
+    {
+        try
+        {
+            return settings.GetType().GetProperty(name)?.GetValue(settings) is double d ? d : 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static void WriteHostRadius(object settings, string name, double value)
+    {
+        try
+        {
+            settings.GetType().GetProperty(name)?.SetValue(settings, value);
+        }
+        catch
+        {
+            // 忽略：宿主结构变化时圆角回退为不接管。
+        }
+    }
+
+    /// <summary>在接管前记录宿主原生圆角，用于禁用/卸载时还原。</summary>
+    private void CaptureHostShape()
+    {
+        var settings = GetHostSettings();
+        if (settings == null)
+        {
+            _hostShapeCaptured = false;
+            return;
+        }
+
+        _hostShapeCaptured = true;
+        _originalHostRadiusX = ReadHostRadius(settings, "RadiusX");
+        _originalHostRadiusY = ReadHostRadius(settings, "RadiusY");
+        _effectiveCornerRadius = _originalHostRadiusX;
+    }
+
+    /// <summary>
+    /// 把插件圆角写入宿主原生 Settings.RadiusX/RadiusY，使宿主的背景样式、
+    /// 内容 Clip（ContentClipBorder）与遮罩全部统一到同一圆角，修复
+    /// “插件圆角不工作 / 裁切不一致”的问题。
+    /// 宿主圆角安全上限为 20（默认行高 40 的一半），与宿主外观设置一致；
+    /// 超过该值会让宿主 RectangleGeometry 内容裁切几何异常。
+    /// </summary>
+    private void ApplyShapeToHost()
+    {
+        var radius = _settings.Shape switch
+        {
+            IslandShape.Rectangle => 0.0,
+            IslandShape.Capsule => 20.0, // 半圆
+            IslandShape.HostDefault => -1.0, // 不接管，沿用宿主原生圆角
+            _ => Math.Clamp(_settings.CornerRadius, 0, 20)
+        };
+
+        var settings = GetHostSettings();
+        if (settings == null)
+        {
+            // 宿主访问失败时的降级：仍按形状给出合理圆角（不写宿主）。
+            _effectiveCornerRadius = radius < 0 ? 0 : radius;
+            return;
+        }
+
+        if (radius < 0)
+        {
+            _effectiveCornerRadius = ReadHostRadius(settings, "RadiusX");
+            return;
+        }
+
+        WriteHostRadius(settings, "RadiusX", radius);
+        WriteHostRadius(settings, "RadiusY", radius);
+        _effectiveCornerRadius = radius;
+    }
+
+    /// <summary>禁用/卸载时把宿主原生圆角还原为插件接管前的值。</summary>
+    private void RestoreHostShape()
+    {
+        if (!_hostShapeCaptured)
+        {
+            return;
+        }
+
+        var settings = GetHostSettings();
+        if (settings != null)
+        {
+            WriteHostRadius(settings, "RadiusX", _originalHostRadiusX);
+            WriteHostRadius(settings, "RadiusY", _originalHostRadiusY);
+            _effectiveCornerRadius = _originalHostRadiusX;
+        }
+
+        _hostShapeCaptured = false;
+    }
+
     private void ApplyDecorations()
     {
         RestoreDecorations();
@@ -1974,23 +2074,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
                 borderControl.BorderThickness = originalBorderThickness;
             });
 
-            switch (_settings.Shape)
-            {
-                case IslandShape.Rectangle:
-                    borderControl.CornerRadius = new CornerRadius(0);
-                    break;
-                case IslandShape.RoundedRectangle:
-                case IslandShape.Capsule:
-                    borderControl.CornerRadius = _settings.Shape == IslandShape.Capsule
-                        ? new CornerRadius(Math.Max(1, borderControl.Bounds.Height / 2))
-                        : new CornerRadius(_settings.CornerRadius);
-                    break;
-                case IslandShape.HostDefault:
-                    // 全新安装默认不改动主界面的圆角（沿用 ClassIsland 原生圆角）。
-                    // 只有用户通过可视化编辑器/设置页显式修改圆角时，
-                    // Shape 才会被切换为 RoundedRectangle 并应用自定义圆角。
-                    break;
-            }
+            // 圆角不再直接修改宿主 Border（会与宿主 Settings.RadiusX 驱动的内容 Clip
+            // 裁切不一致）。统一由 ApplyShapeToHost() 写入宿主原生 RadiusX/RadiusY，
+            // 让背景样式、内容裁切与遮罩全部同步到同一圆角。
 
             IBrush? backgroundBrush = null;
             if (borderControl.Name == "BackgroundBorder" && _settings.CustomBackgroundEnabled)
@@ -2123,6 +2209,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         RestoreDecorations();
         _decorations.Clear();
         _shadowEffect = null;
+        RestoreHostShape();
         _colorTransitionActive = false;
         _dynamicColorsInitialized = false;
         RemoveWallpaper();
@@ -2160,12 +2247,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
             _islandRoot.RenderTransform = _originalTransform;
             _islandRoot.Opacity = _originalOpacity;
             _islandRoot.Classes.Remove(HostContract.InjectorRootClass);
-        }
-
-        foreach (var (control, originalSize) in _originalDisplaySizes)
-        {
-            control.Width = originalSize.Width;
-            control.Height = originalSize.Height;
         }
 
         _mainWindow?.Classes.Remove(HostContract.InjectorWindowClass);

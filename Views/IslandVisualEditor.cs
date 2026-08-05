@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Threading;
 using ClassIsland.Core.Controls;
 using FluentAvalonia.UI.Controls;
 
@@ -25,15 +26,11 @@ internal sealed class IslandVisualEditor : UserControl
     private readonly Border _cornerRadiusHandle;
     private IslandPreviewState _state;
     private Point _lastPointerPosition;
-    private Vector _resizeDirection;
     private bool _isDragging;
     private bool _isRotating;
-    private bool _isResizing;
     private bool _isEditingCornerRadius;
-    private readonly Dictionary<long, Point> _activePointers = [];
-    private bool _isPinching;
-    private double _pinchStartDistance;
-    private double _pinchStartScale;
+    private readonly DispatcherTimer _hintTimer = new() { Interval = TimeSpan.FromSeconds(2.5) };
+    private readonly TextBlock _unsupportedHint;
     private readonly Slider _zoomSlider = new()
     {
         Minimum = 0.5,
@@ -52,7 +49,6 @@ internal sealed class IslandVisualEditor : UserControl
     };
 
     public event EventHandler<IslandTransformEditedEventArgs>? TransformEdited;
-    public event EventHandler<IslandSizeEditedEventArgs>? SizeEdited;
     public event EventHandler<IslandValueEditedEventArgs>? CornerRadiusEdited;
     public event EventHandler? TransformEditCompleted;
     public event EventHandler? EditStarted;
@@ -68,7 +64,6 @@ internal sealed class IslandVisualEditor : UserControl
         _stage.PointerPressed += StageOnPointerPressed;
         _stage.PointerMoved += StageOnPointerMoved;
         _stage.PointerReleased += StageOnPointerReleased;
-        _stage.PointerWheelChanged += StageOnPointerWheelChanged;
         _stage.SizeChanged += (_, _) =>
         {
             _grid.Width = _stage.Bounds.Width;
@@ -94,6 +89,24 @@ internal sealed class IslandVisualEditor : UserControl
         _stage.Children.Add(_island);
         _stage.Children.Add(_selection);
 
+        _unsupportedHint = new TextBlock
+        {
+            Text = "固定显示大小已不再受支持：插件无法控制 ClassIsland 的主界面宽高",
+            IsVisible = false,
+            Background = new SolidColorBrush(Color.FromArgb(220, 18, 20, 24)),
+            Foreground = Brushes.White,
+            Padding = new Thickness(12, 6),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(0, 12, 0, 0)
+        };
+        _hintTimer.Tick += (_, _) =>
+        {
+            _hintTimer.Stop();
+            _unsupportedHint.IsVisible = false;
+        };
+        _stage.Children.Add(_unsupportedHint);
+
         foreach (var (name, direction, cursor) in new[]
                  {
                      ("nw", new Vector(-1, -1), StandardCursorType.TopLeftCorner),
@@ -108,9 +121,7 @@ internal sealed class IslandVisualEditor : UserControl
         {
             var handle = Handle(10, new SolidColorBrush(Color.FromRgb(0, 120, 212)), cursor);
             handle.Name = name;
-            handle.PointerPressed += (_, e) => ResizeHandleOnPointerPressed(handle, direction, e);
-            handle.PointerMoved += ResizeHandleOnPointerMoved;
-            handle.PointerReleased += ResizeHandleOnPointerReleased;
+            handle.PointerPressed += (_, e) => ResizeHandleOnPointerPressed(handle, e);
             _resizeHandles.Add(handle, direction);
             _stage.Children.Add(handle);
         }
@@ -189,8 +200,8 @@ internal sealed class IslandVisualEditor : UserControl
             }
             : new SolidColorBrush(state.CustomBackground ? state.BackgroundColor : Color.FromArgb(220, 48, 48, 48));
 
-        var displayWidth = Math.Clamp((state.CustomSize ? state.Width : 420) * PreviewSizeScale, 160, 700);
-        var displayHeight = Math.Clamp((state.CustomSize ? state.Height : 120) * PreviewSizeScale, 48, 260);
+        var displayWidth = Math.Clamp(420 * PreviewSizeScale, 160, 700);
+        var displayHeight = Math.Clamp(120 * PreviewSizeScale, 48, 260);
         _island.Width = displayWidth;
         _island.Height = displayHeight;
         _island.Background = background;
@@ -208,10 +219,7 @@ internal sealed class IslandVisualEditor : UserControl
                 Opacity = state.ShadowOpacity
             }
             : null;
-        _island.RenderTransform = new TransformGroup
-        {
-            Children = [new ScaleTransform(state.Scale, state.Scale), new RotateTransform(state.Rotation)]
-        };
+        _island.RenderTransform = new RotateTransform(state.Rotation);
 
         var x = Math.Clamp((_stage.Bounds.Width - displayWidth) / 2 + state.OffsetX * PreviewOffsetScale,
             -displayWidth / 2, _stage.Bounds.Width - displayWidth / 2);
@@ -220,8 +228,8 @@ internal sealed class IslandVisualEditor : UserControl
         Canvas.SetLeft(_island, x);
         Canvas.SetTop(_island, y);
 
-        var scaledWidth = displayWidth * state.Scale;
-        var scaledHeight = displayHeight * state.Scale;
+        var scaledWidth = displayWidth;
+        var scaledHeight = displayHeight;
         foreach (var (handle, direction) in _resizeHandles)
         {
             Canvas.SetLeft(handle, x + scaledWidth * (direction.X + 1) / 2 - handle.Width / 2);
@@ -240,8 +248,8 @@ internal sealed class IslandVisualEditor : UserControl
         _selection.InvalidateVisual();
     }
 
-    public void Center() => RaiseTransformEdited(0, 0, _state.Scale, _state.Rotation, true);
-    public void ResetTransform() => RaiseTransformEdited(0, 0, 1, 0, true);
+    public void Center() => RaiseTransformEdited(0, 0, _state.Rotation, true);
+    public void ResetTransform() => RaiseTransformEdited(0, 0, 0, true);
 
     /// <summary>
     /// 当前视图缩放倍率（仅影响编辑器视图，不影响主界面实际大小）。
@@ -271,8 +279,6 @@ internal sealed class IslandVisualEditor : UserControl
         return button;
     }
 
-    private static double Distance(Point a, Point b) => Math.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y));
-
     private static Border Handle(double size, IBrush background, StandardCursorType cursor) => new()
     {
         Width = size,
@@ -291,21 +297,6 @@ internal sealed class IslandVisualEditor : UserControl
         if (!point.Properties.IsLeftButtonPressed && !point.Properties.IsRightButtonPressed)
             return;
         Focus();
-        _activePointers[e.Pointer.Id] = point.Position;
-        if (_activePointers.Count == 2)
-        {
-            // 第二根手指落下 → 进入双指捏合缩放，取消单指拖动。
-            _isDragging = false;
-            _isPinching = true;
-            var positions = _activePointers.Values.ToArray();
-            _pinchStartDistance = Math.Max(Distance(positions[0], positions[1]), 1);
-            _pinchStartScale = _state.Scale;
-            EditStarted?.Invoke(this, EventArgs.Empty);
-            e.Pointer.Capture(_stage);
-            e.Handled = true;
-            return;
-        }
-
         _isDragging = true;
         EditStarted?.Invoke(this, EventArgs.Empty);
         _lastPointerPosition = point.Position;
@@ -315,47 +306,17 @@ internal sealed class IslandVisualEditor : UserControl
 
     private void StageOnPointerMoved(object? sender, PointerEventArgs e)
     {
-        if (_activePointers.ContainsKey(e.Pointer.Id))
-        {
-            _activePointers[e.Pointer.Id] = e.GetPosition(_stage);
-        }
-
-        if (_isPinching && _activePointers.Count >= 2)
-        {
-            // 双指捏合：按两指间距比例缩放。
-            var positions = _activePointers.Values.ToArray();
-            var distance = Math.Max(Distance(positions[0], positions[1]), 1);
-            var scale = Math.Clamp(_pinchStartScale * (distance / _pinchStartDistance), 0.1, 5);
-            RaiseTransformEdited(_state.OffsetX, _state.OffsetY, scale, _state.Rotation);
-            e.Handled = true;
-            return;
-        }
-
         if (!_isDragging)
             return;
         var position = e.GetPosition(_stage);
         var delta = position - _lastPointerPosition;
         _lastPointerPosition = position;
         RaiseTransformEdited(_state.OffsetX + delta.X / PreviewOffsetScale,
-            _state.OffsetY + delta.Y / PreviewOffsetScale, _state.Scale, _state.Rotation);
+            _state.OffsetY + delta.Y / PreviewOffsetScale, _state.Rotation);
     }
 
     private void StageOnPointerReleased(object? sender, PointerReleasedEventArgs e)
     {
-        _activePointers.Remove(e.Pointer.Id);
-        if (_isPinching)
-        {
-            if (_activePointers.Count < 2)
-            {
-                _isPinching = false;
-            }
-
-            e.Pointer.Capture(null);
-            TransformEditCompleted?.Invoke(this, EventArgs.Empty);
-            e.Handled = true;
-            return;
-        }
-
         if (!_isDragging)
             return;
         _isDragging = false;
@@ -363,46 +324,20 @@ internal sealed class IslandVisualEditor : UserControl
         TransformEditCompleted?.Invoke(this, EventArgs.Empty);
     }
 
-    private void ResizeHandleOnPointerPressed(Border handle, Vector direction, PointerPressedEventArgs e)
+    private void ResizeHandleOnPointerPressed(Border handle, PointerPressedEventArgs e)
     {
         if (!e.GetCurrentPoint(handle).Properties.IsLeftButtonPressed)
             return;
-        Focus();
-        _isResizing = true;
-        _resizeDirection = direction;
-        EditStarted?.Invoke(this, EventArgs.Empty);
-        _lastPointerPosition = e.GetPosition(_stage);
-        e.Pointer.Capture(handle);
+        // 固定显示大小已不再受支持：插件无法控制 ClassIsland 的主界面宽高。
         e.Handled = true;
+        ShowUnsupportedSizeHint();
     }
 
-    private void ResizeHandleOnPointerMoved(object? sender, PointerEventArgs e)
+    private void ShowUnsupportedSizeHint()
     {
-        if (!_isResizing)
-            return;
-        var position = e.GetPosition(_stage);
-        var delta = position - _lastPointerPosition;
-        _lastPointerPosition = position;
-        var currentWidth = _state.CustomSize ? _state.Width : 420;
-        var currentHeight = _state.CustomSize ? _state.Height : 120;
-        var widthChange = _resizeDirection.X * delta.X / PreviewSizeScale;
-        var heightChange = _resizeDirection.Y * delta.Y / PreviewSizeScale;
-        var width = Math.Clamp(currentWidth + widthChange, 160, 2000);
-        var height = Math.Clamp(currentHeight + heightChange, 40, 800);
-        SizeEdited?.Invoke(this, new IslandSizeEditedEventArgs(width, height));
-        RaiseTransformEdited(_state.OffsetX + _resizeDirection.X * widthChange / 2,
-            _state.OffsetY + _resizeDirection.Y * heightChange / 2, _state.Scale, _state.Rotation);
-        e.Handled = true;
-    }
-
-    private void ResizeHandleOnPointerReleased(object? sender, PointerReleasedEventArgs e)
-    {
-        if (!_isResizing)
-            return;
-        _isResizing = false;
-        e.Pointer.Capture(null);
-        TransformEditCompleted?.Invoke(this, EventArgs.Empty);
-        e.Handled = true;
+        _unsupportedHint.IsVisible = true;
+        _hintTimer.Stop();
+        _hintTimer.Start();
     }
 
     private void RotationHandleOnPointerPressed(object? sender, PointerPressedEventArgs e)
@@ -423,7 +358,7 @@ internal sealed class IslandVisualEditor : UserControl
         var center = new Point(Canvas.GetLeft(_island) + _island.Width / 2, Canvas.GetTop(_island) + _island.Height / 2);
         var vector = e.GetPosition(_stage) - center;
         var rotation = Math.Atan2(vector.Y, vector.X) * 180 / Math.PI + 90;
-        RaiseTransformEdited(_state.OffsetX, _state.OffsetY, _state.Scale, rotation);
+        RaiseTransformEdited(_state.OffsetX, _state.OffsetY, rotation);
         e.Handled = true;
     }
 
@@ -469,15 +404,6 @@ internal sealed class IslandVisualEditor : UserControl
         e.Handled = true;
     }
 
-    private void StageOnPointerWheelChanged(object? sender, PointerWheelEventArgs e)
-    {
-        // Windows 把触摸板捏合缩放映射为带 Ctrl 修饰键的滚轮事件，
-        // 与 Ctrl + 滚轮无法区分，因此滚轮一律缩放；旋转请使用紫色手柄或 Q/E 键。
-        EditStarted?.Invoke(this, EventArgs.Empty);
-        RaiseTransformEdited(_state.OffsetX, _state.OffsetY, Math.Clamp(_state.Scale + e.Delta.Y * 0.05, 0.1, 5), _state.Rotation, true);
-        e.Handled = true;
-    }
-
     private void IslandVisualEditorOnKeyDown(object? sender, KeyEventArgs e)
     {
         var step = e.KeyModifiers.HasFlag(KeyModifiers.Shift) ? 10 : 1;
@@ -495,15 +421,15 @@ internal sealed class IslandVisualEditor : UserControl
             default: return;
         }
         EditStarted?.Invoke(this, EventArgs.Empty);
-        RaiseTransformEdited(x, y, _state.Scale, rotation, true);
+        RaiseTransformEdited(x, y, rotation, true);
         e.Handled = true;
     }
 
-    private void RaiseTransformEdited(double offsetX, double offsetY, double scale, double rotation, bool isComplete = false)
+    private void RaiseTransformEdited(double offsetX, double offsetY, double rotation, bool isComplete = false)
     {
         TransformEdited?.Invoke(this, new IslandTransformEditedEventArgs(
             Math.Clamp(offsetX, -2000, 2000), Math.Clamp(offsetY, -2000, 2000),
-            Math.Clamp(scale, 0.1, 5), Math.Clamp(rotation, -360, 360)));
+            Math.Clamp(rotation, -360, 360)));
         if (isComplete)
             TransformEditCompleted?.Invoke(this, EventArgs.Empty);
     }
@@ -569,13 +495,9 @@ internal sealed class IslandVisualEditorWindow : Window
     public NumericUpDown OpacitySpin { get; } = Spinner(0, 1, 0.05);
     public NumericUpDown CornerRadiusSpin { get; } = Spinner(0, 500, 1, "0");
     public ToggleSwitch BackgroundToggle { get; } = new();
-    public NumericUpDown ScaleSpin { get; } = Spinner(0.1, 5, 0.05);
     public NumericUpDown RotationSpin { get; } = Spinner(-360, 360, 1, "0");
     public NumericUpDown OffsetXSpin { get; } = Spinner(-2000, 2000, 10, "0");
     public NumericUpDown OffsetYSpin { get; } = Spinner(-2000, 2000, 10, "0");
-    public ToggleSwitch CustomSizeToggle { get; } = new();
-    public NumericUpDown WidthSpin { get; } = Spinner(160, 2000, 10, "0");
-    public NumericUpDown HeightSpin { get; } = Spinner(40, 800, 10, "0");
     public ToggleSwitch BorderToggle { get; } = new();
     public ColorPicker BorderColorPicker { get; } = new();
     public NumericUpDown BorderThicknessSpin { get; } = Spinner(0.25, 20, 0.25);
@@ -595,13 +517,9 @@ internal sealed class IslandVisualEditorWindow : Window
     public event Action<double>? OpacityEdited;
     public event Action<double>? CornerRadiusEdited;
     public event Action<bool>? BackgroundEdited;
-    public event Action<double>? ScaleEdited;
     public event Action<double>? RotationEdited;
     public event Action<double>? OffsetXEdited;
     public event Action<double>? OffsetYEdited;
-    public event Action<bool>? CustomSizeEdited;
-    public event Action<double>? WidthEdited;
-    public event Action<double>? HeightEdited;
     public event Action<bool>? BorderEdited;
     public event Action<Color>? BorderColorEdited;
     public event Action<double>? BorderThicknessEdited;
@@ -643,14 +561,10 @@ internal sealed class IslandVisualEditorWindow : Window
                 new TextBlock { Text = "检查器", FontSize = 18, FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 0, 0, 4) },
                 SectionTitle("\uE113", "变换"),
                 CompactRow("不透明度", OpacitySpin),
-                CompactRow("缩放", ScaleSpin),
                 CompactRow("旋转角度", RotationSpin),
                 CompactRow("水平偏移", OffsetXSpin),
                 CompactRow("垂直偏移", OffsetYSpin),
-                SectionTitle("\uEE83", "尺寸与圆角"),
-                CompactRow("固定显示大小", CustomSizeToggle),
-                CompactRow("显示宽度", WidthSpin, CustomSizeToggle),
-                CompactRow("显示高度", HeightSpin, CustomSizeToggle),
+                SectionTitle("\uEE83", "圆角"),
                 CompactRow("圆角半径", CornerRadiusSpin),
                 SectionTitle("\uE520", "背景"),
                 CompactRow("自定义背景", BackgroundToggle),
@@ -721,13 +635,9 @@ internal sealed class IslandVisualEditorWindow : Window
             OpacitySpin.Value = (decimal)state.Opacity;
             CornerRadiusSpin.Value = (decimal)state.CornerRadius;
             BackgroundToggle.IsChecked = state.CustomBackground;
-            ScaleSpin.Value = (decimal)state.Scale;
             RotationSpin.Value = (decimal)state.Rotation;
             OffsetXSpin.Value = (decimal)state.OffsetX;
             OffsetYSpin.Value = (decimal)state.OffsetY;
-            CustomSizeToggle.IsChecked = state.CustomSize;
-            WidthSpin.Value = (decimal)state.Width;
-            HeightSpin.Value = (decimal)state.Height;
             BorderToggle.IsChecked = state.BorderEnabled;
             BorderColorPicker.Color = state.BorderColor;
             BorderThicknessSpin.Value = (decimal)state.BorderThickness;
@@ -749,13 +659,9 @@ internal sealed class IslandVisualEditorWindow : Window
         OpacitySpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) OpacityEdited?.Invoke((double)(OpacitySpin.Value ?? 0)); };
         CornerRadiusSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) CornerRadiusEdited?.Invoke((double)(CornerRadiusSpin.Value ?? 0)); };
         BackgroundToggle.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == ToggleSwitch.IsCheckedProperty) BackgroundEdited?.Invoke(BackgroundToggle.IsChecked == true); };
-        ScaleSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) ScaleEdited?.Invoke((double)(ScaleSpin.Value ?? 0)); };
         RotationSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) RotationEdited?.Invoke((double)(RotationSpin.Value ?? 0)); };
         OffsetXSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) OffsetXEdited?.Invoke((double)(OffsetXSpin.Value ?? 0)); };
         OffsetYSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) OffsetYEdited?.Invoke((double)(OffsetYSpin.Value ?? 0)); };
-        CustomSizeToggle.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == ToggleSwitch.IsCheckedProperty) CustomSizeEdited?.Invoke(CustomSizeToggle.IsChecked == true); };
-        WidthSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) WidthEdited?.Invoke((double)(WidthSpin.Value ?? 0)); };
-        HeightSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) HeightEdited?.Invoke((double)(HeightSpin.Value ?? 0)); };
         BorderToggle.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == ToggleSwitch.IsCheckedProperty) BorderEdited?.Invoke(BorderToggle.IsChecked == true); };
         BorderColorPicker.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == ColorPicker.ColorProperty) BorderColorEdited?.Invoke(BorderColorPicker.Color); };
         BorderThicknessSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) BorderThicknessEdited?.Invoke((double)(BorderThicknessSpin.Value ?? 0)); };
@@ -826,23 +732,16 @@ internal sealed class IslandVisualEditorWindow : Window
 }
 
 internal readonly record struct IslandPreviewState(
-    double Opacity, double Scale, double Rotation, double OffsetX, double OffsetY, double CornerRadius,
-    bool CustomSize, double Width, double Height, bool CustomBackground, Color BackgroundColor, bool Gradient,
+    double Opacity, double Rotation, double OffsetX, double OffsetY, double CornerRadius,
+    bool CustomBackground, Color BackgroundColor, bool Gradient,
     Color GradientEndColor, GradientDirection GradientDirection, bool ShadowEnabled, Color ShadowColor, double ShadowBlur, double ShadowOffsetX,
     double ShadowOffsetY, double ShadowOpacity, bool BorderEnabled, Color BorderColor, double BorderThickness);
 
-internal sealed class IslandTransformEditedEventArgs(double offsetX, double offsetY, double scale, double rotation) : EventArgs
+internal sealed class IslandTransformEditedEventArgs(double offsetX, double offsetY, double rotation) : EventArgs
 {
     public double OffsetX { get; } = offsetX;
     public double OffsetY { get; } = offsetY;
-    public double Scale { get; } = scale;
     public double Rotation { get; } = rotation;
-}
-
-internal sealed class IslandSizeEditedEventArgs(double width, double height) : EventArgs
-{
-    public double Width { get; } = width;
-    public double Height { get; } = height;
 }
 
 internal sealed class IslandValueEditedEventArgs(double value) : EventArgs

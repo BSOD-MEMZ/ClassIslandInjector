@@ -151,7 +151,6 @@ public sealed class InjectorSettings
 {
     private bool _enabled = true;
     private double _opacity = 1;
-    private double _scale = 1;
     private double _rotation;
     private double _offsetX;
     private double _offsetY;
@@ -163,9 +162,6 @@ public sealed class InjectorSettings
     private bool _watchStyleSheet = true;
     private IslandShape _shape = IslandShape.HostDefault;
     private double _cornerRadius = 18;
-    private bool _customSizeEnabled;
-    private double _mainWindowWidth = 420;
-    private double _mainWindowHeight = 120;
     private bool _customBackgroundEnabled;
     private string _backgroundColor = "#CC202020";
     private bool _gradientEnabled;
@@ -237,7 +233,6 @@ public sealed class InjectorSettings
 
     public bool Enabled { get => _enabled; set => Set(ref _enabled, value); }
     public double Opacity { get => _opacity; set => Set(ref _opacity, Math.Clamp(value, 0, 1)); }
-    public double Scale { get => _scale; set => Set(ref _scale, Math.Clamp(value, 0.1, 5)); }
     public double Rotation { get => _rotation; set => Set(ref _rotation, Math.Clamp(value, -360, 360)); }
     public double OffsetX { get => _offsetX; set => Set(ref _offsetX, Math.Clamp(value, -2000, 2000)); }
     public double OffsetY { get => _offsetY; set => Set(ref _offsetY, Math.Clamp(value, -2000, 2000)); }
@@ -248,10 +243,7 @@ public sealed class InjectorSettings
     public string StyleSheetPath { get => _styleSheetPath; set => Set(ref _styleSheetPath, value.Trim()); }
     public bool WatchStyleSheet { get => _watchStyleSheet; set => Set(ref _watchStyleSheet, value); }
     public IslandShape Shape { get => _shape; set => Set(ref _shape, value); }
-    public double CornerRadius { get => _cornerRadius; set => Set(ref _cornerRadius, Math.Clamp(value, 0, 500)); }
-    public bool CustomSizeEnabled { get => _customSizeEnabled; set => Set(ref _customSizeEnabled, value); }
-    public double MainWindowWidth { get => _mainWindowWidth; set => Set(ref _mainWindowWidth, Math.Clamp(value, 160, 2000)); }
-    public double MainWindowHeight { get => _mainWindowHeight; set => Set(ref _mainWindowHeight, Math.Clamp(value, 40, 800)); }
+    public double CornerRadius { get => _cornerRadius; set => Set(ref _cornerRadius, Math.Clamp(value, 0, 20)); }
     public bool CustomBackgroundEnabled { get => _customBackgroundEnabled; set => Set(ref _customBackgroundEnabled, value); }
     public string BackgroundColor { get => _backgroundColor; set => Set(ref _backgroundColor, value.Trim()); }
     public bool GradientEnabled { get => _gradientEnabled; set => Set(ref _gradientEnabled, value); }
@@ -406,14 +398,10 @@ public sealed class InjectorSettings
 
     private sealed record ProtectedSettings(
         double Opacity,
-        double Scale,
         double Rotation,
         double OffsetX,
         double OffsetY,
         double CornerRadius,
-        bool CustomSizeEnabled,
-        double MainWindowWidth,
-        double MainWindowHeight,
         bool WallpaperEnabled,
         WallpaperSource WallpaperSource,
         string WallpaperPath,
@@ -432,8 +420,7 @@ public sealed class InjectorSettings
         double AlbumColorTransitionSeconds);
 
     private ProtectedSettings CaptureProtectedSettings() => new(
-        Opacity, Scale, Rotation, OffsetX, OffsetY, CornerRadius,
-        CustomSizeEnabled, MainWindowWidth, MainWindowHeight,
+        Opacity, Rotation, OffsetX, OffsetY, CornerRadius,
         WallpaperEnabled, WallpaperSource, WallpaperPath, WallpaperOpacity,
         WallpaperDisplayMode, WallpaperScale, WallpaperOffsetX, WallpaperOffsetY,
         WallpaperSlideshowIntervalSeconds, WallpaperBlurRadius,
@@ -444,14 +431,10 @@ public sealed class InjectorSettings
     private void RestoreProtectedSettings(ProtectedSettings s)
     {
         Opacity = s.Opacity;
-        Scale = s.Scale;
         Rotation = s.Rotation;
         OffsetX = s.OffsetX;
         OffsetY = s.OffsetY;
         CornerRadius = s.CornerRadius;
-        CustomSizeEnabled = s.CustomSizeEnabled;
-        MainWindowWidth = s.MainWindowWidth;
-        MainWindowHeight = s.MainWindowHeight;
         WallpaperEnabled = s.WallpaperEnabled;
         WallpaperSource = s.WallpaperSource;
         WallpaperPath = s.WallpaperPath;
@@ -601,7 +584,6 @@ public sealed class InjectorSettings
         BeginUpdate();
         Enabled = source.Enabled;
         Opacity = source.Opacity;
-        Scale = source.Scale;
         Rotation = source.Rotation;
         OffsetX = source.OffsetX;
         OffsetY = source.OffsetY;
@@ -613,9 +595,6 @@ public sealed class InjectorSettings
         WatchStyleSheet = source.WatchStyleSheet;
         Shape = source.Shape;
         CornerRadius = source.CornerRadius;
-        CustomSizeEnabled = source.CustomSizeEnabled;
-        MainWindowWidth = source.MainWindowWidth;
-        MainWindowHeight = source.MainWindowHeight;
         CustomBackgroundEnabled = source.CustomBackgroundEnabled;
         BackgroundColor = source.BackgroundColor;
         GradientEnabled = source.GradientEnabled;

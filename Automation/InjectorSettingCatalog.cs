@@ -109,8 +109,6 @@ public static class InjectorSettingCatalog
             [
                 Spec("Opacity", "不透明度", "\uE113", SettingValueKind.Double, 0, 1, "0.##",
                     "控制主界面的整体透明度。"),
-                Spec("Scale", "界面缩放", "\uE113", SettingValueKind.Double, 0.1, 5, "0.##",
-                    "控制主界面的显示大小。"),
                 Spec("Rotation", "旋转角度", "\uE113", SettingValueKind.Double, -360, 360, "0",
                     "以中心点旋转主界面。"),
                 Spec("OffsetX", "水平偏移", "\uE113", SettingValueKind.Double, -2000, 2000, "0",
@@ -121,14 +119,8 @@ public static class InjectorSettingCatalog
                     "主界面的整体形状（圆角半径、背景裁切等）。", typeof(IslandShape),
                     [KV(IslandShape.HostDefault, "跟随 ClassIsland"), KV(IslandShape.Rectangle, "矩形"),
                      KV(IslandShape.RoundedRectangle, "圆角矩形"), KV(IslandShape.Capsule, "胶囊")]),
-                Spec("CornerRadius", "圆角半径", "\uE113", SettingValueKind.Double, 0, 500, "0",
-                    "控制岛屿边角的圆润程度。"),
-                Spec("CustomSizeEnabled", "固定显示大小", "\uEE83", SettingValueKind.Bool,
-                    "启用后覆盖主界面根容器的宽度与高度。"),
-                Spec("MainWindowWidth", "显示宽度", "\uEE83", SettingValueKind.Double, 160, 2000, "0",
-                    "主界面显示区域的固定宽度。"),
-                Spec("MainWindowHeight", "显示高度", "\uEE83", SettingValueKind.Double, 40, 800, "0",
-                    "主界面显示区域的固定高度。"),
+                Spec("CornerRadius", "圆角半径", "\uE113", SettingValueKind.Double, 0, 20, "0",
+                    "控制岛屿边角的圆润程度（0-20，20 为半圆）。"),
             ]
         },
         new()
