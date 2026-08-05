@@ -8,6 +8,7 @@
 
 - 目标框架：`net8.0-windows10.0.19041.0`（**必须**与宿主对齐，见下文「WinRT」）。
 - 宿主运行环境：Windows 上的 ClassIsland 桌面应用。
+- 请自行联网搜索 ClassIsland 插件编写规范。
 
 ## 目录结构
 

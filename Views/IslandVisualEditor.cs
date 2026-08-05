@@ -18,6 +18,7 @@ internal sealed class IslandVisualEditor : UserControl
     private const double PreviewSizeScale = 0.58;
     private readonly Canvas _stage;
     private readonly EditorGridOverlay _grid = new() { IsHitTestVisible = false };
+    private readonly SelectionOverlay _selection = new() { IsHitTestVisible = false };
     private readonly Border _island;
     private readonly Dictionary<Border, Vector> _resizeHandles = [];
     private readonly Border _rotationHandle;
@@ -33,18 +34,34 @@ internal sealed class IslandVisualEditor : UserControl
     private bool _isPinching;
     private double _pinchStartDistance;
     private double _pinchStartScale;
+    private readonly Slider _zoomSlider = new()
+    {
+        Minimum = 0.5,
+        Maximum = 2,
+        Value = 1,
+        Width = 140,
+        VerticalAlignment = VerticalAlignment.Center
+    };
+    private readonly TextBlock _zoomText = new()
+    {
+        Text = "100%",
+        MinWidth = 44,
+        TextAlignment = TextAlignment.Right,
+        VerticalAlignment = VerticalAlignment.Center,
+        Opacity = 0.8
+    };
 
     public event EventHandler<IslandTransformEditedEventArgs>? TransformEdited;
     public event EventHandler<IslandSizeEditedEventArgs>? SizeEdited;
     public event EventHandler<IslandValueEditedEventArgs>? CornerRadiusEdited;
     public event EventHandler? TransformEditCompleted;
+    public event EventHandler? EditStarted;
 
-    public IslandVisualEditor(double stageHeight = 430)
+    public IslandVisualEditor()
     {
         Focusable = true;
         _stage = new Canvas
         {
-            Height = stageHeight,
             ClipToBounds = true,
             Background = new SolidColorBrush(Color.FromRgb(29, 31, 35))
         };
@@ -56,6 +73,8 @@ internal sealed class IslandVisualEditor : UserControl
         {
             _grid.Width = _stage.Bounds.Width;
             _grid.Height = _stage.Bounds.Height;
+            _selection.Width = _stage.Bounds.Width;
+            _selection.Height = _stage.Bounds.Height;
             Update(_state);
         };
         KeyDown += IslandVisualEditorOnKeyDown;
@@ -73,6 +92,7 @@ internal sealed class IslandVisualEditor : UserControl
             RenderTransformOrigin = RelativePoint.Center
         };
         _stage.Children.Add(_island);
+        _stage.Children.Add(_selection);
 
         foreach (var (name, direction, cursor) in new[]
                  {
@@ -86,7 +106,7 @@ internal sealed class IslandVisualEditor : UserControl
                      ("w", new Vector(-1, 0), StandardCursorType.LeftSide)
                  })
         {
-            var handle = Handle(14, new SolidColorBrush(Color.FromRgb(0, 120, 212)), cursor);
+            var handle = Handle(10, new SolidColorBrush(Color.FromRgb(0, 120, 212)), cursor);
             handle.Name = name;
             handle.PointerPressed += (_, e) => ResizeHandleOnPointerPressed(handle, direction, e);
             handle.PointerMoved += ResizeHandleOnPointerMoved;
@@ -95,32 +115,64 @@ internal sealed class IslandVisualEditor : UserControl
             _stage.Children.Add(handle);
         }
 
-        _rotationHandle = Handle(16, new SolidColorBrush(Color.FromRgb(121, 80, 242)), StandardCursorType.Hand);
+        _rotationHandle = Handle(12, new SolidColorBrush(Color.FromRgb(121, 80, 242)), StandardCursorType.Hand);
         _rotationHandle.PointerPressed += RotationHandleOnPointerPressed;
         _rotationHandle.PointerMoved += RotationHandleOnPointerMoved;
         _rotationHandle.PointerReleased += RotationHandleOnPointerReleased;
         _stage.Children.Add(_rotationHandle);
 
-        _cornerRadiusHandle = Handle(13, new SolidColorBrush(Color.FromRgb(22, 163, 74)), StandardCursorType.Hand);
+        _cornerRadiusHandle = Handle(9, new SolidColorBrush(Color.FromRgb(22, 163, 74)), StandardCursorType.Hand);
         _cornerRadiusHandle.PointerPressed += CornerRadiusHandleOnPointerPressed;
         _cornerRadiusHandle.PointerMoved += CornerRadiusHandleOnPointerMoved;
         _cornerRadiusHandle.PointerReleased += CornerRadiusHandleOnPointerReleased;
         _stage.Children.Add(_cornerRadiusHandle);
 
-        Content = new StackPanel
+        // 视图右下角的缩放滑动标尺：只改变舞台渲染（视图）大小，不改变主界面实际大小。
+        _zoomSlider.ValueChanged += (_, _) => ApplyZoom();
+        ApplyZoom();
+        var zoomPanel = new Border
         {
-            Spacing = 8,
-            Children =
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Margin = new Thickness(0, 0, 8, 8),
+            Padding = new Thickness(10, 4),
+            CornerRadius = new CornerRadius(6),
+            Background = new SolidColorBrush(Color.FromArgb(150, 18, 20, 24)),
+            Child = new StackPanel
             {
-                _stage,
-                new TextBlock
+                Orientation = Orientation.Horizontal,
+                Spacing = 6,
+                Children =
                 {
-                    Text = "拖动对象移动位置；八个蓝色手柄调整宽高；紫色上方手柄旋转；绿色手柄调整圆角。滚轮或双指捏合缩放，方向键微调，Q/E 旋转。",
-                    Opacity = 0.72,
-                    TextWrapping = TextWrapping.Wrap
+                    new TextBlock { Text = "缩放", Opacity = 0.8, VerticalAlignment = VerticalAlignment.Center },
+                    _zoomSlider,
+                    _zoomText
                 }
             }
         };
+        var stageHost = new Grid { Children = { _stage, zoomPanel } };
+
+        // 底部操作区（替代原提示文本）。
+        var operations = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Children =
+            {
+                OperationButton("\uE161", "居中", Center),
+                OperationButton("\uE161", "还原变形", ResetTransform),
+                OperationButton("\uE7F8", "重置视图缩放", ResetViewZoom),
+                OperationButton("\uE787", "显示网格", ToggleGrid)
+            }
+        };
+
+        Content = new Grid
+        {
+            RowDefinitions = new RowDefinitions("*,Auto"),
+            RowSpacing = 8,
+            Children = { stageHost, operations }
+        };
+        Grid.SetRow(operations, 1);
     }
 
     public void Update(IslandPreviewState state)
@@ -178,10 +230,44 @@ internal sealed class IslandVisualEditor : UserControl
         Canvas.SetTop(_rotationHandle, y - 38);
         Canvas.SetLeft(_cornerRadiusHandle, x - 30);
         Canvas.SetTop(_cornerRadiusHandle, y - 20);
+
+        // PowerPoint 风格：虚线选中框连接 8 个蓝色圆点，上中蓝点连到紫色旋转手柄。
+        _selection.IslandBounds = new Rect(x, y, scaledWidth, scaledHeight);
+        _selection.RotationStart = new Point(x + scaledWidth / 2, y);
+        _selection.RotationEnd = new Point(x + scaledWidth / 2, y - 38);
+        _selection.InvalidateVisual();
     }
 
     public void Center() => RaiseTransformEdited(0, 0, _state.Scale, _state.Rotation, true);
     public void ResetTransform() => RaiseTransformEdited(0, 0, 1, 0, true);
+
+    /// <summary>
+    /// 当前视图缩放倍率（仅影响编辑器视图，不影响主界面实际大小）。
+    /// </summary>
+    public double Zoom
+    {
+        get => _zoomSlider.Value;
+        set => _zoomSlider.Value = value;
+    }
+
+    private void ApplyZoom()
+    {
+        var zoom = _zoomSlider.Value;
+        _stage.RenderTransform = new ScaleTransform(zoom, zoom);
+        _stage.RenderTransformOrigin = RelativePoint.Center;
+        _zoomText.Text = $"{zoom:P0}";
+    }
+
+    private void ResetViewZoom() => _zoomSlider.Value = 1;
+
+    private void ToggleGrid() => _grid.IsVisible = !_grid.IsVisible;
+
+    private static Button OperationButton(string glyph, string text, Action action)
+    {
+        var button = new Button { Content = new IconText { Glyph = glyph, Text = text } };
+        button.Click += (_, _) => action();
+        return button;
+    }
 
     private static double Distance(Point a, Point b) => Math.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y));
 
@@ -192,7 +278,7 @@ internal sealed class IslandVisualEditor : UserControl
         CornerRadius = new CornerRadius(size / 2),
         Background = background,
         BorderBrush = Brushes.White,
-        BorderThickness = new Thickness(2),
+        BorderThickness = new Thickness(1),
         BoxShadow = new BoxShadows(new BoxShadow { Blur = 5, Color = Color.FromArgb(115, 0, 0, 0) }),
         Cursor = new Cursor(cursor)
     };
@@ -212,12 +298,14 @@ internal sealed class IslandVisualEditor : UserControl
             var positions = _activePointers.Values.ToArray();
             _pinchStartDistance = Math.Max(Distance(positions[0], positions[1]), 1);
             _pinchStartScale = _state.Scale;
+            EditStarted?.Invoke(this, EventArgs.Empty);
             e.Pointer.Capture(_stage);
             e.Handled = true;
             return;
         }
 
         _isDragging = true;
+        EditStarted?.Invoke(this, EventArgs.Empty);
         _lastPointerPosition = point.Position;
         e.Pointer.Capture(_stage);
         e.Handled = true;
@@ -280,6 +368,7 @@ internal sealed class IslandVisualEditor : UserControl
         Focus();
         _isResizing = true;
         _resizeDirection = direction;
+        EditStarted?.Invoke(this, EventArgs.Empty);
         _lastPointerPosition = e.GetPosition(_stage);
         e.Pointer.Capture(handle);
         e.Handled = true;
@@ -320,6 +409,7 @@ internal sealed class IslandVisualEditor : UserControl
             return;
         _isRotating = true;
         _lastPointerPosition = e.GetPosition(_stage);
+        EditStarted?.Invoke(this, EventArgs.Empty);
         e.Pointer.Capture(_rotationHandle);
         e.Handled = true;
     }
@@ -351,6 +441,7 @@ internal sealed class IslandVisualEditor : UserControl
             return;
         _isEditingCornerRadius = true;
         _lastPointerPosition = e.GetPosition(_stage);
+        EditStarted?.Invoke(this, EventArgs.Empty);
         e.Pointer.Capture(_cornerRadiusHandle);
         e.Handled = true;
     }
@@ -380,6 +471,7 @@ internal sealed class IslandVisualEditor : UserControl
     {
         // Windows 把触摸板捏合缩放映射为带 Ctrl 修饰键的滚轮事件，
         // 与 Ctrl + 滚轮无法区分，因此滚轮一律缩放；旋转请使用紫色手柄或 Q/E 键。
+        EditStarted?.Invoke(this, EventArgs.Empty);
         RaiseTransformEdited(_state.OffsetX, _state.OffsetY, Math.Clamp(_state.Scale + e.Delta.Y * 0.05, 0.1, 5), _state.Rotation, true);
         e.Handled = true;
     }
@@ -400,6 +492,7 @@ internal sealed class IslandVisualEditor : UserControl
             case Key.E: rotation += 1; break;
             default: return;
         }
+        EditStarted?.Invoke(this, EventArgs.Empty);
         RaiseTransformEdited(x, y, _state.Scale, rotation, true);
         e.Handled = true;
     }
@@ -429,25 +522,67 @@ internal sealed class IslandVisualEditor : UserControl
             context.DrawLine(centerPen, new Point(0, Bounds.Height / 2), new Point(Bounds.Width, Bounds.Height / 2));
         }
     }
+
+    /// <summary>
+    /// PowerPoint 风格的选中框：虚线矩形连接 8 个蓝色圆点，并画出连接上中蓝点与
+    /// 紫色旋转手柄的旋转臂虚线。
+    /// </summary>
+    private sealed class SelectionOverlay : Control
+    {
+        public Rect IslandBounds { get; set; }
+        public Point RotationStart { get; set; }
+        public Point RotationEnd { get; set; }
+
+        public override void Render(DrawingContext context)
+        {
+            base.Render(context);
+            var boxPen = new Pen(new SolidColorBrush(Color.FromRgb(0, 120, 212)), 1)
+            {
+                DashStyle = new DashStyle([4d, 3d], 0)
+            };
+            var b = IslandBounds;
+            context.DrawRectangle(boxPen, new Rect(b.X + 0.5, b.Y + 0.5, b.Width - 1, b.Height - 1));
+            var armPen = new Pen(new SolidColorBrush(Color.FromRgb(121, 80, 242)), 1)
+            {
+                DashStyle = new DashStyle([4d, 3d], 0)
+            };
+            context.DrawLine(armPen, RotationStart, RotationEnd);
+        }
+    }
 }
 
 internal sealed class IslandVisualEditorWindow : Window
 {
     private bool _updatingInspector;
+    private readonly Button _undoButton;
+    private readonly Button _redoButton;
     public IslandVisualEditor Editor { get; } = new();
     public ColorPicker BackgroundColorPicker { get; } = new();
     public ToggleSwitch GradientToggle { get; } = new();
     public ColorPicker GradientEndColorPicker { get; } = new();
     public ToggleSwitch ShadowToggle { get; } = new();
     public ColorPicker ShadowColorPicker { get; } = new();
-    public Slider ShadowBlurSlider { get; } = CreateSlider(0, 200, 1);
-    public Slider ShadowOpacitySlider { get; } = CreateSlider(0, 1, .05);
-    public Slider OpacitySlider { get; } = CreateSlider(0, 1, .05);
-    public Slider CornerRadiusSlider { get; } = CreateSlider(0, 500, 1);
+    public NumericUpDown ShadowBlurSpin { get; } = Spinner(0, 200, 1, "0");
+    public NumericUpDown ShadowOpacitySpin { get; } = Spinner(0, 1, 0.05);
+    public NumericUpDown OpacitySpin { get; } = Spinner(0, 1, 0.05);
+    public NumericUpDown CornerRadiusSpin { get; } = Spinner(0, 500, 1, "0");
+    public ToggleSwitch BackgroundToggle { get; } = new();
+    public NumericUpDown ScaleSpin { get; } = Spinner(0.1, 5, 0.05);
+    public NumericUpDown RotationSpin { get; } = Spinner(-360, 360, 1, "0");
+    public NumericUpDown OffsetXSpin { get; } = Spinner(-2000, 2000, 10, "0");
+    public NumericUpDown OffsetYSpin { get; } = Spinner(-2000, 2000, 10, "0");
+    public ToggleSwitch CustomSizeToggle { get; } = new();
+    public NumericUpDown WidthSpin { get; } = Spinner(160, 2000, 10, "0");
+    public NumericUpDown HeightSpin { get; } = Spinner(40, 800, 10, "0");
+    public ToggleSwitch BorderToggle { get; } = new();
+    public ColorPicker BorderColorPicker { get; } = new();
+    public NumericUpDown BorderThicknessSpin { get; } = Spinner(0.25, 20, 0.25);
+    public NumericUpDown ShadowOffsetXSpin { get; } = Spinner(-200, 200, 1, "0");
+    public NumericUpDown ShadowOffsetYSpin { get; } = Spinner(-200, 200, 1, "0");
 
-    public event EventHandler? ApplyRequested;
-    public event EventHandler? CenterRequested;
-    public event EventHandler? ResetRequested;
+    public event EventHandler? SaveRequested;
+    public event EventHandler? UndoRequested;
+    public event EventHandler? RedoRequested;
     public event Action<Color>? BackgroundColorEdited;
     public event Action<bool>? GradientEdited;
     public event Action<Color>? GradientEndColorEdited;
@@ -457,6 +592,19 @@ internal sealed class IslandVisualEditorWindow : Window
     public event Action<double>? ShadowOpacityEdited;
     public event Action<double>? OpacityEdited;
     public event Action<double>? CornerRadiusEdited;
+    public event Action<bool>? BackgroundEdited;
+    public event Action<double>? ScaleEdited;
+    public event Action<double>? RotationEdited;
+    public event Action<double>? OffsetXEdited;
+    public event Action<double>? OffsetYEdited;
+    public event Action<bool>? CustomSizeEdited;
+    public event Action<double>? WidthEdited;
+    public event Action<double>? HeightEdited;
+    public event Action<bool>? BorderEdited;
+    public event Action<Color>? BorderColorEdited;
+    public event Action<double>? BorderThicknessEdited;
+    public event Action<double>? ShadowOffsetXEdited;
+    public event Action<double>? ShadowOffsetYEdited;
 
     public IslandVisualEditorWindow()
     {
@@ -467,6 +615,10 @@ internal sealed class IslandVisualEditorWindow : Window
         MinHeight = 560;
 
         ConfigureInspectorEvents();
+        _undoButton = IconButton("\uE7A7", "撤销", () => UndoRequested?.Invoke(this, EventArgs.Empty));
+        _redoButton = IconButton("\uE7A6", "重做", () => RedoRequested?.Invoke(this, EventArgs.Empty));
+        _undoButton.IsEnabled = false;
+        _redoButton.IsEnabled = false;
         var toolbar = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -474,30 +626,46 @@ internal sealed class IslandVisualEditorWindow : Window
             Margin = new Thickness(0, 0, 0, 12),
             Children =
             {
-                IconButton("\uE161", "居中", () => CenterRequested?.Invoke(this, EventArgs.Empty)),
-                IconButton("\uE161", "还原变形", () => ResetRequested?.Invoke(this, EventArgs.Empty)),
-                IconButton("\uE424", "应用到主界面", () => ApplyRequested?.Invoke(this, EventArgs.Empty)),
+                IconButton("\uE74E", "保存", () => SaveRequested?.Invoke(this, EventArgs.Empty)),
+                _undoButton,
+                _redoButton,
                 IconButton("\uE671", "关闭", Close)
             }
         };
 
         var inspector = new StackPanel
         {
-            Spacing = 10,
+            Spacing = 6,
             Children =
             {
-                new TextBlock { Text = "格式", FontSize = 18, FontWeight = FontWeight.SemiBold },
-                Label("整体不透明度", OpacitySlider),
-                Label("圆角半径", CornerRadiusSlider),
-                new TextBlock { Text = "背景", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 6, 0, 0) },
-                Label("起始颜色", BackgroundColorPicker),
-                Label("渐变", GradientToggle),
-                Label("结束颜色", GradientEndColorPicker),
-                new TextBlock { Text = "阴影", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 6, 0, 0) },
-                Label("启用阴影", ShadowToggle),
-                Label("阴影颜色", ShadowColorPicker),
-                Label("模糊半径", ShadowBlurSlider),
-                Label("阴影不透明度", ShadowOpacitySlider)
+                new TextBlock { Text = "检查器", FontSize = 18, FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 0, 0, 6) },
+                SectionTitle("\uE113", "变换"),
+                RowCard("\uE113", "不透明度", OpacitySpin),
+                RowCard("\uE113", "缩放", ScaleSpin),
+                RowCard("\uE113", "旋转角度", RotationSpin),
+                RowCard("\uE113", "水平偏移", OffsetXSpin),
+                RowCard("\uE113", "垂直偏移", OffsetYSpin),
+                SectionTitle("\uEE83", "尺寸与圆角"),
+                RowCard("\uEE83", "固定显示大小", CustomSizeToggle),
+                RowCard("\uEE83", "显示宽度", WidthSpin, CustomSizeToggle),
+                RowCard("\uEE83", "显示高度", HeightSpin, CustomSizeToggle),
+                RowCard("\uEE83", "圆角半径", CornerRadiusSpin),
+                SectionTitle("\uE520", "背景"),
+                RowCard("\uE520", "自定义背景", BackgroundToggle),
+                RowCard("\uE520", "起始颜色", BackgroundColorPicker, BackgroundToggle),
+                RowCard("\uE520", "线性渐变", GradientToggle, BackgroundToggle),
+                RowCard("\uE520", "渐变终止色", GradientEndColorPicker, GradientToggle),
+                SectionTitle("\uE472", "阴影"),
+                RowCard("\uE472", "启用阴影", ShadowToggle),
+                RowCard("\uE472", "阴影颜色", ShadowColorPicker, ShadowToggle),
+                RowCard("\uE472", "模糊半径", ShadowBlurSpin, ShadowToggle),
+                RowCard("\uE472", "水平偏移", ShadowOffsetXSpin, ShadowToggle),
+                RowCard("\uE472", "垂直偏移", ShadowOffsetYSpin, ShadowToggle),
+                RowCard("\uE472", "阴影不透明度", ShadowOpacitySpin, ShadowToggle),
+                SectionTitle("\uE254", "岛屿边框"),
+                RowCard("\uE254", "启用边框", BorderToggle),
+                RowCard("\uE254", "边框颜色", BorderColorPicker, BorderToggle),
+                RowCard("\uE254", "边框线宽", BorderThicknessSpin, BorderToggle)
             }
         };
         var body = new Grid
@@ -535,10 +703,23 @@ internal sealed class IslandVisualEditorWindow : Window
             GradientEndColorPicker.Color = state.GradientEndColor;
             ShadowToggle.IsChecked = state.ShadowEnabled;
             ShadowColorPicker.Color = state.ShadowColor;
-            ShadowBlurSlider.Value = state.ShadowBlur;
-            ShadowOpacitySlider.Value = state.ShadowOpacity;
-            OpacitySlider.Value = state.Opacity;
-            CornerRadiusSlider.Value = state.CornerRadius;
+            ShadowBlurSpin.Value = (decimal)state.ShadowBlur;
+            ShadowOpacitySpin.Value = (decimal)state.ShadowOpacity;
+            OpacitySpin.Value = (decimal)state.Opacity;
+            CornerRadiusSpin.Value = (decimal)state.CornerRadius;
+            BackgroundToggle.IsChecked = state.CustomBackground;
+            ScaleSpin.Value = (decimal)state.Scale;
+            RotationSpin.Value = (decimal)state.Rotation;
+            OffsetXSpin.Value = (decimal)state.OffsetX;
+            OffsetYSpin.Value = (decimal)state.OffsetY;
+            CustomSizeToggle.IsChecked = state.CustomSize;
+            WidthSpin.Value = (decimal)state.Width;
+            HeightSpin.Value = (decimal)state.Height;
+            BorderToggle.IsChecked = state.BorderEnabled;
+            BorderColorPicker.Color = state.BorderColor;
+            BorderThicknessSpin.Value = (decimal)state.BorderThickness;
+            ShadowOffsetXSpin.Value = (decimal)state.ShadowOffsetX;
+            ShadowOffsetYSpin.Value = (decimal)state.ShadowOffsetY;
         }
         finally { _updatingInspector = false; }
     }
@@ -550,21 +731,73 @@ internal sealed class IslandVisualEditorWindow : Window
         GradientEndColorPicker.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == ColorPicker.ColorProperty) GradientEndColorEdited?.Invoke(GradientEndColorPicker.Color); };
         ShadowToggle.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == ToggleSwitch.IsCheckedProperty) ShadowEdited?.Invoke(ShadowToggle.IsChecked == true); };
         ShadowColorPicker.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == ColorPicker.ColorProperty) ShadowColorEdited?.Invoke(ShadowColorPicker.Color); };
-        ShadowBlurSlider.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == Slider.ValueProperty) ShadowBlurEdited?.Invoke(ShadowBlurSlider.Value); };
-        ShadowOpacitySlider.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == Slider.ValueProperty) ShadowOpacityEdited?.Invoke(ShadowOpacitySlider.Value); };
-        OpacitySlider.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == Slider.ValueProperty) OpacityEdited?.Invoke(OpacitySlider.Value); };
-        CornerRadiusSlider.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == Slider.ValueProperty) CornerRadiusEdited?.Invoke(CornerRadiusSlider.Value); };
+        ShadowBlurSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) ShadowBlurEdited?.Invoke((double)(ShadowBlurSpin.Value ?? 0)); };
+        ShadowOpacitySpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) ShadowOpacityEdited?.Invoke((double)(ShadowOpacitySpin.Value ?? 0)); };
+        OpacitySpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) OpacityEdited?.Invoke((double)(OpacitySpin.Value ?? 0)); };
+        CornerRadiusSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) CornerRadiusEdited?.Invoke((double)(CornerRadiusSpin.Value ?? 0)); };
+        BackgroundToggle.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == ToggleSwitch.IsCheckedProperty) BackgroundEdited?.Invoke(BackgroundToggle.IsChecked == true); };
+        ScaleSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) ScaleEdited?.Invoke((double)(ScaleSpin.Value ?? 0)); };
+        RotationSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) RotationEdited?.Invoke((double)(RotationSpin.Value ?? 0)); };
+        OffsetXSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) OffsetXEdited?.Invoke((double)(OffsetXSpin.Value ?? 0)); };
+        OffsetYSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) OffsetYEdited?.Invoke((double)(OffsetYSpin.Value ?? 0)); };
+        CustomSizeToggle.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == ToggleSwitch.IsCheckedProperty) CustomSizeEdited?.Invoke(CustomSizeToggle.IsChecked == true); };
+        WidthSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) WidthEdited?.Invoke((double)(WidthSpin.Value ?? 0)); };
+        HeightSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) HeightEdited?.Invoke((double)(HeightSpin.Value ?? 0)); };
+        BorderToggle.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == ToggleSwitch.IsCheckedProperty) BorderEdited?.Invoke(BorderToggle.IsChecked == true); };
+        BorderColorPicker.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == ColorPicker.ColorProperty) BorderColorEdited?.Invoke(BorderColorPicker.Color); };
+        BorderThicknessSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) BorderThicknessEdited?.Invoke((double)(BorderThicknessSpin.Value ?? 0)); };
+        ShadowOffsetXSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) ShadowOffsetXEdited?.Invoke((double)(ShadowOffsetXSpin.Value ?? 0)); };
+        ShadowOffsetYSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) ShadowOffsetYEdited?.Invoke((double)(ShadowOffsetYSpin.Value ?? 0)); };
     }
 
-    private static Control Label(string text, Control control) => new StackPanel
+    /// <summary>
+    /// 更新撤销/重做按钮的可用状态。
+    /// </summary>
+    public void UpdateUndoState(bool canUndo, bool canRedo)
     {
-        Spacing = 4,
-        Children = { new TextBlock { Text = text, Opacity = .8 }, control }
+        _undoButton.IsEnabled = canUndo;
+        _redoButton.IsEnabled = canRedo;
+    }
+
+    /// <summary>
+    /// 与设置页同款的普通一行式设置卡片（不分组展开）。
+    /// </summary>
+    private static SettingsExpander RowCard(string glyph, string header, Control footer, ToggleSwitch? dependency = null)
+    {
+        var card = new SettingsExpander
+        {
+            IconSource = new FluentIconSource(glyph),
+            Header = header,
+            Footer = footer
+        };
+        if (dependency != null)
+        {
+            void Sync() => card.IsEnabled = dependency.IsChecked == true;
+            dependency.PropertyChanged += (_, _) => Sync();
+            Sync();
+        }
+
+        return card;
+    }
+
+    private static IconText SectionTitle(string glyph, string text) => new()
+    {
+        Glyph = glyph,
+        Text = text,
+        Margin = new Thickness(0, 12, 0, 2)
     };
 
-    private static Slider CreateSlider(double minimum, double maximum, double tick) => new()
+    /// <summary>
+    /// 精确数值用 spinbox（NumericUpDown），替代样式异常的滑块。
+    /// </summary>
+    private static NumericUpDown Spinner(double minimum, double maximum, double increment, string format = "0.##") => new()
     {
-        Minimum = minimum, Maximum = maximum, TickFrequency = tick, IsSnapToTickEnabled = true
+        Minimum = (decimal)minimum,
+        Maximum = (decimal)maximum,
+        Increment = (decimal)increment,
+        FormatString = format,
+        Width = 110,
+        HorizontalContentAlignment = HorizontalAlignment.Right
     };
 
     private static Button IconButton(string glyph, string text, Action action)

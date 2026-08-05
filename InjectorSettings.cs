@@ -483,6 +483,16 @@ public sealed class InjectorSettings
         EndUpdate();
     }
 
+    /// <summary>
+    /// 深拷贝当前全部设置，用于用户预设快照与自动化行动的“恢复”操作。
+    /// </summary>
+    public InjectorSettings Clone()
+    {
+        var clone = new InjectorSettings();
+        clone.CopyFrom(this);
+        return clone;
+    }
+
     public void BeginUpdate()
     {
         _updateDepth++;
@@ -499,7 +509,7 @@ public sealed class InjectorSettings
         Changed?.Invoke(this, EventArgs.Empty);
     }
 
-    private void CopyFrom(InjectorSettings source)
+    internal void CopyFrom(InjectorSettings source)
     {
         BeginUpdate();
         Enabled = source.Enabled;

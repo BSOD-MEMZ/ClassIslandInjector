@@ -6,15 +6,22 @@ internal static class InjectorRuntime
 {
     private static MainWindowStyleInjector? _injector;
     private static SmtcWatcher? _smtcWatcher;
+    private static List<UserPreset> _presets = [];
 
     public static InjectorSettings Settings { get; private set; } = new();
 
     public static string ConfigDirectory { get; private set; } = string.Empty;
 
+    /// <summary>
+    /// 用户预设列表发生变化（新增/删除）时触发，供 UI 与自动化设置控件刷新下拉列表。
+    /// </summary>
+    public static event EventHandler? PresetsChanged;
+
     public static void Initialize(string configDirectory, string pluginDirectory)
     {
         ConfigDirectory = configDirectory;
         Settings = InjectorSettingsStore.Load(configDirectory, pluginDirectory);
+        _presets = InjectorPresetStore.Load(configDirectory);
         SmtcAlbumColorPicker.SetLogPath(Path.Combine(configDirectory, "album-color.log"));
         Settings.Changed += OnSettingsChanged;
         _injector = new MainWindowStyleInjector(Settings);
@@ -57,6 +64,76 @@ internal static class InjectorRuntime
     {
         Dispatcher.UIThread.Post(() => _injector?.PreviewRipple());
     }
+
+    #region 用户预设
+
+    /// <summary>
+    /// 获取所有用户预设名称（保持保存顺序）。
+    /// </summary>
+    public static IReadOnlyList<string> GetPresetNames() => _presets.Select(p => p.Name).ToList();
+
+    /// <summary>
+    /// 将当前全部设置保存为命名预设（同名覆盖）。预设可被自动化“切换预设”行动套用。
+    /// </summary>
+    public static void SavePreset(string name)
+    {
+        var trimmed = name.Trim();
+        if (trimmed.Length == 0)
+        {
+            return;
+        }
+
+        var existing = _presets.FirstOrDefault(p => string.Equals(p.Name, trimmed, StringComparison.OrdinalIgnoreCase));
+        if (existing != null)
+        {
+            existing.Settings = Settings.Clone();
+        }
+        else
+        {
+            _presets.Add(new UserPreset { Name = trimmed, Settings = Settings.Clone() });
+        }
+
+        SavePresets();
+    }
+
+    /// <summary>
+    /// 套用命名用户预设：把预设快照复制到当前设置并立即保存应用。
+    /// </summary>
+    /// <returns>预设是否存在并成功套用。</returns>
+    public static bool ApplyPreset(string name)
+    {
+        var preset = _presets.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (preset == null)
+        {
+            return false;
+        }
+
+        Settings.BeginUpdate();
+        Settings.CopyFrom(preset.Settings);
+        Settings.EndUpdate();
+        SaveAndApply();
+        return true;
+    }
+
+    /// <summary>
+    /// 删除命名用户预设。
+    /// </summary>
+    public static void DeletePreset(string name)
+    {
+        var removed = _presets.RemoveAll(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (removed > 0)
+        {
+            SavePresets();
+        }
+    }
+
+    private static void SavePresets()
+    {
+        InjectorPresetStore.Save(ConfigDirectory, _presets);
+        PresetsChanged?.Invoke(null, EventArgs.Empty);
+    }
+
+    #endregion
 
     private static void OnSettingsChanged(object? sender, EventArgs e)
     {
@@ -170,6 +247,10 @@ internal static class InjectorRuntime
         {
             StyleSheetPath = Path.Combine(ConfigDirectory, "Overrides.axaml")
         };
+
+        // 5. 清空内存中的用户预设（presets.json 已在第 3 步被删除）。
+        _presets = [];
+        PresetsChanged?.Invoke(null, EventArgs.Empty);
     }
 
     private static void TryDeleteFile(string file)

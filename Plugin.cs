@@ -2,6 +2,7 @@ using ClassIsland.Core;
 using ClassIsland.Core.Abstractions;
 using ClassIsland.Core.Attributes;
 using ClassIsland.Core.Extensions.Registry;
+using ClassIslandInjector.Automation;
 using ClassIslandInjector.Views;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -15,6 +16,7 @@ public sealed class Plugin : PluginBase
     {
         InjectorRuntime.Initialize(PluginConfigFolder, Info.PluginFolderPath);
         services.AddSettingsPage<InjectorSettingsPage>();
+        InjectorAutomation.Register(services);
         AppBase.Current.AppStarted += OnAppStarted;
     }
 

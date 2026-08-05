@@ -86,8 +86,17 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly Spin _countdownArrowSpeed = Spinner(0.1, 12, 0.1);
     private readonly Spin _countdownArrowThickness = Spinner(0.5, 8, 0.5);
     private readonly ComboBox _preset = Combo(StylePresets);
+    private readonly TextBox _presetName = new() { MinWidth = 200, Watermark = "预设名称" };
+    private readonly ComboBox _userPresetList = new()
+    {
+        MinWidth = 220,
+        HorizontalContentAlignment = HorizontalAlignment.Left
+    };
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.8 };
     private IslandVisualEditorWindow? _visualEditorWindow;
+    private readonly List<IslandPreviewState> _editorUndo = [];
+    private readonly List<IslandPreviewState> _editorRedo = [];
+    private bool _editorDirty;
 
     private static readonly Choice<StylePreset>[] StylePresets =
     [
@@ -190,6 +199,18 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(Setting("\uF42F", "样式预设", "一键套用形状、配色、阴影、边框与提醒效果；不会修改不透明度、缩放、位置、旋转与圆角半径等基础变形设置。", _preset));
         var presetActions = Actions("应用样式预设", ApplyStylePreset, "恢复插件默认", ResetToDefaults);
         panel.Children.Add(Setting("\uE161", "预设操作", "恢复默认不会修改 Overrides.axaml。", presetActions));
+
+        AddSection(panel, "\uF42F", "用户预设");
+        panel.Children.Add(new InfoBar
+        {
+            Severity = InfoBarSeverity.Informational,
+            Title = "可被 ClassIsland 自动化调用",
+            Message = "把当前全部设置保存为命名预设后，可以在 ClassIsland 自动化中添加「切换用户预设」行动，按条件（时间、课程等）自动切换整套方案。",
+            IsOpen = true,
+            IsClosable = false
+        });
+        panel.Children.Add(Setting("\uF42F", "保存当前为预设", "把插件当前全部设置项保存为一个命名预设（同名覆盖）。", PresetSaveFooter()));
+        panel.Children.Add(Setting("\uF42F", "套用 / 删除预设", "套用会把全部设置项替换为该预设保存时的状态。", PresetManageFooter()));
 
         AddSection(panel, "\uE288", "可视化编辑器");
         panel.Children.Add(Setting("\uE288", "打开可视化编辑器", "在独立窗口中像编辑演示文稿一样拖动、旋转、缩放岛屿，并即时应用到主界面。", Button("打开编辑器", OpenVisualEditor)));
@@ -336,6 +357,79 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _status.Text = "已恢复插件默认设置；Overrides.axaml 未被修改。";
     }
 
+    private void SaveCurrentPreset()
+    {
+        SaveAndApply(); // 先把页面上未保存的改动提交到设置，再整体快照。
+        var name = _presetName.Text?.Trim();
+        if (string.IsNullOrEmpty(name))
+        {
+            _status.Text = "请输入预设名称。";
+            return;
+        }
+
+        InjectorRuntime.SavePreset(name);
+        RefreshUserPresets();
+        _presetName.Text = string.Empty;
+        _status.Text = $"已把当前全部设置保存为预设“{name}”。";
+    }
+
+    private void ApplyUserPreset()
+    {
+        if (_userPresetList.SelectedItem is not string name)
+        {
+            _status.Text = "请先选择一个预设。";
+            return;
+        }
+
+        if (InjectorRuntime.ApplyPreset(name))
+        {
+            LoadFromSettings();
+            _status.Text = $"已套用预设“{name}”。";
+        }
+        else
+        {
+            RefreshUserPresets();
+            _status.Text = $"预设“{name}”不存在，已刷新列表。";
+        }
+    }
+
+    private void DeleteUserPreset()
+    {
+        if (_userPresetList.SelectedItem is not string name)
+        {
+            _status.Text = "请先选择一个预设。";
+            return;
+        }
+
+        InjectorRuntime.DeletePreset(name);
+        RefreshUserPresets();
+        _status.Text = $"已删除预设“{name}”。";
+    }
+
+    private void RefreshUserPresets()
+    {
+        var names = InjectorRuntime.GetPresetNames();
+        var selected = _userPresetList.SelectedItem as string;
+        _userPresetList.ItemsSource = names;
+        _userPresetList.SelectedItem = names.FirstOrDefault(n => n == selected) ?? (names.Count > 0 ? names[0] : null);
+    }
+
+    private Control PresetSaveFooter() => new StackPanel
+    {
+        Orientation = Orientation.Horizontal,
+        Spacing = 4,
+        VerticalAlignment = VerticalAlignment.Center,
+        Children = { _presetName, Button("保存", SaveCurrentPreset) }
+    };
+
+    private Control PresetManageFooter() => new StackPanel
+    {
+        Orientation = Orientation.Horizontal,
+        Spacing = 4,
+        VerticalAlignment = VerticalAlignment.Center,
+        Children = { _userPresetList, Button("套用", ApplyUserPreset), Button("删除", DeleteUserPreset) }
+    };
+
     private void ReloadStyleSheet()
     {
         InjectorRuntime.ReloadStyleSheet();
@@ -425,6 +519,13 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
         var window = new IslandVisualEditorWindow();
         _visualEditorWindow = window;
+        _editorUndo.Clear();
+        _editorRedo.Clear();
+        _editorDirty = false;
+        window.UpdateUndoState(false, false);
+
+        // 画布手势：手势开始时记录撤销快照；拖动期间只改控件做实时预览（不保存）。
+        window.Editor.EditStarted += (_, _) => PushEditorUndo();
         window.Editor.TransformEdited += (_, e) =>
         {
             _offsetX.DoubleValue = e.OffsetX;
@@ -439,28 +540,184 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             _mainWindowHeight.DoubleValue = e.Height;
         };
         window.Editor.CornerRadiusEdited += (_, e) => _cornerRadius.DoubleValue = e.Value;
-        window.Editor.TransformEditCompleted += (_, _) => SaveAndApply();
-        window.ApplyRequested += (_, _) => SaveAndApply();
-        window.CenterRequested += (_, _) => window.Editor.Center();
-        window.ResetRequested += (_, _) => window.Editor.ResetTransform();
+
+        // 顶部操作：保存 / 撤销 / 重做。
+        window.SaveRequested += (_, _) => SaveEditor();
+        window.UndoRequested += (_, _) => UndoEditorEdit();
+        window.RedoRequested += (_, _) => RedoEditorEdit();
+
+        // 检查器：每个编辑项作为一步可撤销更改（暂存，未保存前不写盘）。
         window.BackgroundColorEdited += color =>
         {
+            PushEditorUndo();
             _customBackground.IsChecked = true;
             _dynamicBackgroundColor.IsChecked = false;
             _backgroundColor.Color = color;
-            SaveAndApply();
         };
-        window.GradientEdited += enabled => { _gradient.IsChecked = enabled; SaveAndApply(); };
-        window.GradientEndColorEdited += color => { _gradientEndColor.Color = color; SaveAndApply(); };
-        window.ShadowEdited += enabled => { _shadow.IsChecked = enabled; SaveAndApply(); };
-        window.ShadowColorEdited += color => { _dynamicShadowColor.IsChecked = false; _shadowColor.Color = color; SaveAndApply(); };
-        window.ShadowBlurEdited += value => { _shadowBlur.DoubleValue = value; SaveAndApply(); };
-        window.ShadowOpacityEdited += value => { _shadowOpacity.Value = value; SaveAndApply(); };
-        window.OpacityEdited += value => { _opacity.Value = value; SaveAndApply(); };
-        window.CornerRadiusEdited += value => { _cornerRadius.DoubleValue = value; SaveAndApply(); };
+        window.GradientEdited += enabled => { PushEditorUndo(); _gradient.IsChecked = enabled; };
+        window.GradientEndColorEdited += color => { PushEditorUndo(); _gradientEndColor.Color = color; };
+        window.ShadowEdited += enabled => { PushEditorUndo(); _shadow.IsChecked = enabled; };
+        window.ShadowColorEdited += color => { PushEditorUndo(); _dynamicShadowColor.IsChecked = false; _shadowColor.Color = color; };
+        window.ShadowBlurEdited += value => { PushEditorUndo(); _shadowBlur.DoubleValue = value; };
+        window.ShadowOpacityEdited += value => { PushEditorUndo(); _shadowOpacity.Value = value; };
+        window.OpacityEdited += value => { PushEditorUndo(); _opacity.Value = value; };
+        window.CornerRadiusEdited += value => { PushEditorUndo(); _cornerRadius.DoubleValue = value; };
+        window.BackgroundEdited += enabled => { PushEditorUndo(); _customBackground.IsChecked = enabled; };
+        window.ScaleEdited += value => { PushEditorUndo(); _scale.DoubleValue = value; };
+        window.RotationEdited += value => { PushEditorUndo(); _rotation.DoubleValue = value; };
+        window.OffsetXEdited += value => { PushEditorUndo(); _offsetX.DoubleValue = value; };
+        window.OffsetYEdited += value => { PushEditorUndo(); _offsetY.DoubleValue = value; };
+        window.CustomSizeEdited += enabled => { PushEditorUndo(); _customSize.IsChecked = enabled; };
+        window.WidthEdited += value => { PushEditorUndo(); _customSize.IsChecked = true; _mainWindowWidth.DoubleValue = value; };
+        window.HeightEdited += value => { PushEditorUndo(); _customSize.IsChecked = true; _mainWindowHeight.DoubleValue = value; };
+        window.BorderEdited += enabled => { PushEditorUndo(); _border.IsChecked = enabled; };
+        window.BorderColorEdited += color => { PushEditorUndo(); _border.IsChecked = true; _dynamicBorderColor.IsChecked = false; _borderColor.Color = color; };
+        window.BorderThicknessEdited += value => { PushEditorUndo(); _border.IsChecked = true; _borderThickness.DoubleValue = value; };
+        window.ShadowOffsetXEdited += value => { PushEditorUndo(); _shadowOffsetX.DoubleValue = value; };
+        window.ShadowOffsetYEdited += value => { PushEditorUndo(); _shadowOffsetY.DoubleValue = value; };
+
+        // 关闭前询问是否保存。
+        window.Closing += OnEditorClosing;
         window.Closed += (_, _) => _visualEditorWindow = null;
         RefreshVisualEditor();
         window.Show();
+    }
+
+    /// <summary>
+    /// 捕获编辑器可编辑的全部设置项当前值（即撤销/重做的快照）。
+    /// </summary>
+    private IslandPreviewState CaptureEditorState() => new(
+        _opacity.Value, _scale.DoubleValue, _rotation.DoubleValue, _offsetX.DoubleValue, _offsetY.DoubleValue,
+        _cornerRadius.DoubleValue, _customSize.IsChecked == true, _mainWindowWidth.DoubleValue, _mainWindowHeight.DoubleValue,
+        _customBackground.IsChecked == true, _backgroundColor.Color, _gradient.IsChecked == true, _gradientEndColor.Color,
+        _shadow.IsChecked == true, _shadowColor.Color, _shadowBlur.DoubleValue, _shadowOffsetX.DoubleValue, _shadowOffsetY.DoubleValue,
+        _shadowOpacity.Value, _border.IsChecked == true, _borderColor.Color, _borderThickness.DoubleValue);
+
+    private void PushEditorUndo()
+    {
+        _editorUndo.Add(CaptureEditorState());
+        if (_editorUndo.Count > 100)
+        {
+            _editorUndo.RemoveAt(0);
+        }
+
+        _editorRedo.Clear();
+        _editorDirty = true;
+        _visualEditorWindow?.UpdateUndoState(true, false);
+    }
+
+    private void RestoreEditorState(IslandPreviewState state)
+    {
+        _opacity.Value = state.Opacity;
+        _scale.DoubleValue = state.Scale;
+        _rotation.DoubleValue = state.Rotation;
+        _offsetX.DoubleValue = state.OffsetX;
+        _offsetY.DoubleValue = state.OffsetY;
+        _cornerRadius.DoubleValue = state.CornerRadius;
+        _customSize.IsChecked = state.CustomSize;
+        _mainWindowWidth.DoubleValue = state.Width;
+        _mainWindowHeight.DoubleValue = state.Height;
+        _customBackground.IsChecked = state.CustomBackground;
+        _backgroundColor.Color = state.BackgroundColor;
+        _gradient.IsChecked = state.Gradient;
+        _gradientEndColor.Color = state.GradientEndColor;
+        _shadow.IsChecked = state.ShadowEnabled;
+        _shadowColor.Color = state.ShadowColor;
+        _shadowBlur.DoubleValue = state.ShadowBlur;
+        _shadowOffsetX.DoubleValue = state.ShadowOffsetX;
+        _shadowOffsetY.DoubleValue = state.ShadowOffsetY;
+        _shadowOpacity.Value = state.ShadowOpacity;
+        _border.IsChecked = state.BorderEnabled;
+        _borderColor.Color = state.BorderColor;
+        _borderThickness.DoubleValue = state.BorderThickness;
+        // 撤销/重做后工作区与已保存状态不再一致，关闭时应再次询问。
+        _editorDirty = true;
+        RefreshVisualEditor();
+    }
+
+    private void UndoEditorEdit()
+    {
+        if (_editorUndo.Count == 0)
+        {
+            return;
+        }
+
+        _editorRedo.Add(CaptureEditorState());
+        var state = _editorUndo[^1];
+        _editorUndo.RemoveAt(_editorUndo.Count - 1);
+        RestoreEditorState(state);
+        _visualEditorWindow?.UpdateUndoState(_editorUndo.Count > 0, true);
+    }
+
+    private void RedoEditorEdit()
+    {
+        if (_editorRedo.Count == 0)
+        {
+            return;
+        }
+
+        _editorUndo.Add(CaptureEditorState());
+        var state = _editorRedo[^1];
+        _editorRedo.RemoveAt(_editorRedo.Count - 1);
+        RestoreEditorState(state);
+        _visualEditorWindow?.UpdateUndoState(true, _editorRedo.Count > 0);
+    }
+
+    private void SaveEditor()
+    {
+        _editorRedo.Clear();
+        _editorDirty = false;
+        SaveAndApply();
+        _visualEditorWindow?.UpdateUndoState(_editorUndo.Count > 0, false);
+        _status.Text = "已保存编辑器更改并应用到主界面。";
+    }
+
+    private void DiscardEditorEdits()
+    {
+        LoadFromSettings();
+        RefreshVisualEditor();
+        _editorUndo.Clear();
+        _editorRedo.Clear();
+        _editorDirty = false;
+        _visualEditorWindow?.UpdateUndoState(false, false);
+    }
+
+    private async void OnEditorClosing(object? sender, WindowClosingEventArgs e)
+    {
+        if (_visualEditorWindow == null || !_editorDirty)
+        {
+            return;
+        }
+
+        e.Cancel = true;
+        var dialog = new ContentDialog
+        {
+            Title = "保存更改？",
+            Content = "可视化编辑器中有尚未保存的更改。",
+            PrimaryButtonText = "保存",
+            SecondaryButtonText = "不保存",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary
+        };
+        var result = await dialog.ShowAsync();
+        if (result == ContentDialogResult.Primary)
+        {
+            SaveEditor();
+            _editorDirty = false;
+            if (sender is Window w)
+            {
+                w.Close();
+            }
+        }
+        else if (result == ContentDialogResult.Secondary)
+        {
+            DiscardEditorEdits();
+            _editorDirty = false;
+            if (sender is Window w)
+            {
+                w.Close();
+            }
+        }
     }
 
     private void LoadFromSettings()
@@ -529,6 +786,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _countdownArrowThickness.DoubleValue = settings.CountdownArrowThickness;
         Select(_preset, StylePresets, StylePreset.GlassCapsule);
         Select(_animationPreset, AnimationPresets, AnimationPreset.Still);
+        RefreshUserPresets();
     }
 
     private void SaveAndApply()
