@@ -2,10 +2,10 @@ id: classisland.injector
 name: ClassIsland 样式注入器
 description: 以运行时注入和可热重载 Avalonia 样式表深度重塑 ClassIsland 主界面。
 entranceAssembly: "ClassIslandInjector.dll"
-url: https://github.com/BSOD-MEMZ/ClasisIslandInjector
+url: https://github.com/BSOD-MEMZ/ClassIslandInjector
 apiVersion: 2.0.0.0
 version: 1.1.0.0
 author: xxt8582753
 repoOwner: BSOD-MEMZ
-repoName: ClasisIslandInjector
-assetsRoot: master
+repoName: ClassIslandInjector
+assetsRoot: main

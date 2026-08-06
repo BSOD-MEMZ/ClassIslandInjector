@@ -42,6 +42,9 @@ internal static class HostContract
     /// <summary>倒计时箭头覆盖层宿主 Grid。</summary>
     public const string GridOverlay = "GridOverlay";
 
+    /// <summary>「轮播容器」组件的完整类型名（自定义其切换上翻动画用）。</summary>
+    public const string SlideComponentTypeName = "ClassIsland.Controls.Components.SlideComponent";
+
     // ---- MainWindowLine 类型与反射成员 ----
 
     /// <summary>MainWindowLine 控件的完整类型名。</summary>

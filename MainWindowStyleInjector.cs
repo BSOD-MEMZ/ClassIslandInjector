@@ -7,7 +7,9 @@ using Avalonia.Styling;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using ClassIsland.Core;
+using ClassIsland.Core.Abstractions.Services;
 using ClassIsland.Core.Models.Notification;
+using ClassIsland.Shared;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Diagnostics;
@@ -41,6 +43,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private PropertyInfo? _hostSettingsProperty;
     private Styles? _loadedStyles;
     private Styles? _notificationStyles;
+    /// <summary>自定义「轮播容器」切换上翻动画时注入的样式。</summary>
+    private Styles? _carouselStyles;
     private FileSystemWatcher? _styleSheetWatcher;
     private Grid? _windowRoot;
     private readonly List<Action> _decorationRestorers = [];
@@ -48,13 +52,15 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private readonly HashSet<Control> _observedLines = [];
     private readonly Dictionary<Control, object?> _nativeEffectPlayers = [];
     private object? _suppressingEffectPlayer;
-    private readonly List<IslandRippleOverlay> _ripples = [];
+    private readonly List<IRippleEffect> _ripples = [];
     private readonly Dictionary<Control, PrepareOnClassOverlay> _prepareOnClassOverlays = [];
+    /// <summary>预览期间被强制点亮（Opacity=1）的 GridOverlay 宿主，移除覆盖层时还原。</summary>
+    private readonly Dictionary<Control, Grid> _prepareOnClassOverlayHosts = [];
     /// <summary>「预览即将上课」的激活截止时间（5 秒）。</summary>
     private DateTime _prepareOnClassPreviewUntil = DateTime.MinValue;
     // A custom ripple normally lives in ClassIsland's full-screen topmost effect
     // window.  This map lets us remove it from the same host when it completes.
-    private readonly Dictionary<IslandRippleOverlay, IList> _rippleHosts = [];
+    private readonly Dictionary<IRippleEffect, IList> _rippleHosts = [];
     private DateTime _visibilityStartedAt = DateTime.MinValue;
     private DateTime _emphasisStartedAt = DateTime.MinValue;
     private bool _lastContentVisible;
@@ -160,6 +166,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         ApplyTextureHost();
         ReloadStyleSheet();
         ReloadNotificationTransitionStyles();
+        ReloadCarouselAnimationStyles();
         ConfigureStyleSheetWatcher();
         _animationClock.Restart();
         _stateTimer.Start();
@@ -272,6 +279,76 @@ internal sealed class MainWindowStyleInjector : IDisposable
         catch
         {
             // Keep ClassIsland's native transition when a host version rejects a selector.
+        }
+    }
+
+    /// <summary>
+    /// 自定义「轮播容器」（SlideComponent）切换时的上翻动画：宿主把 250ms / Y±40 / KeySpline
+    /// 写死在组件 ControlTheme 里，这里注入更高优先级的 Style.Animations 覆盖为可配置参数。
+    /// </summary>
+    private void ReloadCarouselAnimationStyles()
+    {
+        if (_mainWindow == null)
+        {
+            return;
+        }
+
+        if (_carouselStyles != null)
+        {
+            StyleHost.Remove(_carouselStyles);
+            _carouselStyles = null;
+        }
+
+        if (!_settings.Enabled || !_settings.CarouselAnimationEnabled)
+        {
+            return;
+        }
+
+        var seconds = _settings.CarouselAnimationDurationSeconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+        var offset = _settings.CarouselAnimationOffset.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+        var negOffset = "-" + offset;
+        // 新内容进场起点 (inX, inY) / 旧内容离场终点 (outX, outY)。宿主模板只有 TranslateTransform，
+        // 因此支持滑动与淡入淡出，无法做缩放/旋转。
+        var (inX, inY, outX, outY) = _settings.CarouselAnimationType switch
+        {
+            CarouselAnimationType.SlideDown => ("0", negOffset, "0", offset),
+            CarouselAnimationType.SlideLeft => (offset, "0", negOffset, "0"),
+            CarouselAnimationType.SlideRight => (negOffset, "0", offset, "0"),
+            CarouselAnimationType.Fade => ("0", "0", "0", "0"),
+            _ => ("0", negOffset, "0", offset) // SlideUp
+        };
+        var xaml = $"""
+                    <Styles xmlns="https://github.com/avaloniaui"
+                            xmlns:ci="clr-namespace:ClassIsland.Controls.Components;assembly=ClassIsland">
+                      <Style Selector="ListBox.sliding ListBoxItem[IsSelected=True] /template/ ContentPresenter#ContentPresenter, ci|SlideComponent ListBoxItem[IsSelected=True] /template/ ContentPresenter#ContentPresenter">
+                        <Style.Animations>
+                          <Animation Duration="0:0:{seconds}" FillMode="Forward">
+                            <KeyFrame Cue="0%"><Setter Property="IsVisible" Value="True"/><Setter Property="Opacity" Value="0"/><Setter Property="TranslateTransform.X" Value="{inX}"/><Setter Property="TranslateTransform.Y" Value="{inY}"/></KeyFrame>
+                            <KeyFrame Cue="100%"><Setter Property="Opacity" Value="1"/><Setter Property="TranslateTransform.X" Value="0"/><Setter Property="TranslateTransform.Y" Value="0"/></KeyFrame>
+                          </Animation>
+                        </Style.Animations>
+                      </Style>
+                      <Style Selector="ListBox.sliding ListBoxItem[IsSelected=False] /template/ ContentPresenter#ContentPresenter, ci|SlideComponent ListBoxItem[IsSelected=False] /template/ ContentPresenter#ContentPresenter">
+                        <Style.Animations>
+                          <Animation Duration="0:0:{seconds}" FillMode="Forward">
+                            <KeyFrame Cue="0%"><Setter Property="IsVisible" Value="True"/></KeyFrame>
+                            <KeyFrame Cue="100%"><Setter Property="Opacity" Value="0"/><Setter Property="TranslateTransform.X" Value="{outX}"/><Setter Property="TranslateTransform.Y" Value="{outY}"/><Setter Property="IsVisible" Value="False"/></KeyFrame>
+                          </Animation>
+                        </Style.Animations>
+                      </Style>
+                    </Styles>
+                    """;
+        try
+        {
+            _carouselStyles = LoadExternalStyles(xaml, new Uri("avares://ClassIslandInjector/GeneratedCarouselAnimations.axaml"));
+            if (_carouselStyles != null)
+            {
+                StyleHost.Add(_carouselStyles);
+            }
+        }
+        catch
+        {
+            // 宿主版本拒绝选择器时保留原生轮播动画。
         }
     }
 
@@ -510,6 +587,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
         {
             RemovePrepareOnClassOverlay(line);
         }
+        UpdatePreviewOverlayHostVisibility();
+        SyncPrepareOnClassOverlayHosts();
         UpdateAnimationTimer();
     }
 
@@ -1437,6 +1516,13 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
             overlayHost.Children.Add(overlay);
             _prepareOnClassOverlays[line] = overlay;
+            // 宿主模板里 GridOverlay 默认 Opacity=0（仅在宿主播放提醒时点亮）。
+            // 预览时不播真实提醒，需强制点亮才能看到自绘覆盖层；移除覆盖层时还原。
+            if (IsPreviewingPrepareOnClass() && overlayHost.Opacity == 0)
+            {
+                _prepareOnClassOverlayHosts[line] = overlayHost;
+                overlayHost.Opacity = 1;
+            }
         }
         else if (overlay.IsFadingOut)
         {
@@ -1516,6 +1602,11 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         (overlay.Parent as Panel)?.Children.Remove(overlay);
+        // 预览期间强制点亮的 GridOverlay：移除覆盖层后还原宿主默认不透明度。
+        if (_prepareOnClassOverlayHosts.Remove(line, out var overlayHost))
+        {
+            overlayHost.Opacity = 0;
+        }
     }
 
     private void RemoveAllPrepareOnClassOverlays()
@@ -1649,9 +1740,57 @@ internal sealed class MainWindowStyleInjector : IDisposable
         // 先跑一次状态轮询，确保 MainWindowLine 已被发现、原生 Ripple 播放器已被劫持，
         // 这样预览的 Ripple 才能进入全屏特效窗口。
         OnStateTick(null, EventArgs.Empty);
+        // 首选：走宿主原生提醒系统推送一个真实提醒，完整播放宿主遮罩过渡 + 插件强调 + Ripple。
+        if (TryPushNativeNotification())
+        {
+            return;
+        }
+        // 兜底：宿主提醒系统不可用时，退回旧的反射塞 MaskContent 路径。
         foreach (var line in GetMainWindowLines())
         {
             PlayPreviewMask(line);
+        }
+    }
+
+    /// <summary>
+    /// 通过宿主提醒系统推送一个真实提醒（原生提醒），让 MainWindowLine.ProcessNotification
+    /// 完整播放遮罩进场/退场动画、置顶与 Ripple；插件自身经 LineOnPropertyChanged 同步触发
+    /// 强调动画与自定义 Ripple。INotificationHostService.ShowNotification 在接口上声明为
+    /// internal，此处反射调用具体实例上的公开方法。
+    /// </summary>
+    private bool TryPushNativeNotification()
+    {
+        try
+        {
+            var host = IAppHost.TryGetService<INotificationHostService>();
+            if (host == null)
+            {
+                return false;
+            }
+
+            var content = new NotificationContent
+            {
+                // 预览只需演示特效（遮罩/强调/Ripple），不显示任何文本。
+                Duration = TimeSpan.FromSeconds(1.2),
+                Color = TryParseColor(_settings.RippleColor, out var rippleColor)
+                    ? new SolidColorBrush(rippleColor)
+                    : new SolidColorBrush(Colors.White)
+            };
+            var request = new NotificationRequest { MaskContent = content };
+            var method = host.GetType().GetMethod("ShowNotification", BindingFlags.Public | BindingFlags.Instance, null,
+                new[] { typeof(NotificationRequest), typeof(Guid), typeof(Guid), typeof(bool), typeof(bool) }, null);
+            if (method == null)
+            {
+                return false;
+            }
+
+            method.Invoke(host, new object[] { request, Guid.Empty, Guid.Empty, true, false });
+            return true;
+        }
+        catch
+        {
+            // 宿主提醒系统不可用（如全局提醒被关闭、接口变化）时回退旧路径。
+            return false;
         }
     }
 
@@ -1664,8 +1803,46 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         _prepareOnClassPreviewUntil = DateTime.UtcNow.AddSeconds(5);
-        // 立即创建覆盖层；5 秒后 OnStateTick 的轮询会自动移除。
+        // 立即点亮所有行的 GridOverlay 并创建覆盖层；5 秒后 OnStateTick 的轮询会自动移除。
+        UpdatePreviewOverlayHostVisibility();
         OnStateTick(null, EventArgs.Empty);
+        UpdateAnimationTimer();
+    }
+
+    /// <summary>
+    /// 预览期间宿主模板里的 Grid#GridOverlay 默认 Opacity=0（仅在宿主播放真实提醒时点亮）。
+    /// 预览不播真实提醒，需对所有行强制点亮才能看到自绘覆盖层；预览结束且无覆盖层时还原。
+    /// </summary>
+    private void UpdatePreviewOverlayHostVisibility()
+    {
+        if (!IsPreviewingPrepareOnClass() || _settings.PrepareOnClassStyle == PrepareOnClassStyle.None)
+        {
+            return;
+        }
+
+        foreach (var line in GetMainWindowLines())
+        {
+            var host = line.GetVisualDescendants().OfType<Grid>()
+                .FirstOrDefault(x => x.Name == HostContract.GridOverlay);
+            if (host != null && host.Opacity == 0)
+            {
+                _prepareOnClassOverlayHosts[line] = host;
+                host.Opacity = 1;
+            }
+        }
+    }
+
+    /// <summary>预览结束且对应行没有覆盖层时，还原被强制点亮的 GridOverlay 不透明度。</summary>
+    private void SyncPrepareOnClassOverlayHosts()
+    {
+        foreach (var (line, host) in _prepareOnClassOverlayHosts.ToArray())
+        {
+            if (!IsPreviewingPrepareOnClass() && !_prepareOnClassOverlays.ContainsKey(line))
+            {
+                _prepareOnClassOverlayHosts.Remove(line);
+                host.Opacity = 0;
+            }
+        }
     }
 
     private Control[] GetMainWindowLines() =>
@@ -1683,7 +1860,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
         var content = new NotificationContent
         {
-            Content = new TextBlock { Text = "提醒预览", FontSize = 18, FontWeight = FontWeight.SemiBold },
+            // 预览只演示特效，不显示文本。
             Duration = TimeSpan.FromSeconds(1.2),
             Color = TryParseColor(_settings.RippleColor, out var rippleColor)
                 ? new SolidColorBrush(rippleColor)
@@ -1748,17 +1925,17 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         var isHanabi = _settings.RippleType == RippleType.Hanabi;
+        // 使用自带配色的类型不读取用户颜色设置。
+        var ignoresColor = _settings.RippleType is RippleType.Hanabi or RippleType.Explode;
         var color = Colors.White;
-        if (!isHanabi && !TryParseColor(_settings.RippleColor, out color))
+        if (!ignoresColor && !TryParseColor(_settings.RippleColor, out color))
         {
             return;
         }
 
         var effectControls = TryGetFullScreenEffectHost(out var effectWindow);
-        // A Hanabi burst is intentionally much larger than the island. Do not
-        // fall back to WindowRoot (which is island-sized) or the bloom will be
-        // visibly cropped during early startup.
-        if (_settings.RippleType == RippleType.Hanabi && effectControls == null)
+        // 花火/爆炸比岛屿大得多，必须进全屏特效窗口，否则早期启动会被裁切。
+        if (_settings.RippleType is RippleType.Hanabi or RippleType.Explode && effectControls == null)
         {
             return;
         }
@@ -1767,6 +1944,31 @@ internal sealed class MainWindowStyleInjector : IDisposable
         double? clipRadius = _settings.RippleConstraintEnabled
             ? (_settings.RippleConstraintRadius > 0 ? _settings.RippleConstraintRadius : GetAutomaticConstraintRadius())
             : null;
+        if (_settings.RippleType == RippleType.Explode)
+        {
+            // 爆炸：在 Ripple 中心播放一次 explode.gif（由 16ms 时钟推进、播完自动移除）。
+            // 原图仅 310x310，按原生尺寸渲染并限制不超过主界面，避免过大。
+            var islandMax = Math.Max(_islandRoot.Bounds.Width, _islandRoot.Bounds.Height);
+            var size = islandMax > 0 ? Math.Min(310d, islandMax) : 310d;
+            var explosion = new ExplosionOverlay(center, size, _settings.RippleOpacity)
+            {
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Stretch
+            };
+            if (effectControls != null)
+            {
+                effectControls.Add(explosion);
+                _rippleHosts[explosion] = effectControls;
+            }
+            else
+            {
+                _windowRoot.Children.Add(explosion);
+            }
+
+            _ripples.Add(explosion);
+            return;
+        }
+
         var ripple = new IslandRippleOverlay(center, _settings.RippleType,
             isHanabi ? Colors.White : color,
             TimeSpan.FromSeconds(_settings.RippleDurationSeconds),
@@ -1901,7 +2103,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
     }
 
-    private void RemoveRipple(IslandRippleOverlay ripple)
+    private void RemoveRipple(IRippleEffect ripple)
     {
         if (_rippleHosts.Remove(ripple, out var host))
         {
@@ -1909,7 +2111,10 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
-        _windowRoot?.Children.Remove(ripple);
+        if (ripple is Control control)
+        {
+            _windowRoot?.Children.Remove(control);
+        }
     }
 
     // ============ 圆角绑定到 ClassIsland 原生设置 ============
@@ -2233,6 +2438,12 @@ internal sealed class MainWindowStyleInjector : IDisposable
         {
             StyleHost.Remove(_notificationStyles);
             _notificationStyles = null;
+        }
+
+        if (_mainWindow != null && _carouselStyles != null)
+        {
+            StyleHost.Remove(_carouselStyles);
+            _carouselStyles = null;
         }
 
         foreach (var ripple in _ripples.ToArray())

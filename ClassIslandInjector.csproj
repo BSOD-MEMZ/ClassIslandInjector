@@ -26,5 +26,6 @@
     <Content Include="Assets\Firework.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\Firework_new.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\ColorBall.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\explode.gif" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

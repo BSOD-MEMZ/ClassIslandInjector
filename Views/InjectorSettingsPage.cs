@@ -76,6 +76,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly Spin _emphasisDuration = Spinner(0.1, 10, 0.05);
     private readonly ComboBox _notificationTransition = Combo(NotificationTransitions);
     private readonly Spin _notificationTransitionDuration = Spinner(0.05, 5, 0.05);
+    private readonly ToggleSwitch _carouselAnimation = Toggle();
+    private readonly ComboBox _carouselAnimationType = Combo(CarouselAnimationTypes);
+    private readonly Spin _carouselAnimationDuration = Spinner(0.05, 5, 0.05);
+    private readonly Spin _carouselAnimationOffset = Spinner(0, 500, 5, "0");
 
     private readonly ComboBox _rippleType = Combo(RippleTypes);
     private readonly ColorPicker _rippleColor = ColorPicker();
@@ -184,6 +188,22 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         new(RippleType.Glow, "光晕"),
         new(RippleType.Square, "方框"),
         new(RippleType.Hanabi, "花火"),
+        new(RippleType.Diamond, "菱形"),
+        new(RippleType.Triangle, "三角"),
+        new(RippleType.Star, "星形"),
+        new(RippleType.Hexagon, "六边形"),
+        new(RippleType.Burst, "放射"),
+        new(RippleType.Explode, "爆炸"),
+        new(RippleType.Particle, "粒子"),
+    ];
+
+    private static readonly Choice<CarouselAnimationType>[] CarouselAnimationTypes =
+    [
+        new(CarouselAnimationType.SlideUp, "上翻"),
+        new(CarouselAnimationType.SlideDown, "下翻"),
+        new(CarouselAnimationType.SlideLeft, "左滑"),
+        new(CarouselAnimationType.SlideRight, "右滑"),
+        new(CarouselAnimationType.Fade, "淡入淡出"),
     ];
 
     private static readonly Choice<PrepareOnClassStyle>[] PrepareOnClassStyles =
@@ -238,7 +258,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         };
 
         panel.Children.Add(new IconText { Glyph = "\uEC4A", Text = "样式注入器", Margin = new Thickness(0, 0, 0, 4) });
-        panel.Children.Add(Setting("\uE813", "实时预览", "开启后，下方对设置项的修改会立即保存并应用到主界面；关闭时需手动点击「保存并应用」。可视化编辑器始终为手动保存，不受此开关影响。", _livePreview));
+        panel.Children.Add(Setting("\uE813", "实时预览", "开启后，下方对设置项的修改会立即保存并应用到主界面；关闭时需手动点击「保存并应用」。", _livePreview));
         if (!SystemCapabilities.SmtcAvailable)
         {
             panel.Children.Add(new InfoBar
@@ -266,25 +286,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(Setting("\uF42F", "套用 / 删除预设", "套用会把全部设置项替换为该预设保存时的状态。", PresetManageFooter()));
         panel.Children.Add(Setting("\uE0BD", "恢复插件默认", "把全部设置恢复为插件默认（不会修改 Overrides.axaml）。", Button("恢复默认", ResetToDefaults)));
 
-        AddSection(panel, "\uE288", "可视化编辑器");
-        panel.Children.Add(Setting("\uE288", "打开可视化编辑器", "在独立窗口中像编辑演示文稿一样拖动、旋转、缩放岛屿，并即时应用到主界面。", Button("打开编辑器", OpenVisualEditor)));
-
-        AddSection(panel, "\uE113", "基础变形");
-        panel.Children.Add(new InfoBar
-        {
-            Severity = InfoBarSeverity.Warning,
-            Title = "与 ClassIsland 原生设置重叠",
-            Message = "不透明度、缩放与位置可在 ClassIsland 的外观页修改，在此覆盖可能与原生设置产生少量兼容性问题。圆角已改为同步写入 ClassIsland 原生圆角设置（0-20），与宿主内容裁切一致。",
-            IsOpen = true,
-            IsClosable = false
-        });
-        panel.Children.Add(Group("\uE113", "基础变形", "这些值会覆盖并叠加在 ClassIsland 的主界面外观设置之上。",
-            Item("不透明度", "控制主界面的整体透明度。", _opacity),
-            Item("水平偏移", "向左或向右移动主界面。", _offsetX),
-            Item("垂直偏移", "向上或向下移动主界面。", _offsetY),
-            Item("圆角半径", "岛屿边角的圆润程度（0-20，20 为半圆）。该值会同步写入 ClassIsland 原生圆角设置，与宿主内容裁切保持一致。", _cornerRadius),
-            Item("旋转角度", "以中心点旋转主界面。", _rotation)));
-
         AddSection(panel, "\uE51F", "背景");
         var backgroundColorItem = Item("背景色", "支持透明度的主界面背景颜色。", _backgroundColor);
         var backgroundGroup = SwitchableGroup("\uE520", "底色填充", "关闭时保留 ClassIsland 自身的背景颜色。", _customBackground,
@@ -295,8 +296,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("渐变终止色", "线性渐变背景的结束颜色。", _gradientEndColor, _gradient));
         EnabledWhenManualColor(backgroundColorItem, _customBackground, _dynamicBackgroundColor);
         panel.Children.Add(backgroundGroup);
-        panel.Children.Add(Group("\uE92B", "底纹纹理", "在底色之上叠加可平铺的纹理图案，可与背景图片、背景色同时使用；纹理不受动态取色影响。",
-            Item("纹理图案", "选择填充纹理的类型，无 = 关闭纹理。", _backgroundTextureType),
+        panel.Children.Add(Group("\uE92B", "底纹纹理", "在底色之上叠加可平铺的纹理图案。",
+            Item("纹理图案", "选择填充纹理的类型。", _backgroundTextureType),
             Item("纹理颜色", "支持透明度的纹理线条颜色。", _backgroundTextureColor),
             Item("纹理大小", "单个纹理单元的大小（像素）。", _backgroundTextureSize)));
         var wallpaperPathItem = Item("图片 / 文件夹", "底图文件或幻灯片文件夹的路径。", WallpaperPathFooter());
@@ -343,6 +344,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("动画周期", "完成一次循环所需的时间（秒）。", _animationPeriod)));
         panel.Children.Add(ChoiceGroup("\uEFED", "主界面显示动画", "选择主界面出现或消失时使用的动画。", _visibilityAnimation, VisibilityAnimation.None,
             Item("显示动画时长", "主界面显示动画的时长（秒）。", _visibilityDuration)));
+        panel.Children.Add(SwitchableGroup("\uEFED", "列表翻页动画", "自定义 ClassIsland 列表/轮播容器的上翻切换动画（轮播容器、上课提醒横幅等）。", _carouselAnimation,
+            Item("动画类型", "列表切换时的动画方式。", _carouselAnimationType),
+            Item("动画时长", "单次翻页动画的时长（秒）。", _carouselAnimationDuration),
+            Item("翻页距离", "滑动/上翻类动画的位移距离（像素）；淡入淡出不受影响。", _carouselAnimationOffset)));
 
         AddSection(panel, "\uE025", "提醒");
         panel.Children.Add(Setting("\uEFFE", "预览提醒", "一次性预览强调动画、遮罩过渡与 Ripple 效果（持续约 2 秒）。", Button("预览提醒", PreviewNotification)));
@@ -359,8 +364,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         var rippleConstraintRadiusItem = Item("约束半径", "Ripple 扩散的圆形约束半径（像素），0 为自动按主界面大小计算。", _rippleConstraintRadius, _rippleConstraint);
         var rippleGroup = ChoiceGroup("\uEFFF", "提醒 Ripple", "选择提醒时的扩散效果。花火使用固定的原始配色与线宽。", _rippleType, RippleType.None,
             rippleColorItem, rippleDurationItem, rippleThicknessItem, rippleOpacityItem, rippleConstraintItem, rippleConstraintRadiusItem);
-        EnabledWhenNot(rippleColorItem, _rippleType, RippleType.Hanabi);
-        EnabledWhenNot(rippleThicknessItem, _rippleType, RippleType.Hanabi);
+        EnabledWhenNotAny(rippleColorItem, _rippleType, RippleType.Hanabi, RippleType.Explode);
+        EnabledWhenNotAny(rippleThicknessItem, _rippleType, RippleType.Hanabi, RippleType.Explode, RippleType.Particle);
         panel.Children.Add(rippleGroup);
         var hanabiInfoBar = new InfoBar
         {
@@ -405,7 +410,36 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(Setting("\uF263", "覆盖样式表路径", "填写 .axaml 样式表的完整路径。", _styleSheetPath));
         panel.Children.Add(Setting("\uE161", "自动热重载", "保存样式表后自动重新加载。", _watchStyleSheet));
 
-        AddSection(panel, "\uE61D", "卸载与数据清理");
+        // 危险区域：会直接修改主界面或清除数据的操作统一收在这里，并用危险样式标注。
+        panel.Children.Add(new IconText
+        {
+            Glyph = "\uF431",
+            Text = "危险区域",
+            Margin = new Thickness(0, 16, 0, 4)
+        });
+        panel.Children.Add(new InfoBar
+        {
+            Severity = InfoBarSeverity.Error,
+            Title = "危险区域",
+            Message = "以下操作会直接修改主界面外观或清除插件数据，请谨慎使用。",
+            IsOpen = true,
+            IsClosable = false
+        });
+        panel.Children.Add(Setting("\uE288", "打开可视化编辑器", "在独立窗口中像编辑演示文稿一样拖动、旋转、缩放岛屿，并即时应用到主界面。", Button("打开编辑器", OpenVisualEditor)));
+        panel.Children.Add(new InfoBar
+        {
+            Severity = InfoBarSeverity.Warning,
+            Title = "与 ClassIsland 原生设置重叠",
+            Message = "不透明度、缩放与位置可在 ClassIsland 的外观页修改，在此覆盖可能与原生设置产生少量兼容性问题。圆角已改为同步写入 ClassIsland 原生圆角设置（0-20），与宿主内容裁切一致。",
+            IsOpen = true,
+            IsClosable = false
+        });
+        panel.Children.Add(Group("\uE113", "基础变形", "这些值会覆盖并叠加在 ClassIsland 的主界面外观设置之上。",
+            Item("不透明度", "控制主界面的整体透明度。", _opacity),
+            Item("水平偏移", "向左或向右移动主界面。", _offsetX),
+            Item("垂直偏移", "向上或向下移动主界面。", _offsetY),
+            Item("圆角半径", "岛屿边角的圆润程度（0-20，20 为半圆）。该值会同步写入 ClassIsland 原生圆角设置，与宿主内容裁切保持一致。", _cornerRadius),
+            Item("旋转角度", "以中心点旋转主界面。", _rotation)));
         panel.Children.Add(new InfoBar
         {
             Severity = InfoBarSeverity.Error,
@@ -556,6 +590,12 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private void PreviewPrepareOnClass()
     {
         SaveAndApply();
+        if (InjectorRuntime.Settings.PrepareOnClassStyle == PrepareOnClassStyle.None)
+        {
+            _status.Text = "请先在「即将上课样式」中选择一种特效（箭头 / 扩散光环 / 扫描线），再点击预览。";
+            return;
+        }
+
         InjectorRuntime.PreviewPrepareOnClass();
         _status.Text = "正在预览即将上课样式（约 5 秒）。";
     }
@@ -946,6 +986,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _emphasisDuration.DoubleValue = settings.EmphasisDurationSeconds;
         Select(_notificationTransition, NotificationTransitions, settings.NotificationTransition);
         _notificationTransitionDuration.DoubleValue = settings.NotificationTransitionDurationSeconds;
+        _carouselAnimation.IsChecked = settings.CarouselAnimationEnabled;
+        Select(_carouselAnimationType, CarouselAnimationTypes, settings.CarouselAnimationType);
+        _carouselAnimationDuration.DoubleValue = settings.CarouselAnimationDurationSeconds;
+        _carouselAnimationOffset.DoubleValue = settings.CarouselAnimationOffset;
         Select(_rippleType, RippleTypes, settings.RippleType);
         _rippleColor.Color = ReadColor(settings.RippleColor, Color.FromArgb(0xAA, 0x7D, 0xD3, 0xFC));
         _rippleDuration.DoubleValue = settings.RippleDurationSeconds;
@@ -1039,6 +1083,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.EmphasisDurationSeconds = _emphasisDuration.DoubleValue;
             settings.NotificationTransition = Selected(_notificationTransition, NotificationTransition.HostDefault);
             settings.NotificationTransitionDurationSeconds = _notificationTransitionDuration.DoubleValue;
+            settings.CarouselAnimationEnabled = _carouselAnimation.IsChecked == true;
+            settings.CarouselAnimationType = Selected(_carouselAnimationType, CarouselAnimationType.SlideUp);
+            settings.CarouselAnimationDurationSeconds = _carouselAnimationDuration.DoubleValue;
+            settings.CarouselAnimationOffset = _carouselAnimationOffset.DoubleValue;
             settings.RippleType = Selected(_rippleType, RippleType.None);
             settings.RippleColor = _rippleColor.Color.ToString();
             settings.RippleDurationSeconds = _rippleDuration.DoubleValue;
@@ -1166,6 +1214,18 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private static void EnabledWhenNot<T>(Control target, ComboBox selector, T disabledValue)
     {
         void Sync() => target.IsEnabled = !EqualityComparer<T>.Default.Equals(Selected(selector, disabledValue), disabledValue);
+        selector.SelectionChanged += (_, _) => Sync();
+        Sync();
+    }
+
+    private static void EnabledWhenNotAny<T>(Control target, ComboBox selector, params T[] disabledValues)
+    {
+        void Sync()
+        {
+            var selected = selector.SelectedItem is Choice<T> choice ? choice.Value : default!;
+            target.IsEnabled = selected != null && Array.IndexOf(disabledValues, selected) < 0;
+        }
+
         selector.SelectionChanged += (_, _) => Sync();
         Sync();
     }

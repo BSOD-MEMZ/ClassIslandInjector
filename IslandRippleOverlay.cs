@@ -6,10 +6,19 @@ using Avalonia.Media.Imaging;
 namespace ClassIslandInjector;
 
 /// <summary>
+/// 提醒特效覆盖层的公共契约（由注入器 16ms 动画时钟统一推进，完成后移除）。
+/// </summary>
+internal interface IRippleEffect
+{
+    bool IsCompleted { get; }
+    void Advance();
+}
+
+/// <summary>
 /// A non-interactive ripple drawn above the main window. It deliberately lives in
 /// the plugin so ripple styles are independent from ClassIsland's built-in effect.
 /// </summary>
-internal sealed class IslandRippleOverlay : Control
+internal sealed class IslandRippleOverlay : Control, IRippleEffect
 {
     private const double HanabiClipDuration = 1.3333334;
     private static readonly Lazy<Bitmap?> FireworkTexture = new(() => LoadMaimaiTexture("Firework.png"));
@@ -80,6 +89,24 @@ internal sealed class IslandRippleOverlay : Control
                 case RippleType.Square:
                     context.DrawRectangle(null, new Pen(brush, _thickness), rect);
                     break;
+                case RippleType.Diamond:
+                    DrawPolygon(context, null, new Pen(brush, _thickness), _center, radius, 4, Math.PI / 4);
+                    break;
+                case RippleType.Triangle:
+                    DrawPolygon(context, null, new Pen(brush, _thickness), _center, radius, 3, -Math.PI / 2);
+                    break;
+                case RippleType.Star:
+                    DrawStar(context, null, new Pen(brush, _thickness), _center, radius, 0.5);
+                    break;
+                case RippleType.Hexagon:
+                    DrawPolygon(context, null, new Pen(brush, _thickness), _center, radius, 6, 0);
+                    break;
+                case RippleType.Burst:
+                    DrawBurst(context, new Pen(brush, _thickness), _center, radius, 12);
+                    break;
+                case RippleType.Particle:
+                    DrawParticles(context, progress);
+                    break;
                 case RippleType.Hanabi:
                     DrawHanabi(context, progress);
                     break;
@@ -98,6 +125,101 @@ internal sealed class IslandRippleOverlay : Control
         else
         {
             Draw();
+        }
+    }
+
+    /// <summary>绘制正多边形轮廓（rotation 为起始角弧度，0 指向右）。</summary>
+    private static void DrawPolygon(DrawingContext context, IBrush? brush, IPen? pen, Point center, double radius,
+        int sides, double rotation)
+    {
+        if (sides < 3)
+        {
+            return;
+        }
+
+        var geometry = new StreamGeometry();
+        using (var ctx = geometry.Open())
+        {
+            var first = true;
+            for (var i = 0; i < sides; i++)
+            {
+                var angle = rotation + i * (Math.PI * 2 / sides);
+                var point = new Point(center.X + Math.Cos(angle) * radius, center.Y + Math.Sin(angle) * radius);
+                if (first)
+                {
+                    ctx.BeginFigure(point, true);
+                    first = false;
+                }
+                else
+                {
+                    ctx.LineTo(point);
+                }
+            }
+
+            ctx.EndFigure(true);
+        }
+
+        context.DrawGeometry(brush, pen, geometry);
+    }
+
+    /// <summary>绘制五角星轮廓（innerRatio 为内顶点半径占外顶点半径的比例）。</summary>
+    private static void DrawStar(DrawingContext context, IBrush? brush, IPen? pen, Point center, double radius,
+        double innerRatio)
+    {
+        const int points = 5;
+        var geometry = new StreamGeometry();
+        using (var ctx = geometry.Open())
+        {
+            var first = true;
+            for (var i = 0; i < points * 2; i++)
+            {
+                var r = i % 2 == 0 ? radius : radius * innerRatio;
+                var angle = -Math.PI / 2 + i * (Math.PI / points);
+                var point = new Point(center.X + Math.Cos(angle) * r, center.Y + Math.Sin(angle) * r);
+                if (first)
+                {
+                    ctx.BeginFigure(point, true);
+                    first = false;
+                }
+                else
+                {
+                    ctx.LineTo(point);
+                }
+            }
+
+            ctx.EndFigure(true);
+        }
+
+        context.DrawGeometry(brush, pen, geometry);
+    }
+
+    /// <summary>绘制放射状射线（spokes 条从中心向外扩散的直线）。</summary>
+    private static void DrawBurst(DrawingContext context, IPen pen, Point center, double radius, int spokes)
+    {
+        for (var i = 0; i < spokes; i++)
+        {
+            var angle = i * (Math.PI * 2 / spokes);
+            var end = new Point(center.X + Math.Cos(angle) * radius, center.Y + Math.Sin(angle) * radius);
+            context.DrawLine(pen, center, end);
+        }
+    }
+
+    /// <summary>绘制粒子爆散：一簇小圆点从中心向外飞出并逐渐缩小淡出（确定性伪随机，无 Random 实例）。</summary>
+    private void DrawParticles(DrawingContext context, double progress)
+    {
+        const int count = 28;
+        var extent = Math.Max(Bounds.Width, Bounds.Height);
+        var maxRadius = extent * 0.75 * (0.15 + progress * 0.85);
+        for (var i = 0; i < count; i++)
+        {
+            var angle = (i * 2654435761u % 360u) * Math.PI / 180.0;
+            var speed = 0.35 + (i * 40503u % 100u) / 100.0 * 0.65;
+            var dist = maxRadius * speed * progress;
+            var size = 1.5 + (i * 97u % 60u) / 20.0;
+            var alpha = (byte)Math.Clamp(_color.A * (1 - progress) * 1.2, 0, 255);
+            var point = new Point(_center.X + Math.Cos(angle) * dist, _center.Y + Math.Sin(angle) * dist);
+            context.DrawEllipse(new SolidColorBrush(new Color(alpha, _color.R, _color.G, _color.B)), null,
+                new Rect(point.X - size, point.Y - size, size * 2, size * 2));
         }
     }
 

@@ -53,7 +53,14 @@ public enum RippleType
     DoubleRing,
     Glow,
     Square,
-    Hanabi
+    Hanabi,
+    Diamond,
+    Triangle,
+    Star,
+    Hexagon,
+    Burst,
+    Explode,
+    Particle
 }
 
 /// <summary>
@@ -74,6 +81,18 @@ public enum ScanlineDirection
 {
     Horizontal,
     Vertical
+}
+
+/// <summary>
+/// 「轮播容器」切换动画的类型。
+/// </summary>
+public enum CarouselAnimationType
+{
+    SlideUp,
+    SlideDown,
+    SlideLeft,
+    SlideRight,
+    Fade
 }
 
 /// <summary>
@@ -164,6 +183,10 @@ public sealed class InjectorSettings
     private double _emphasisDurationSeconds = 0.45;
     private NotificationTransition _notificationTransition = NotificationTransition.HostDefault;
     private double _notificationTransitionDurationSeconds = 0.22;
+    private bool _carouselAnimationEnabled;
+    private double _carouselAnimationDurationSeconds = 0.25;
+    private double _carouselAnimationOffset = 40;
+    private CarouselAnimationType _carouselAnimationType = CarouselAnimationType.SlideUp;
     private RippleType _rippleType = RippleType.None;
     private string _rippleColor = "#AA7DD3FC";
     private double _rippleDurationSeconds = 0.65;
@@ -246,6 +269,10 @@ public sealed class InjectorSettings
     public double EmphasisDurationSeconds { get => _emphasisDurationSeconds; set => Set(ref _emphasisDurationSeconds, Math.Clamp(value, 0.1, 10)); }
     public NotificationTransition NotificationTransition { get => _notificationTransition; set => Set(ref _notificationTransition, value); }
     public double NotificationTransitionDurationSeconds { get => _notificationTransitionDurationSeconds; set => Set(ref _notificationTransitionDurationSeconds, Math.Clamp(value, 0.05, 5)); }
+    public bool CarouselAnimationEnabled { get => _carouselAnimationEnabled; set => Set(ref _carouselAnimationEnabled, value); }
+    public double CarouselAnimationDurationSeconds { get => _carouselAnimationDurationSeconds; set => Set(ref _carouselAnimationDurationSeconds, Math.Clamp(value, 0.05, 5)); }
+    public double CarouselAnimationOffset { get => _carouselAnimationOffset; set => Set(ref _carouselAnimationOffset, Math.Clamp(value, 0, 500)); }
+    public CarouselAnimationType CarouselAnimationType { get => _carouselAnimationType; set => Set(ref _carouselAnimationType, value); }
     public RippleType RippleType { get => _rippleType; set => Set(ref _rippleType, value); }
     public string RippleColor { get => _rippleColor; set => Set(ref _rippleColor, value.Trim()); }
     public double RippleDurationSeconds { get => _rippleDurationSeconds; set => Set(ref _rippleDurationSeconds, Math.Clamp(value, 0.1, 10)); }
@@ -360,6 +387,10 @@ public sealed class InjectorSettings
         EmphasisDurationSeconds = source.EmphasisDurationSeconds;
         NotificationTransition = source.NotificationTransition;
         NotificationTransitionDurationSeconds = source.NotificationTransitionDurationSeconds;
+        CarouselAnimationEnabled = source.CarouselAnimationEnabled;
+        CarouselAnimationDurationSeconds = source.CarouselAnimationDurationSeconds;
+        CarouselAnimationOffset = source.CarouselAnimationOffset;
+        CarouselAnimationType = source.CarouselAnimationType;
         RippleType = source.RippleType;
         RippleColor = source.RippleColor;
         DynamicBorderColorEnabled = source.DynamicBorderColorEnabled;
