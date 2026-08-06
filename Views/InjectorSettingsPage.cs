@@ -187,13 +187,13 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         new(RippleType.DoubleRing, "双环"),
         new(RippleType.Glow, "光晕"),
         new(RippleType.Square, "方框"),
-        new(RippleType.Hanabi, "花火"),
+        new(RippleType.Hanabi, "舞萌花火（高级）"),
         new(RippleType.Diamond, "菱形"),
         new(RippleType.Triangle, "三角"),
         new(RippleType.Star, "星形"),
         new(RippleType.Hexagon, "六边形"),
         new(RippleType.Burst, "放射"),
-        new(RippleType.Explode, "爆炸"),
+        new(RippleType.Explode, "爆炸（高级）"),
         new(RippleType.Particle, "粒子"),
     ];
 
@@ -274,14 +274,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(Setting("\uEDC7", "运行时注入", "启用后由插件接管主界面根节点的视觉效果。", _enabled));
 
         AddSection(panel, "\uF42F", "用户预设");
-        panel.Children.Add(new InfoBar
-        {
-            Severity = InfoBarSeverity.Informational,
-            Title = "可被 ClassIsland 自动化调用",
-            Message = "把当前全部设置保存为命名预设后，可以在 ClassIsland 自动化中添加「切换用户预设」行动，按条件（时间、课程等）自动切换整套方案。",
-            IsOpen = true,
-            IsClosable = false
-        });
         panel.Children.Add(Setting("\uF42F", "保存当前为预设", "把插件当前全部设置项保存为一个命名预设（同名覆盖）。", PresetSaveFooter()));
         panel.Children.Add(Setting("\uF42F", "套用 / 删除预设", "套用会把全部设置项替换为该预设保存时的状态。", PresetManageFooter()));
         panel.Children.Add(Setting("\uE0BD", "恢复插件默认", "把全部设置恢复为插件默认（不会修改 Overrides.axaml）。", Button("恢复默认", ResetToDefaults)));
@@ -302,28 +294,28 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("纹理大小", "单个纹理单元的大小（像素）。", _backgroundTextureSize)));
         var wallpaperPathItem = Item("图片 / 文件夹", "底图文件或幻灯片文件夹的路径。", WallpaperPathFooter());
         var wallpaperSlideshowItem = Item("幻灯片间隔", "文件夹幻灯片切换间隔（秒）。", _wallpaperSlideshowInterval);
-        var wallpaperGroup = SwitchableGroup("\uF42D", "背景图片", "层级：底图 → 底色 → 组件。SMTC 来源由事件驱动即时更新，兜底刷新与图片过渡时长沿用“动态取色”设置。", _wallpaperEnabled,
-            Item("图片来源", "选择底图的来源：本地图片、文件夹幻灯片或 SMTC 专辑封面。", _wallpaperSource),
+        var wallpaperGroup = SwitchableGroup("\uF42D", "背景图片", "为 ClassIsland 主界面添加背景图片", _wallpaperEnabled,
+            Item("图片来源", "选择底图的来源。", _wallpaperSource),
             wallpaperPathItem,
             Item("图片不透明度", "底图的整体透明度。", _wallpaperOpacity),
             Item("显示方式", "图片在岛屿内的显示方式。", _wallpaperDisplayMode),
-            Item("缩放", "底图的缩放倍率（1 为按显示方式适应，大于 1 放大裁剪）。", _wallpaperScale),
-            Item("水平偏移", "底图的水平偏移（相对图片宽度，-0.5 到 0.5）。", _wallpaperOffsetX),
-            Item("垂直偏移", "底图的垂直偏移（相对图片高度，-0.5 到 0.5）。", _wallpaperOffsetY),
-            Item("模糊", "对底图应用高斯模糊（0 为关闭）。模糊边缘会被岛屿边界裁剪。", _wallpaperBlur),
+            Item("缩放", "底图的缩放倍率（1 为按显示方式适应，大于 1 放大裁剪）", _wallpaperScale),
+            Item("水平偏移", "底图的水平偏移（相对图片宽度，-0.5 到 0.5）", _wallpaperOffsetX),
+            Item("垂直偏移", "底图的垂直偏移（相对图片高度，-0.5 到 0.5）", _wallpaperOffsetY),
+            Item("模糊", "对底图应用高斯模糊（0 为关闭）", _wallpaperBlur),
             wallpaperSlideshowItem);
         VisibleWhenAny(wallpaperPathItem, _wallpaperSource, WallpaperSource.LocalImage, WallpaperSource.FolderSlideshow);
         VisibleWhen(wallpaperSlideshowItem, _wallpaperSource, WallpaperSource.FolderSlideshow);
         panel.Children.Add(wallpaperGroup);
-        panel.Children.Add(Group("\uF361", "动态取色", "SMTC 采用事件驱动：媒体变化（切歌/换封面）时即时更新；下方的间隔仅作为兜底刷新，应对个别应用事件不触发的情况。",
-            Item("暂停/停止时恢复原色", "媒体暂停或停止播放时，把背景、边框、阴影从专辑取色平滑恢复为你配置的原始颜色，恢复播放后再跟随专辑。", _revertColorsWhenPaused),
+        panel.Children.Add(Group("\uF361", "动态取色", "从音乐软件或浏览器获取 SMTC 信息，并进行莫奈取色",
+            Item("暂停/停止时恢复原色", "媒体暂停或停止播放时，从专辑取色平滑恢复为原始颜色，恢复播放后再跟随专辑。", _revertColorsWhenPaused),
             Item("兜底刷新间隔", "事件驱动失效时的兜底刷新间隔（秒）。", _albumColorPollingInterval),
             Item("颜色过渡时长", "专辑颜色变化时，背景、边框、阴影平滑过渡到新颜色的时长（秒），0 为立即切换。", _albumColorTransition)));
 
         AddSection(panel, "\uE254", "边框与阴影");
         var shadowColorItem = Item("阴影颜色", "支持透明度的阴影颜色。", _shadowColor);
-        panel.Children.Add(SwitchableGroup("\uE472", "阴影", "为岛屿添加投影效果。", _shadow,
-            Item("动态取色", "阴影色调跟随专辑封面，使用 Material You 深色中性色；透明度沿用你配置的阴影颜色透明度。", _dynamicShadowColor),
+        panel.Children.Add(SwitchableGroup("\uE472", "阴影", "为 ClassIsland 添加投影效果。", _shadow,
+            Item("动态取色", "阴影色调跟随专辑封面莫奈取色。", _dynamicShadowColor),
             shadowColorItem,
             Item("阴影模糊", "控制投影的柔和程度。", _shadowBlur),
             Item("阴影水平偏移", "控制投影向左或向右偏移。", _shadowOffsetX),
@@ -331,10 +323,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("阴影不透明度", "控制投影的深浅。", _shadowOpacity)));
         EnabledWhenManualColor(shadowColorItem, _shadow, _dynamicShadowColor);
         var borderColorItem = Item("边框颜色", "支持透明度的边框颜色。", _borderColor);
-        panel.Children.Add(SwitchableGroup("\uE254", "岛屿边框", "为岛屿添加细边框。", _border,
-            Item("动态取色", "边框色调跟随专辑封面，使用 Material You 主色调；透明度沿用你配置的边框颜色透明度。", _dynamicBorderColor),
+        panel.Children.Add(SwitchableGroup("\uE254", "边框", "为 ClassIsland 添加细边框。", _border,
+            Item("动态取色", "边框色调跟随专辑封面莫奈取色。", _dynamicBorderColor),
             borderColorItem,
-            Item("边框线宽", "控制岛屿边框的粗细。", _borderThickness)));
+            Item("边框线宽", "控制边框的粗细。", _borderThickness)));
         EnabledWhenManualColor(borderColorItem, _border, _dynamicBorderColor);
 
         AddSection(panel, "\uE82B", "动画");
@@ -350,7 +342,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("翻页距离", "滑动/上翻类动画的位移距离（像素）；淡入淡出不受影响。", _carouselAnimationOffset)));
 
         AddSection(panel, "\uE025", "提醒");
-        panel.Children.Add(Setting("\uEFFE", "预览提醒", "一次性预览强调动画、遮罩过渡与 Ripple 效果（持续约 2 秒）。", Button("预览提醒", PreviewNotification)));
+        panel.Children.Add(Setting("\uEFFE", "预览提醒", "一次性预览强调动画、遮罩过渡与 Ripple 效果。", Button("预览提醒", PreviewNotification)));
         panel.Children.Add(ChoiceGroup("\uE02B", "提醒强调动画", "选择收到提醒时使用的强调效果。", _emphasisAnimation, EmphasisAnimation.None,
             Item("强调幅度", "控制强调动画的强弱。", _emphasisAmount),
             Item("强调时长", "提醒强调动画的时长（秒）。", _emphasisDuration)));
@@ -358,11 +350,11 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("遮罩动画时长", "提醒遮罩动画的时长（秒）。", _notificationTransitionDuration)));
         var rippleColorItem = Item("Ripple 颜色", "支持透明度的提醒扩散颜色。", _rippleColor);
         var rippleDurationItem = Item("Ripple 时长", "扩散效果的播放时长（秒）。", _rippleDuration);
-        var rippleThicknessItem = Item("Ripple 线宽", "环形或方框 Ripple 的线条粗细。", _rippleThickness);
-        var rippleOpacityItem = Item("全局不透明度", "全局降低 Ripple 效果的透明度，避免上课时分心（1 为不降低）。", _rippleOpacity);
+        var rippleThicknessItem = Item("Ripple 线宽", "线性 Ripple 的线条粗细。", _rippleThickness);
+        var rippleOpacityItem = Item("全局不透明度", "全局降低 Ripple 效果的透明度，避免上课时分心。", _rippleOpacity);
         var rippleConstraintItem = Item("限制扩散范围", "以主界面中心为圆心创建圆形裁剪，约束所有类型 Ripple 的扩散范围。", _rippleConstraint);
         var rippleConstraintRadiusItem = Item("约束半径", "Ripple 扩散的圆形约束半径（像素），0 为自动按主界面大小计算。", _rippleConstraintRadius, _rippleConstraint);
-        var rippleGroup = ChoiceGroup("\uEFFF", "提醒 Ripple", "选择提醒时的扩散效果。花火使用固定的原始配色与线宽。", _rippleType, RippleType.None,
+        var rippleGroup = ChoiceGroup("\uEFFF", "提醒 Ripple", "选择提醒时的扩散效果。高级特效视觉效果更强，也会占用更多的性能。", _rippleType, RippleType.None,
             rippleColorItem, rippleDurationItem, rippleThicknessItem, rippleOpacityItem, rippleConstraintItem, rippleConstraintRadiusItem);
         EnabledWhenNotAny(rippleColorItem, _rippleType, RippleType.Hanabi, RippleType.Explode);
         EnabledWhenNotAny(rippleThicknessItem, _rippleType, RippleType.Hanabi, RippleType.Explode, RippleType.Particle);
@@ -370,7 +362,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         var hanabiInfoBar = new InfoBar
         {
             Severity = InfoBarSeverity.Informational,
-            Title = "关于花火（Hanabi）效果",
+            Title = "关于舞萌花火（Hanabi）效果",
             Message = "受当前技术限制，本插件无法实现类似 maimai でらっくす 的带光影的烟花效果，只能仿制经典旧版烟花效果。",
             IsOpen = true,
             IsClosable = false
@@ -378,12 +370,12 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         VisibleWhen(hanabiInfoBar, _rippleType, RippleType.Hanabi);
         panel.Children.Add(hanabiInfoBar);
         AddSection(panel, "\uE4C4", "即将上课样式");
-        panel.Children.Add(Setting("\uE4C4", "预览即将上课样式", "立即预览 5 秒即将上课动画，无需真的处于即将上课状态。", Button("预览", PreviewPrepareOnClass)));
+        panel.Children.Add(Setting("\uE4C4", "预览即将上课样式", "立即预览 5 秒即将上课动画，别忘了先在下面选中一个特效。", Button("预览", PreviewPrepareOnClass)));
         panel.Children.Add(Setting("\uE4C4", "即将上课样式", "选择即将上课倒计时期间显示的特效；选择「无」则不显示。", _prepareOnClassStyle));
         var arrowGroup = Group("\uE0F7", "箭头", "斜向箭头从右向左滑动。",
             Item("箭头颜色", "支持透明度的箭头颜色。", _countdownArrowColor),
             Item("箭头组数", "屏幕上同时滑动的箭头组数量。", _countdownArrowCount),
-            Item("每组箭头数", "每组内包含的箭头数量，2 即经典的 >> 效果。", _countdownArrowPerGroup),
+            Item("每组箭头数", "每组内包含的箭头数量。", _countdownArrowPerGroup),
             Item("组内箭头间距", "同一组内相邻箭头之间的距离（像素）。", _countdownArrowSpacing),
             Item("组间间距", "相邻箭头组之间的额外间距（像素）。", _countdownArrowGroupSpacing),
             Item("滑动速度", "箭头的移动速度。", _countdownArrowSpeed),
@@ -393,7 +385,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("光环线宽", "光环的线条粗细。", _countdownPulseThickness),
             Item("扩散速度", "每秒扩散的圈数。", _countdownPulseSpeed),
             Item("最大半径", "光环最大半径占主界面宽高中较小值的比例。", _countdownPulseMaxRadius));
-        var scanGroup = Group("\uEECD", "扫描线", "一道带渐变尾迹的光线扫过主界面，进入 / 离开时自动渐显渐隐。",
+        var scanGroup = Group("\uEECD", "扫描线", "一道带渐变尾迹的光线扫过主界面。",
             Item("扫描方向", "横向为水平线上下扫，纵向为竖直线左右扫。", _countdownScanDirection),
             Item("渐变尾迹", "关闭后只显示一条主线，不带渐变尾迹。", _countdownScanTailEnabled),
             Item("扫描颜色", "支持透明度的扫描线颜色。", _countdownScanColor),
@@ -409,8 +401,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         AddSection(panel, "\uF263", "高级样式表");
         panel.Children.Add(Setting("\uF263", "覆盖样式表路径", "填写 .axaml 样式表的完整路径。", _styleSheetPath));
         panel.Children.Add(Setting("\uE161", "自动热重载", "保存样式表后自动重新加载。", _watchStyleSheet));
-
-        // 危险区域：会直接修改主界面或清除数据的操作统一收在这里，并用危险样式标注。
         panel.Children.Add(new IconText
         {
             Glyph = "\uF431",
@@ -425,12 +415,12 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             IsOpen = true,
             IsClosable = false
         });
-        panel.Children.Add(Setting("\uE288", "打开可视化编辑器", "在独立窗口中像编辑演示文稿一样拖动、旋转、缩放岛屿，并即时应用到主界面。", Button("打开编辑器", OpenVisualEditor)));
+        panel.Children.Add(Setting("\uE288", "打开可视化编辑器", "在独立窗口中像做 PPT 一样编辑 ClassIsland 主界面样式，但存在严重兼容性问题，已被弃用。", Button("打开编辑器", OpenVisualEditor)));
         panel.Children.Add(new InfoBar
         {
             Severity = InfoBarSeverity.Warning,
             Title = "与 ClassIsland 原生设置重叠",
-            Message = "不透明度、缩放与位置可在 ClassIsland 的外观页修改，在此覆盖可能与原生设置产生少量兼容性问题。圆角已改为同步写入 ClassIsland 原生圆角设置（0-20），与宿主内容裁切一致。",
+            Message = "不透明度、缩放与位置可在 ClassIsland 的外观页修改，在此覆盖可能与原生设置产生少量兼容性问题。",
             IsOpen = true,
             IsClosable = false
         });
@@ -438,16 +428,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("不透明度", "控制主界面的整体透明度。", _opacity),
             Item("水平偏移", "向左或向右移动主界面。", _offsetX),
             Item("垂直偏移", "向上或向下移动主界面。", _offsetY),
-            Item("圆角半径", "岛屿边角的圆润程度（0-20，20 为半圆）。该值会同步写入 ClassIsland 原生圆角设置，与宿主内容裁切保持一致。", _cornerRadius),
+            Item("圆角半径", "注意：在此处修改圆角有时需要重启 ClassIsland 才会生效", _cornerRadius),
             Item("旋转角度", "以中心点旋转主界面。", _rotation)));
-        panel.Children.Add(new InfoBar
-        {
-            Severity = InfoBarSeverity.Error,
-            Title = "删除所有数据",
-            Message = "将清除本插件在 ClassIsland 中创建的全部配置与数据（设置、覆盖样式表、诊断日志等），并把主界面恢复为原生状态。此操作不可恢复，执行后即可安全卸载插件。",
-            IsOpen = true,
-            IsClosable = false
-        });
+
         panel.Children.Add(Setting("\uE61D", "删除所有数据", "一键清空插件全部数据并恢复主界面，让插件回到“全新安装”状态，之后可安全卸载。", Button("删除所有数据", DeleteAllData)));
 
         AddSection(panel, "\uE9E4", "关于");
@@ -503,7 +486,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
     private void SaveCurrentPreset()
     {
-        SaveAndApply(); // 先把页面上未保存的改动提交到设置，再整体快照。
+        SaveAndApply();
         var name = _presetName.Text?.Trim();
         if (string.IsNullOrEmpty(name))
         {
@@ -589,10 +572,13 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
     private void PreviewPrepareOnClass()
     {
+        MainWindowStyleInjector.DebugLog($"设置页 PreviewPrepareOnClass 被调用，combo.SelectedItem={_prepareOnClassStyle.SelectedItem}, 当前设置样式={InjectorRuntime.Settings.PrepareOnClassStyle}");
         SaveAndApply();
+        MainWindowStyleInjector.DebugLog($"SaveAndApply 后样式={InjectorRuntime.Settings.PrepareOnClassStyle}");
         if (InjectorRuntime.Settings.PrepareOnClassStyle == PrepareOnClassStyle.None)
         {
-            _status.Text = "请先在「即将上课样式」中选择一种特效（箭头 / 扩散光环 / 扫描线），再点击预览。";
+            _status.Text = "请先在「即将上课样式」中选择一种特效，再点击预览。";
+            MainWindowStyleInjector.DebugLog("样式为 None，提前返回，未调用注入器预览");
             return;
         }
 

@@ -58,6 +58,30 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private readonly Dictionary<Control, Grid> _prepareOnClassOverlayHosts = [];
     /// <summary>「预览即将上课」的激活截止时间（5 秒）。</summary>
     private DateTime _prepareOnClassPreviewUntil = DateTime.MinValue;
+    private DateTime _lastOverlayDebugLog = DateTime.MinValue;
+
+    /// <summary>临时诊断日志（定位「即将上课样式预览不生效」，定位后移除）。</summary>
+    internal static void DebugLog(string message)
+    {
+        try
+        {
+            var dir = InjectorRuntime.ConfigDirectory;
+            if (string.IsNullOrEmpty(dir))
+            {
+                return;
+            }
+
+            var path = Path.Combine(dir, "preview-debug.log");
+            lock (typeof(MainWindowStyleInjector))
+            {
+                File.AppendAllText(path, $"[{DateTime.Now:HH:mm:ss.fff}] {message}\n");
+            }
+        }
+        catch
+        {
+            // 诊断日志失败不影响功能。
+        }
+    }
     // A custom ripple normally lives in ClassIsland's full-screen topmost effect
     // window.  This map lets us remove it from the same host when it completes.
     private readonly Dictionary<IRippleEffect, IList> _rippleHosts = [];
@@ -529,6 +553,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
     {
         if (!_settings.Enabled || _mainWindow == null || _islandRoot == null)
         {
+            DebugLog($"OnStateTick 提前返回: enabled={_settings.Enabled}, mainWindow={_mainWindow != null}, islandRoot={_islandRoot != null}");
             return;
         }
 
@@ -1477,6 +1502,14 @@ internal sealed class MainWindowStyleInjector : IDisposable
                 RemovePrepareOnClassOverlay(line);
             }
         }
+
+        // 每秒输出一次覆盖层渲染状态，避免刷屏。
+        if (DateTime.UtcNow - _lastOverlayDebugLog > TimeSpan.FromSeconds(1))
+        {
+            _lastOverlayDebugLog = DateTime.UtcNow;
+            var first = _prepareOnClassOverlays.Values.FirstOrDefault();
+            DebugLog($"AdvancePrepareOnClassOverlays: 覆盖层数={_prepareOnClassOverlays.Count}, overlayOpacity={first?.Opacity}, overlayBounds={first?.Bounds.Width}x{first?.Bounds.Height}, hostCount={_prepareOnClassOverlayHosts.Count}");
+        }
     }
 
     private void UpdatePrepareOnClassOverlay(Control line)
@@ -1511,17 +1544,20 @@ internal sealed class MainWindowStyleInjector : IDisposable
                 .FirstOrDefault(x => x.Name == HostContract.GridOverlay);
             if (overlayHost == null)
             {
+                DebugLog($"UpdatePrepareOnClassOverlay: 未找到 GridOverlay（line={line.GetType().Name}）");
                 return;
             }
 
             overlayHost.Children.Add(overlay);
             _prepareOnClassOverlays[line] = overlay;
+            DebugLog($"UpdatePrepareOnClassOverlay: 已添加覆盖层 style={style}, hostOpacity={overlayHost.Opacity}");
             // 宿主模板里 GridOverlay 默认 Opacity=0（仅在宿主播放提醒时点亮）。
             // 预览时不播真实提醒，需强制点亮才能看到自绘覆盖层；移除覆盖层时还原。
             if (IsPreviewingPrepareOnClass() && overlayHost.Opacity == 0)
             {
                 _prepareOnClassOverlayHosts[line] = overlayHost;
                 overlayHost.Opacity = 1;
+                DebugLog($"UpdatePrepareOnClassOverlay: 已强制点亮 GridOverlay");
             }
         }
         else if (overlay.IsFadingOut)
@@ -1797,6 +1833,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
     /// <summary>「预览即将上课」：接下来 5 秒按即将上课状态显示所选样式。</summary>
     public void PreviewPrepareOnClass()
     {
+        DebugLog($"PreviewPrepareOnClass 进入: mainWindow={_mainWindow != null}, islandRoot={_islandRoot != null}, enabled={_settings.Enabled}, style={_settings.PrepareOnClassStyle}, lines={GetMainWindowLines().Length}");
         if (_mainWindow == null)
         {
             Attach();
@@ -1828,6 +1865,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
             {
                 _prepareOnClassOverlayHosts[line] = host;
                 host.Opacity = 1;
+                DebugLog($"UpdatePreviewOverlayHostVisibility: 强制点亮 host");
             }
         }
     }
