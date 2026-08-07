@@ -1,4 +1,7 @@
 using Avalonia.Threading;
+using ClassIsland.Core;
+using ClassIsland.Core.Abstractions.Services;
+using ClassIsland.Shared;
 
 namespace ClassIslandInjector;
 
@@ -34,6 +37,40 @@ internal static class InjectorRuntime
             GetInjector().Attach();
             UpdateSmtcWatcher();
         });
+    }
+
+    /// <summary>
+    /// 启动后延时自动打开指定设置页面（调试用）。
+    /// 延迟等待宿主设置窗口注册完 Uri 导航处理器，避免导航目标不存在。
+    /// </summary>
+    public static void ScheduleStartupNavigation()
+    {
+        DispatcherTimer? timer = null;
+        timer = new DispatcherTimer(TimeSpan.FromMilliseconds(1500), DispatcherPriority.Background, (_, _) =>
+        {
+            timer?.Stop();
+            try
+            {
+                var page = Settings.StartupOpenTarget switch
+                {
+                    1 => "classisland://app/settings",
+                    2 => "classisland://app/settings/classisland.injector",
+                    3 => "classisland://app/settings/classisland.plugins",
+                    _ => null
+                };
+                if (page == null)
+                {
+                    return;
+                }
+
+                IAppHost.TryGetService<IUriNavigationService>()?.Navigate(new Uri(page));
+            }
+            catch
+            {
+                // 忽略：设置窗口未就绪等情况下静默失败。
+            }
+        });
+        timer.Start();
     }
 
     public static void SaveAndApply()

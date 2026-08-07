@@ -28,5 +28,6 @@ public sealed class Plugin : PluginBase
     private static void OnAppStarted(object? sender, EventArgs e)
     {
         InjectorRuntime.Attach();
+        InjectorRuntime.ScheduleStartupNavigation();
     }
 }

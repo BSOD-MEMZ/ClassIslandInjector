@@ -441,6 +441,8 @@ public static class InjectorSettingCatalog
                     "预警详细内容，可留空。"),
                 Spec("FakeWeatherRainRemainingMinutes", "降水提醒", "\uE4DC", SettingValueKind.Int, -180, 180, "0",
                     "距降雨开始分钟数（正值）；负值表示正在下雨、预计该分钟后停；0 为无降水。"),
+                Spec("StartupOpenTarget", "启动时自动打开", "\uE2C8", SettingValueKind.Int, 0, 3, "0",
+                    "调试用：ClassIsland 启动后自动打开（0 不打开 / 1 应用设置 / 2 样式注入器页 / 3 插件页）。"),
             ]
         }
         };

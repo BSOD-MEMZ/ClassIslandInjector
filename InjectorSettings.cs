@@ -210,6 +210,7 @@ public sealed class InjectorSettings
     private string _fakeWeatherAlertTitle = "";
     private string _fakeWeatherAlertDetail = "";
     private int _fakeWeatherRainRemainingMinutes;
+    private int _startupOpenTarget;
     private bool _shadowEnabled;
     private string _shadowColor = "#99000000";
     private double _shadowBlur = 16;
@@ -340,6 +341,7 @@ public sealed class InjectorSettings
     public string FakeWeatherAlertTitle { get => _fakeWeatherAlertTitle; set => Set(ref _fakeWeatherAlertTitle, value.Trim()); }
     public string FakeWeatherAlertDetail { get => _fakeWeatherAlertDetail; set => Set(ref _fakeWeatherAlertDetail, value.Trim()); }
     public int FakeWeatherRainRemainingMinutes { get => _fakeWeatherRainRemainingMinutes; set => Set(ref _fakeWeatherRainRemainingMinutes, Math.Clamp(value, -180, 180)); }
+    public int StartupOpenTarget { get => _startupOpenTarget; set => Set(ref _startupOpenTarget, Math.Clamp(value, 0, 3)); }
     public bool ShadowEnabled { get => _shadowEnabled; set => Set(ref _shadowEnabled, value); }
     public string ShadowColor { get => _shadowColor; set => Set(ref _shadowColor, value.Trim()); }
     public double ShadowBlur { get => _shadowBlur; set => Set(ref _shadowBlur, Math.Clamp(value, 0, 200)); }
@@ -502,6 +504,7 @@ public sealed class InjectorSettings
         FakeWeatherAlertTitle = source.FakeWeatherAlertTitle;
         FakeWeatherAlertDetail = source.FakeWeatherAlertDetail;
         FakeWeatherRainRemainingMinutes = source.FakeWeatherRainRemainingMinutes;
+        StartupOpenTarget = source.StartupOpenTarget;
         ShadowEnabled = source.ShadowEnabled;
         ShadowColor = source.ShadowColor;
         ShadowBlur = source.ShadowBlur;

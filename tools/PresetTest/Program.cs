@@ -166,6 +166,7 @@ Check("全新默认 预警类型=空", "", fresh.FakeWeatherAlertType);
 Check("全新默认 预警等级=空", "", fresh.FakeWeatherAlertLevel);
 Check("全新默认 预警详情=空", "", fresh.FakeWeatherAlertDetail);
 Check("全新默认 降水提醒=0", 0, fresh.FakeWeatherRainRemainingMinutes);
+Check("全新默认 启动打开=不打开", 0, fresh.StartupOpenTarget);
 Check("全新默认 光带角度=30", 30.0, fresh.CountdownLightBandAngle);
 Check("全新默认 扫描尾迹=true", true, fresh.CountdownScanTailEnabled);
 Check("全新默认 RippleOpacity=1", 1.0, fresh.RippleOpacity);

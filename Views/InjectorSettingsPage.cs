@@ -61,6 +61,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly TextBox _fakeWeatherAlertTitle = new() { MinWidth = 260, Watermark = "如：xx市气象台发布暴雨蓝色预警" };
     private readonly TextBox _fakeWeatherAlertDetail = new() { MinWidth = 260, Watermark = "如：预计未来 6 小时……（可留空）" };
     private readonly Spin _fakeWeatherRainRemainingMinutes = Spinner(-180, 180, 1, "0");
+    private readonly ComboBox _startupOpenTarget = Combo(StartupOpenTargets);
     private readonly Spin _albumColorPollingInterval = Spinner(0.5, 120, 0.5);
     private readonly Spin _albumColorTransition = Spinner(0, 10, 0.1);
     private readonly ToggleSwitch _gradient = Toggle();
@@ -277,6 +278,14 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         new(2, "黄色"),
         new(3, "橙色"),
         new(4, "红色"),
+    ];
+
+    private static readonly Choice<int>[] StartupOpenTargets =
+    [
+        new(0, "不打开"),
+        new(1, "ClassIsland 应用设置"),
+        new(2, "应用设置 → 样式注入器"),
+        new(3, "应用设置 → 插件"),
     ];
 
     private static readonly Choice<CarouselAnimationType>[] CarouselAnimationTypes =
@@ -613,6 +622,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(Setting("\uE61D", "删除所有数据", "一键清空插件全部数据并恢复主界面，让插件回到“全新安装”状态，之后可安全卸载。", Button("删除所有数据", DeleteAllData)));
 
         AddSection(panel, "\uE9E4", "关于");
+        panel.Children.Add(Setting("\uE2C8", "启动时自动打开", "调试用：ClassIsland 启动后自动打开指定位置（等待约 1.5 秒让设置窗口就绪）。", _startupOpenTarget));
         var manifest = Plugin.Manifest;
         panel.Children.Add(new SettingsExpander
         {
@@ -908,7 +918,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                      _fakeWeatherFeelsLike, _fakeWeatherHumidity, _fakeWeatherPressure, _fakeWeatherVisibility,
                      _fakeWeatherWindDirection, _fakeWeatherWindScale, _fakeWeatherAqi, _fakeWeatherAlertIcon,
                      _fakeWeatherAlertType, _fakeWeatherAlertLevel, _fakeWeatherAlertTitle, _fakeWeatherAlertDetail,
-                     _fakeWeatherRainRemainingMinutes,
+                     _fakeWeatherRainRemainingMinutes, _startupOpenTarget,
                      _gradient, _gradientEndColor, _gradientDirection, _backgroundTextureType, _backgroundTextureColor, _backgroundTextureSize,
                      _backgroundTextureSpectrumSensitivity, _backgroundTextureSpectrumBars, _backgroundTextureSpectrumMirrored,
                      _backgroundTextureSpectrumAutoWidth,
@@ -1236,6 +1246,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _fakeWeatherAlertTitle.Text = settings.FakeWeatherAlertTitle;
         _fakeWeatherAlertDetail.Text = settings.FakeWeatherAlertDetail;
         _fakeWeatherRainRemainingMinutes.DoubleValue = settings.FakeWeatherRainRemainingMinutes;
+        Select(_startupOpenTarget, StartupOpenTargets, settings.StartupOpenTarget);
         _albumColorPollingInterval.DoubleValue = settings.AlbumColorPollingIntervalSeconds;
         _albumColorTransition.DoubleValue = settings.AlbumColorTransitionSeconds;
         _gradient.IsChecked = settings.GradientEnabled;
@@ -1383,6 +1394,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.FakeWeatherAlertTitle = _fakeWeatherAlertTitle.Text ?? string.Empty;
             settings.FakeWeatherAlertDetail = _fakeWeatherAlertDetail.Text ?? string.Empty;
             settings.FakeWeatherRainRemainingMinutes = (int)Math.Round(_fakeWeatherRainRemainingMinutes.DoubleValue);
+            settings.StartupOpenTarget = Selected(_startupOpenTarget, 0);
             settings.AlbumColorPollingIntervalSeconds = _albumColorPollingInterval.DoubleValue;
             settings.AlbumColorTransitionSeconds = _albumColorTransition.DoubleValue;
             settings.GradientEnabled = _gradient.IsChecked == true;
