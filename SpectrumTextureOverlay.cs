@@ -73,8 +73,14 @@ public sealed class SpectrumTextureOverlay : Control
             var level = Math.Clamp(
                 SampleLevel(levels, _capture.BarCount, i % bars, bars) * (float)_sensitivity,
                 0f, 1f);
+            // 静音/无声音时跳过绘制，避免底部残留细小柱条。
+            if (level < 0.01f)
+            {
+                continue;
+            }
+
             var isBottom = _mirrored && i >= bars;
-            var height = Math.Max(1.5, level * h * 0.9);
+            var height = level * h * 0.9;
             var x = (i % bars) * slot + (slot - barWidth) / 2;
             // 常规：柱条从底部向上生长，贴齐宿主底边；镜像时上半排从顶部向下。
             var y = isBottom ? 0 : h - height;

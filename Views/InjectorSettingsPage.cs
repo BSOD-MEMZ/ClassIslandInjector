@@ -41,6 +41,26 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly ToggleSwitch _dynamicBorderColor = Toggle();
     private readonly ToggleSwitch _dynamicShadowColor = Toggle();
     private readonly ToggleSwitch _revertColorsWhenPaused = Toggle();
+    private readonly ToggleSwitch _dynamicThemeColor = Toggle();
+    private readonly ToggleSwitch _mouseHoverKeepVisible = Toggle();
+    private readonly ToggleSwitch _clickEffectEnabled = Toggle();
+    private readonly ComboBox _clickEffectType = Combo(ClickEffectTypes);
+    private readonly ToggleSwitch _fakeWeatherEnabled = Toggle();
+    private readonly ComboBox _fakeWeatherCode = Combo(FakeWeatherCodes);
+    private readonly Spin _fakeWeatherTemperature = Spinner(-60, 60, 1, "0");
+    private readonly Spin _fakeWeatherFeelsLike = Spinner(-60, 60, 1, "0");
+    private readonly Spin _fakeWeatherHumidity = Spinner(0, 100, 1, "0");
+    private readonly Spin _fakeWeatherPressure = Spinner(800, 1200, 1, "0");
+    private readonly Spin _fakeWeatherVisibility = Spinner(0, 100, 0.5, "0.##");
+    private readonly TextBox _fakeWeatherWindDirection = new() { MinWidth = 160, Watermark = "如：东风" };
+    private readonly TextBox _fakeWeatherWindScale = new() { MinWidth = 120, Watermark = "如：2级" };
+    private readonly Spin _fakeWeatherAqi = Spinner(0, 500, 1, "0");
+    private readonly ComboBox _fakeWeatherAlertIcon = Combo(FakeWeatherAlertIcons);
+    private readonly TextBox _fakeWeatherAlertType = new() { MinWidth = 160, Watermark = "如：暴雨" };
+    private readonly TextBox _fakeWeatherAlertLevel = new() { MinWidth = 160, Watermark = "如：蓝色预警" };
+    private readonly TextBox _fakeWeatherAlertTitle = new() { MinWidth = 260, Watermark = "如：xx市气象台发布暴雨蓝色预警" };
+    private readonly TextBox _fakeWeatherAlertDetail = new() { MinWidth = 260, Watermark = "如：预计未来 6 小时……（可留空）" };
+    private readonly Spin _fakeWeatherRainRemainingMinutes = Spinner(-180, 180, 1, "0");
     private readonly Spin _albumColorPollingInterval = Spinner(0.5, 120, 0.5);
     private readonly Spin _albumColorTransition = Spinner(0, 10, 0.1);
     private readonly ToggleSwitch _gradient = Toggle();
@@ -49,7 +69,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly ComboBox _backgroundTextureType = Combo(BackgroundTextures);
     private readonly ColorPicker _backgroundTextureColor = ColorPicker();
     private readonly Spin _backgroundTextureSize = Spinner(8, 80, 2, "0");
-    private readonly Slider _backgroundTextureSpectrumSensitivity = Slider(0.1, 10, 0.05);
+    private readonly Slider _backgroundTextureSpectrumSensitivity = Slider(0.1, 3, 0.05);
     private readonly Spin _backgroundTextureSpectrumBars = Spinner(4, 64, 1, "0");
     private readonly ToggleSwitch _backgroundTextureSpectrumMirrored = Toggle();
     private readonly ToggleSwitch _backgroundTextureSpectrumAutoWidth = Toggle();
@@ -117,6 +137,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly Spin _countdownScanSpeed = Spinner(0.1, 8, 0.1);
     private readonly ComboBox _countdownScanDirection = Combo(ScanDirections);
     private readonly ToggleSwitch _countdownScanTailEnabled = Toggle();
+    private readonly ColorPicker _countdownLightBandColor = ColorPicker();
+    private readonly Spin _countdownLightBandThickness = Spinner(0.02, 0.5, 0.01, "0.##");
+    private readonly Spin _countdownLightBandAngle = Spinner(-90, 90, 1, "0");
+    private readonly Spin _countdownLightBandSpeed = Spinner(0.1, 8, 0.1);
     private readonly ToggleSwitch _prepareWarningEnabled = Toggle();
     private readonly ColorPicker _prepareWarningColor = ColorPicker();
     private readonly Spin _prepareWarningTriggerSeconds = Spinner(5, 600, 5, "0");
@@ -223,6 +247,38 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         new(RippleType.Cinematic, "屏幕涟漪（高级）"),
     ];
 
+    private static readonly Choice<ClickEffectType>[] ClickEffectTypes =
+    [
+        new(ClickEffectType.Ring, "扩散圆环"),
+        new(ClickEffectType.Bounce, "轻微跳跃"),
+    ];
+
+    private static readonly Choice<int>[] FakeWeatherCodes =
+    [
+        new(0, "晴"),
+        new(1, "多云"),
+        new(2, "阴"),
+        new(3, "阵雨"),
+        new(4, "雷阵雨"),
+        new(7, "小雨"),
+        new(8, "中雨"),
+        new(9, "大雨"),
+        new(14, "小雪"),
+        new(15, "中雪"),
+        new(18, "雾"),
+        new(53, "霾"),
+        new(99, "未知"),
+    ];
+
+    private static readonly Choice<int>[] FakeWeatherAlertIcons =
+    [
+        new(0, "无"),
+        new(1, "蓝色"),
+        new(2, "黄色"),
+        new(3, "橙色"),
+        new(4, "红色"),
+    ];
+
     private static readonly Choice<CarouselAnimationType>[] CarouselAnimationTypes =
     [
         new(CarouselAnimationType.SlideUp, "上翻"),
@@ -237,6 +293,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         new(PrepareOnClassStyle.Arrows, "箭头"),
         new(PrepareOnClassStyle.PulseRing, "扩散光环"),
         new(PrepareOnClassStyle.Scanline, "扫描线"),
+        new(PrepareOnClassStyle.LightBand, "光带"),
     ];
 
     private static readonly Choice<ScanlineDirection>[] ScanDirections =
@@ -325,6 +382,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("渐变终止色", "线性渐变背景的结束颜色。", _gradientEndColor, _gradient));
         EnabledWhenManualColor(backgroundColorItem, _customBackground, _dynamicBackgroundColor);
         panel.Children.Add(backgroundGroup);
+        var textureSizeItem = Item("纹理大小", "单个纹理单元的大小（像素）；动态频谱不使用该项。", _backgroundTextureSize);
         var spectrumSensitivityItem = Item("频谱灵敏度", "动态频谱柱条的放大倍率（越大跳动越剧烈）。", _backgroundTextureSpectrumSensitivity);
         var spectrumBarsItem = Item("频谱柱条数", "主界面约 400 像素宽时的柱条数；主界面变宽时柱条自动增多、变窄时自动减少，柱条宽度保持恒定。", _backgroundTextureSpectrumBars);
         var spectrumMirroredItem = Item("双面对称", "同时向上和向下绘制镜像频谱。", _backgroundTextureSpectrumMirrored);
@@ -332,12 +390,14 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(SwitchableGroup("\uE92B", "底纹纹理", "在底色之上叠加可平铺的纹理图案；选择「动态频谱」可实时展示系统声音输出的频谱。", _backgroundTextureEnabled,
             Item("纹理图案", "选择填充纹理的类型。", _backgroundTextureType),
             Item("纹理颜色", "支持透明度的纹理线条颜色。", _backgroundTextureColor),
-            Item("纹理大小", "单个纹理单元的大小（像素）；动态频谱不使用该项。", _backgroundTextureSize),
+            textureSizeItem,
             spectrumSensitivityItem,
             spectrumBarsItem,
             spectrumMirroredItem,
             spectrumAutoWidthItem));
         AutoSelectOnEnable(_backgroundTextureEnabled, _backgroundTextureType, BackgroundTextures);
+        // 动态频谱不使用纹理单元大小：选中频谱时禁用该项。
+        EnabledWhenNotAny(textureSizeItem, _backgroundTextureType, _backgroundTextureEnabled, BackgroundTexture.Spectrum);
         VisibleWhen(spectrumSensitivityItem, _backgroundTextureType, BackgroundTexture.Spectrum);
         VisibleWhen(spectrumBarsItem, _backgroundTextureType, BackgroundTexture.Spectrum);
         VisibleWhen(spectrumMirroredItem, _backgroundTextureType, BackgroundTexture.Spectrum);
@@ -359,6 +419,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(wallpaperGroup);
         panel.Children.Add(Group("\uE51E", "动态取色", "从音乐软件或浏览器获取 SMTC 信息，并进行莫奈取色",
             Item("暂停/停止时恢复原色", "媒体暂停或停止播放时，从专辑取色平滑恢复为原始颜色，恢复播放后再跟随专辑。", _revertColorsWhenPaused),
+            Item("动态修改主题色", "从当前专辑封面取色并动态修改 ClassIsland 全局主题强调色（作用于整个应用）；暂停/停止时若开启「暂停恢复原色」则恢复为宿主配置的主题色。", _dynamicThemeColor),
             Item("兜底刷新间隔", "事件驱动失效时的兜底刷新间隔（秒）。", _albumColorPollingInterval),
             Item("颜色过渡时长", "专辑颜色变化时，背景、边框、阴影平滑过渡到新颜色的时长（秒），0 为立即切换。", _albumColorTransition),
             Item("这是什么？", "了解 SMTC 与动态取色是如何工作的。", Button("查看工作原理", ShowSmtcExplanation))));
@@ -468,6 +529,11 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("扫描颜色", "支持透明度的扫描线颜色。", _countdownScanColor),
             Item("扫描线宽", "扫描线的粗细。", _countdownScanThickness),
             Item("扫描速度", "每秒扫描次数。", _countdownScanSpeed));
+        var lightBandGroup = Group("\uE989", "光带", "一条柔和的、非线性运动的光带扫过主界面，如同光照反光。",
+            Item("光带颜色", "支持透明度的光带颜色。", _countdownLightBandColor),
+            Item("光带粗细", "光带厚度（相对主界面宽高较大者的比例）。", _countdownLightBandThickness),
+            Item("光带角度", "光带的倾斜角度（度）。", _countdownLightBandAngle),
+            Item("扫过速度", "每秒扫过主界面的次数。", _countdownLightBandSpeed));
         var warningGroup = SwitchableGroup("\uE024", "即将上课警告", "注意：本效果较为恐怖，且会阻断鼠标和触摸输入，请谨慎使用！", _prepareWarningEnabled,
             Item("警告颜色", "支持透明度的警告内发光颜色。", _prepareWarningColor),
             Item("提前触发秒数", "距上课剩余秒数小于该值时显示警告。", _prepareWarningTriggerSeconds),
@@ -478,10 +544,38 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         VisibleWhenEnabledAnd(arrowGroup, _prepareOnClassEnabled, _prepareOnClassStyle, PrepareOnClassStyle.Arrows);
         VisibleWhenEnabledAnd(pulseGroup, _prepareOnClassEnabled, _prepareOnClassStyle, PrepareOnClassStyle.PulseRing);
         VisibleWhenEnabledAnd(scanGroup, _prepareOnClassEnabled, _prepareOnClassStyle, PrepareOnClassStyle.Scanline);
+        VisibleWhenEnabledAnd(lightBandGroup, _prepareOnClassEnabled, _prepareOnClassStyle, PrepareOnClassStyle.LightBand);
         panel.Children.Add(arrowGroup);
         panel.Children.Add(pulseGroup);
         panel.Children.Add(scanGroup);
+        panel.Children.Add(lightBandGroup);
         panel.Children.Add(warningGroup);
+
+        AddSection(panel, "\uE5C1", "交互");
+        panel.Children.Add(Setting("\uE5C1", "鼠标悬停保持可见", "开启后鼠标移入主界面时主界面不会自动隐藏（覆写宿主「鼠标移入淡出」设置，禁用本插件时恢复）。", _mouseHoverKeepVisible));
+        var clickEffectGroup = SwitchableGroup("\uE5C1", "主界面点击特效", "点击主界面时在点击位置产生轻微的特效反馈（颜色/时长/粗细复用提醒 Ripple 的对应设置）。", _clickEffectEnabled,
+            Item("特效类型", "选择点击特效的样式。", _clickEffectType));
+        AutoSelectOnEnable(_clickEffectEnabled, _clickEffectType, ClickEffectTypes);
+        panel.Children.Add(clickEffectGroup);
+
+        AddSection(panel, "\uE4DC", "虚假天气");
+        panel.Children.Add(SwitchableGroup("\uE4DC", "虚假天气", "向 ClassIsland 注入自定义天气数据（天气组件、天气通知与相关规则都会立即跟随变化）。", _fakeWeatherEnabled,
+            Item("天气类型", "选择要显示的天气。", _fakeWeatherCode),
+            Item("温度", "虚假天气的温度（℃）。", _fakeWeatherTemperature),
+            Item("体感温度", "体感温度（℃）。", _fakeWeatherFeelsLike),
+            Item("湿度", "相对湿度（%）。", _fakeWeatherHumidity),
+            Item("气压", "大气压（hPa）。", _fakeWeatherPressure),
+            Item("能见度", "能见度（km）。", _fakeWeatherVisibility),
+            Item("风向", "如「东风」「西北风」。", _fakeWeatherWindDirection),
+            Item("风力", "如「2级」「3-4级」。", _fakeWeatherWindScale),
+            Item("空气质量 AQI", "AQI 数值（0-500），越高污染越重。", _fakeWeatherAqi),
+            Item("预警图标", "预警图标等级；选择后会显示「图标+类型」胶囊，无则不显示图标。", _fakeWeatherAlertIcon),
+            Item("预警类型", "预警胶囊里显示的类型文字，如「暴雨」。", _fakeWeatherAlertType),
+            Item("预警等级", "如「蓝色预警」，可留空。", _fakeWeatherAlertLevel),
+            Item("预警标题", "用于天气规则匹配的完整标题，如「xx市气象台发布暴雨蓝色预警」。", _fakeWeatherAlertTitle),
+            Item("预警详情", "预警详细内容，可留空。", _fakeWeatherAlertDetail),
+            Item("降水提醒", "距降雨开始分钟数（正值）；负值表示正在下雨、预计该分钟后停；0 为无降水。", _fakeWeatherRainRemainingMinutes)));
+        AutoSelectOnEnable(_fakeWeatherEnabled, _fakeWeatherCode, FakeWeatherCodes);
 
         AddSection(panel, "\uF263", "高级样式表");
         panel.Children.Add(Setting("\uF263", "覆盖样式表路径", "填写 .axaml 样式表的完整路径。", _styleSheetPath));
@@ -808,7 +902,13 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                      _enabled, _opacity, _rotation, _offsetX, _offsetY, _cornerRadius,
                      _animationEnabled, _animationMode, _animationAmount, _animationPeriod,
                      _customBackground, _backgroundColor, _dynamicBackgroundColor, _dynamicBorderColor, _dynamicShadowColor,
-                     _revertColorsWhenPaused, _albumColorPollingInterval, _albumColorTransition,
+                     _revertColorsWhenPaused, _dynamicThemeColor, _albumColorPollingInterval, _albumColorTransition,
+                     _mouseHoverKeepVisible, _clickEffectEnabled, _clickEffectType,
+                     _fakeWeatherEnabled, _fakeWeatherCode, _fakeWeatherTemperature,
+                     _fakeWeatherFeelsLike, _fakeWeatherHumidity, _fakeWeatherPressure, _fakeWeatherVisibility,
+                     _fakeWeatherWindDirection, _fakeWeatherWindScale, _fakeWeatherAqi, _fakeWeatherAlertIcon,
+                     _fakeWeatherAlertType, _fakeWeatherAlertLevel, _fakeWeatherAlertTitle, _fakeWeatherAlertDetail,
+                     _fakeWeatherRainRemainingMinutes,
                      _gradient, _gradientEndColor, _gradientDirection, _backgroundTextureType, _backgroundTextureColor, _backgroundTextureSize,
                      _backgroundTextureSpectrumSensitivity, _backgroundTextureSpectrumBars, _backgroundTextureSpectrumMirrored,
                      _backgroundTextureSpectrumAutoWidth,
@@ -828,6 +928,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                      _countdownArrowGroupSpacing, _countdownArrowSpeed, _countdownArrowThickness,
                      _countdownPulseColor, _countdownPulseThickness, _countdownPulseSpeed, _countdownPulseMaxRadius,
                      _countdownScanColor, _countdownScanThickness, _countdownScanSpeed, _countdownScanDirection, _countdownScanTailEnabled,
+                     _countdownLightBandColor, _countdownLightBandThickness, _countdownLightBandAngle, _countdownLightBandSpeed,
                      _prepareWarningEnabled, _prepareWarningColor, _prepareWarningTriggerSeconds, _prepareWarningFlashSpeed, _prepareWarningFlashAmount,
                      _prepareWarningFrameThickness, _prepareWarningOpacity,
                      _styleSheetPath, _watchStyleSheet
@@ -1115,6 +1216,26 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _dynamicBorderColor.IsChecked = settings.DynamicBorderColorEnabled;
         _dynamicShadowColor.IsChecked = settings.DynamicShadowColorEnabled;
         _revertColorsWhenPaused.IsChecked = settings.RevertColorsWhenPaused;
+        _dynamicThemeColor.IsChecked = settings.DynamicThemeColorEnabled;
+        _mouseHoverKeepVisible.IsChecked = settings.MouseHoverKeepVisible;
+        _clickEffectEnabled.IsChecked = settings.ClickEffectEnabled;
+        Select(_clickEffectType, ClickEffectTypes, settings.ClickEffectType);
+        _fakeWeatherEnabled.IsChecked = settings.FakeWeatherEnabled;
+        Select(_fakeWeatherCode, FakeWeatherCodes, settings.FakeWeatherCode);
+        _fakeWeatherTemperature.DoubleValue = settings.FakeWeatherTemperature;
+        _fakeWeatherFeelsLike.DoubleValue = settings.FakeWeatherFeelsLike;
+        _fakeWeatherHumidity.DoubleValue = settings.FakeWeatherHumidity;
+        _fakeWeatherPressure.DoubleValue = settings.FakeWeatherPressure;
+        _fakeWeatherVisibility.DoubleValue = settings.FakeWeatherVisibility;
+        _fakeWeatherWindDirection.Text = settings.FakeWeatherWindDirection;
+        _fakeWeatherWindScale.Text = settings.FakeWeatherWindScale;
+        _fakeWeatherAqi.DoubleValue = settings.FakeWeatherAqi;
+        Select(_fakeWeatherAlertIcon, FakeWeatherAlertIcons, settings.FakeWeatherAlertIcon);
+        _fakeWeatherAlertType.Text = settings.FakeWeatherAlertType;
+        _fakeWeatherAlertLevel.Text = settings.FakeWeatherAlertLevel;
+        _fakeWeatherAlertTitle.Text = settings.FakeWeatherAlertTitle;
+        _fakeWeatherAlertDetail.Text = settings.FakeWeatherAlertDetail;
+        _fakeWeatherRainRemainingMinutes.DoubleValue = settings.FakeWeatherRainRemainingMinutes;
         _albumColorPollingInterval.DoubleValue = settings.AlbumColorPollingIntervalSeconds;
         _albumColorTransition.DoubleValue = settings.AlbumColorTransitionSeconds;
         _gradient.IsChecked = settings.GradientEnabled;
@@ -1193,6 +1314,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _countdownScanSpeed.DoubleValue = settings.CountdownScanSpeed;
         Select(_countdownScanDirection, ScanDirections, settings.CountdownScanDirection);
         _countdownScanTailEnabled.IsChecked = settings.CountdownScanTailEnabled;
+        _countdownLightBandColor.Color = ReadColor(settings.CountdownLightBandColor, Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF));
+        _countdownLightBandThickness.DoubleValue = settings.CountdownLightBandThickness;
+        _countdownLightBandAngle.DoubleValue = settings.CountdownLightBandAngle;
+        _countdownLightBandSpeed.DoubleValue = settings.CountdownLightBandSpeed;
         _prepareWarningEnabled.IsChecked = settings.PrepareWarningEnabled;
         _prepareWarningColor.Color = ReadColor(settings.PrepareWarningColor, Color.FromArgb(0x66, 0xFF, 0, 0));
         _prepareWarningTriggerSeconds.DoubleValue = settings.PrepareWarningTriggerSeconds;
@@ -1238,6 +1363,26 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.DynamicBorderColorEnabled = _dynamicBorderColor.IsChecked == true;
             settings.DynamicShadowColorEnabled = _dynamicShadowColor.IsChecked == true;
             settings.RevertColorsWhenPaused = _revertColorsWhenPaused.IsChecked == true;
+            settings.DynamicThemeColorEnabled = _dynamicThemeColor.IsChecked == true;
+            settings.MouseHoverKeepVisible = _mouseHoverKeepVisible.IsChecked == true;
+            settings.ClickEffectEnabled = _clickEffectEnabled.IsChecked == true;
+            settings.ClickEffectType = Selected(_clickEffectType, ClickEffectType.Ring);
+            settings.FakeWeatherEnabled = _fakeWeatherEnabled.IsChecked == true;
+            settings.FakeWeatherCode = Selected(_fakeWeatherCode, 0);
+            settings.FakeWeatherTemperature = _fakeWeatherTemperature.DoubleValue;
+            settings.FakeWeatherFeelsLike = _fakeWeatherFeelsLike.DoubleValue;
+            settings.FakeWeatherHumidity = _fakeWeatherHumidity.DoubleValue;
+            settings.FakeWeatherPressure = _fakeWeatherPressure.DoubleValue;
+            settings.FakeWeatherVisibility = _fakeWeatherVisibility.DoubleValue;
+            settings.FakeWeatherWindDirection = _fakeWeatherWindDirection.Text ?? string.Empty;
+            settings.FakeWeatherWindScale = _fakeWeatherWindScale.Text ?? string.Empty;
+            settings.FakeWeatherAqi = _fakeWeatherAqi.DoubleValue;
+            settings.FakeWeatherAlertIcon = Selected(_fakeWeatherAlertIcon, 0);
+            settings.FakeWeatherAlertType = _fakeWeatherAlertType.Text ?? string.Empty;
+            settings.FakeWeatherAlertLevel = _fakeWeatherAlertLevel.Text ?? string.Empty;
+            settings.FakeWeatherAlertTitle = _fakeWeatherAlertTitle.Text ?? string.Empty;
+            settings.FakeWeatherAlertDetail = _fakeWeatherAlertDetail.Text ?? string.Empty;
+            settings.FakeWeatherRainRemainingMinutes = (int)Math.Round(_fakeWeatherRainRemainingMinutes.DoubleValue);
             settings.AlbumColorPollingIntervalSeconds = _albumColorPollingInterval.DoubleValue;
             settings.AlbumColorTransitionSeconds = _albumColorTransition.DoubleValue;
             settings.GradientEnabled = _gradient.IsChecked == true;
@@ -1322,6 +1467,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.CountdownScanSpeed = _countdownScanSpeed.DoubleValue;
             settings.CountdownScanDirection = Selected(_countdownScanDirection, ScanlineDirection.Horizontal);
             settings.CountdownScanTailEnabled = _countdownScanTailEnabled.IsChecked == true;
+            settings.CountdownLightBandColor = _countdownLightBandColor.Color.ToString();
+            settings.CountdownLightBandThickness = _countdownLightBandThickness.DoubleValue;
+            settings.CountdownLightBandAngle = _countdownLightBandAngle.DoubleValue;
+            settings.CountdownLightBandSpeed = _countdownLightBandSpeed.DoubleValue;
             settings.PrepareWarningEnabled = _prepareWarningEnabled.IsChecked == true;
             settings.PrepareWarningColor = _prepareWarningColor.Color.ToString();
             settings.PrepareWarningTriggerSeconds = _prepareWarningTriggerSeconds.DoubleValue;

@@ -65,6 +65,18 @@ public enum RippleType
 }
 
 /// <summary>
+/// 主界面点击特效类型（插件自绘，不复用提醒 Ripple）。
+/// </summary>
+public enum ClickEffectType
+{
+    None,
+    /// <summary>自绘软边扩散圆环。</summary>
+    Ring,
+    /// <summary>主界面轻微跳跃回弹。</summary>
+    Bounce
+}
+
+/// <summary>
 /// 「即将上课」倒计时期间显示的特效样式。
 /// </summary>
 public enum PrepareOnClassStyle
@@ -72,7 +84,9 @@ public enum PrepareOnClassStyle
     None,
     Arrows,
     PulseRing,
-    Scanline
+    Scanline,
+    /// <summary>柔和的非线性运动光带扫过主界面，如光照反光。</summary>
+    LightBand
 }
 
 /// <summary>
@@ -174,6 +188,28 @@ public sealed class InjectorSettings
     private int _backgroundTextureSpectrumBars = 32;
     private bool _backgroundTextureSpectrumMirrored;
     private bool _backgroundTextureSpectrumAutoWidth = true;
+    private bool _dynamicThemeColorEnabled;
+    // 交互
+    private bool _mouseHoverKeepVisible;
+    private bool _clickEffectEnabled;
+    private ClickEffectType _clickEffectType = ClickEffectType.Ring;
+    // 虚假天气
+    private bool _fakeWeatherEnabled;
+    private int _fakeWeatherCode;
+    private double _fakeWeatherTemperature = 25;
+    private double _fakeWeatherFeelsLike = 25;
+    private double _fakeWeatherHumidity = 40;
+    private double _fakeWeatherPressure = 1013;
+    private double _fakeWeatherVisibility = 10;
+    private string _fakeWeatherWindDirection = "东风";
+    private string _fakeWeatherWindScale = "2级";
+    private double _fakeWeatherAqi = 50;
+    private int _fakeWeatherAlertIcon;
+    private string _fakeWeatherAlertType = "";
+    private string _fakeWeatherAlertLevel = "";
+    private string _fakeWeatherAlertTitle = "";
+    private string _fakeWeatherAlertDetail = "";
+    private int _fakeWeatherRainRemainingMinutes;
     private bool _shadowEnabled;
     private string _shadowColor = "#99000000";
     private double _shadowBlur = 16;
@@ -240,6 +276,10 @@ public sealed class InjectorSettings
     private double _countdownScanSpeed = 1;
     private ScanlineDirection _countdownScanDirection = ScanlineDirection.Horizontal;
     private bool _countdownScanTailEnabled = true;
+    private string _countdownLightBandColor = "#33FFFFFF";
+    private double _countdownLightBandThickness = 0.12;
+    private double _countdownLightBandAngle = 30;
+    private double _countdownLightBandSpeed = 1;
     private bool _prepareWarningEnabled;
     private string _prepareWarningColor = "#66FF0000";
     private double _prepareWarningTriggerSeconds = 30;
@@ -276,10 +316,30 @@ public sealed class InjectorSettings
     public BackgroundTexture BackgroundTextureType { get => _backgroundTextureType; set => Set(ref _backgroundTextureType, value); }
     public string BackgroundTextureColor { get => _backgroundTextureColor; set => Set(ref _backgroundTextureColor, value.Trim()); }
     public double BackgroundTextureSize { get => _backgroundTextureSize; set => Set(ref _backgroundTextureSize, Math.Clamp(value, 8, 80)); }
-    public double BackgroundTextureSpectrumSensitivity { get => _backgroundTextureSpectrumSensitivity; set => Set(ref _backgroundTextureSpectrumSensitivity, Math.Clamp(value, 0.1, 10)); }
+    public double BackgroundTextureSpectrumSensitivity { get => _backgroundTextureSpectrumSensitivity; set => Set(ref _backgroundTextureSpectrumSensitivity, Math.Clamp(value, 0.1, 3)); }
     public int BackgroundTextureSpectrumBars { get => _backgroundTextureSpectrumBars; set => Set(ref _backgroundTextureSpectrumBars, Math.Clamp(value, 4, 64)); }
     public bool BackgroundTextureSpectrumMirrored { get => _backgroundTextureSpectrumMirrored; set => Set(ref _backgroundTextureSpectrumMirrored, value); }
     public bool BackgroundTextureSpectrumAutoWidth { get => _backgroundTextureSpectrumAutoWidth; set => Set(ref _backgroundTextureSpectrumAutoWidth, value); }
+    public bool DynamicThemeColorEnabled { get => _dynamicThemeColorEnabled; set => Set(ref _dynamicThemeColorEnabled, value); }
+    public bool MouseHoverKeepVisible { get => _mouseHoverKeepVisible; set => Set(ref _mouseHoverKeepVisible, value); }
+    public bool ClickEffectEnabled { get => _clickEffectEnabled; set => Set(ref _clickEffectEnabled, value); }
+    public ClickEffectType ClickEffectType { get => _clickEffectType; set => Set(ref _clickEffectType, value); }
+    public bool FakeWeatherEnabled { get => _fakeWeatherEnabled; set => Set(ref _fakeWeatherEnabled, value); }
+    public int FakeWeatherCode { get => _fakeWeatherCode; set => Set(ref _fakeWeatherCode, Math.Clamp(value, 0, 999)); }
+    public double FakeWeatherTemperature { get => _fakeWeatherTemperature; set => Set(ref _fakeWeatherTemperature, Math.Clamp(value, -60, 60)); }
+    public double FakeWeatherFeelsLike { get => _fakeWeatherFeelsLike; set => Set(ref _fakeWeatherFeelsLike, Math.Clamp(value, -60, 60)); }
+    public double FakeWeatherHumidity { get => _fakeWeatherHumidity; set => Set(ref _fakeWeatherHumidity, Math.Clamp(value, 0, 100)); }
+    public double FakeWeatherPressure { get => _fakeWeatherPressure; set => Set(ref _fakeWeatherPressure, Math.Clamp(value, 800, 1200)); }
+    public double FakeWeatherVisibility { get => _fakeWeatherVisibility; set => Set(ref _fakeWeatherVisibility, Math.Clamp(value, 0, 100)); }
+    public string FakeWeatherWindDirection { get => _fakeWeatherWindDirection; set => Set(ref _fakeWeatherWindDirection, value.Trim()); }
+    public string FakeWeatherWindScale { get => _fakeWeatherWindScale; set => Set(ref _fakeWeatherWindScale, value.Trim()); }
+    public double FakeWeatherAqi { get => _fakeWeatherAqi; set => Set(ref _fakeWeatherAqi, Math.Clamp(value, 0, 500)); }
+    public int FakeWeatherAlertIcon { get => _fakeWeatherAlertIcon; set => Set(ref _fakeWeatherAlertIcon, Math.Clamp(value, 0, 4)); }
+    public string FakeWeatherAlertType { get => _fakeWeatherAlertType; set => Set(ref _fakeWeatherAlertType, value.Trim()); }
+    public string FakeWeatherAlertLevel { get => _fakeWeatherAlertLevel; set => Set(ref _fakeWeatherAlertLevel, value.Trim()); }
+    public string FakeWeatherAlertTitle { get => _fakeWeatherAlertTitle; set => Set(ref _fakeWeatherAlertTitle, value.Trim()); }
+    public string FakeWeatherAlertDetail { get => _fakeWeatherAlertDetail; set => Set(ref _fakeWeatherAlertDetail, value.Trim()); }
+    public int FakeWeatherRainRemainingMinutes { get => _fakeWeatherRainRemainingMinutes; set => Set(ref _fakeWeatherRainRemainingMinutes, Math.Clamp(value, -180, 180)); }
     public bool ShadowEnabled { get => _shadowEnabled; set => Set(ref _shadowEnabled, value); }
     public string ShadowColor { get => _shadowColor; set => Set(ref _shadowColor, value.Trim()); }
     public double ShadowBlur { get => _shadowBlur; set => Set(ref _shadowBlur, Math.Clamp(value, 0, 200)); }
@@ -346,6 +406,10 @@ public sealed class InjectorSettings
     public double CountdownScanSpeed { get => _countdownScanSpeed; set => Set(ref _countdownScanSpeed, Math.Clamp(value, 0.1, 8)); }
     public ScanlineDirection CountdownScanDirection { get => _countdownScanDirection; set => Set(ref _countdownScanDirection, value); }
     public bool CountdownScanTailEnabled { get => _countdownScanTailEnabled; set => Set(ref _countdownScanTailEnabled, value); }
+    public string CountdownLightBandColor { get => _countdownLightBandColor; set => Set(ref _countdownLightBandColor, value.Trim()); }
+    public double CountdownLightBandThickness { get => _countdownLightBandThickness; set => Set(ref _countdownLightBandThickness, Math.Clamp(value, 0.02, 0.5)); }
+    public double CountdownLightBandAngle { get => _countdownLightBandAngle; set => Set(ref _countdownLightBandAngle, Math.Clamp(value, -90, 90)); }
+    public double CountdownLightBandSpeed { get => _countdownLightBandSpeed; set => Set(ref _countdownLightBandSpeed, Math.Clamp(value, 0.1, 8)); }
     public bool PrepareWarningEnabled { get => _prepareWarningEnabled; set => Set(ref _prepareWarningEnabled, value); }
     public string PrepareWarningColor { get => _prepareWarningColor; set => Set(ref _prepareWarningColor, value.Trim()); }
     public double PrepareWarningTriggerSeconds { get => _prepareWarningTriggerSeconds; set => Set(ref _prepareWarningTriggerSeconds, Math.Clamp(value, 5, 600)); }
@@ -418,6 +482,26 @@ public sealed class InjectorSettings
         BackgroundTextureSpectrumBars = source.BackgroundTextureSpectrumBars;
         BackgroundTextureSpectrumMirrored = source.BackgroundTextureSpectrumMirrored;
         BackgroundTextureSpectrumAutoWidth = source.BackgroundTextureSpectrumAutoWidth;
+        DynamicThemeColorEnabled = source.DynamicThemeColorEnabled;
+        MouseHoverKeepVisible = source.MouseHoverKeepVisible;
+        ClickEffectEnabled = source.ClickEffectEnabled;
+        ClickEffectType = source.ClickEffectType;
+        FakeWeatherEnabled = source.FakeWeatherEnabled;
+        FakeWeatherCode = source.FakeWeatherCode;
+        FakeWeatherTemperature = source.FakeWeatherTemperature;
+        FakeWeatherFeelsLike = source.FakeWeatherFeelsLike;
+        FakeWeatherHumidity = source.FakeWeatherHumidity;
+        FakeWeatherPressure = source.FakeWeatherPressure;
+        FakeWeatherVisibility = source.FakeWeatherVisibility;
+        FakeWeatherWindDirection = source.FakeWeatherWindDirection;
+        FakeWeatherWindScale = source.FakeWeatherWindScale;
+        FakeWeatherAqi = source.FakeWeatherAqi;
+        FakeWeatherAlertIcon = source.FakeWeatherAlertIcon;
+        FakeWeatherAlertType = source.FakeWeatherAlertType;
+        FakeWeatherAlertLevel = source.FakeWeatherAlertLevel;
+        FakeWeatherAlertTitle = source.FakeWeatherAlertTitle;
+        FakeWeatherAlertDetail = source.FakeWeatherAlertDetail;
+        FakeWeatherRainRemainingMinutes = source.FakeWeatherRainRemainingMinutes;
         ShadowEnabled = source.ShadowEnabled;
         ShadowColor = source.ShadowColor;
         ShadowBlur = source.ShadowBlur;
@@ -484,6 +568,10 @@ public sealed class InjectorSettings
         CountdownScanSpeed = source.CountdownScanSpeed;
         CountdownScanDirection = source.CountdownScanDirection;
         CountdownScanTailEnabled = source.CountdownScanTailEnabled;
+        CountdownLightBandColor = source.CountdownLightBandColor;
+        CountdownLightBandThickness = source.CountdownLightBandThickness;
+        CountdownLightBandAngle = source.CountdownLightBandAngle;
+        CountdownLightBandSpeed = source.CountdownLightBandSpeed;
         PrepareWarningEnabled = source.PrepareWarningEnabled;
         PrepareWarningColor = source.PrepareWarningColor;
         PrepareWarningTriggerSeconds = source.PrepareWarningTriggerSeconds;

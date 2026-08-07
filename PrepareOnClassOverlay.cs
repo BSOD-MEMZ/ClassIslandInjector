@@ -176,6 +176,71 @@ internal sealed class CountdownScanlineOverlay : PrepareOnClassOverlay
 }
 
 /// <summary>
+/// 光带：一条柔和的、非线性运动的光带扫过主界面（如光照反光）。
+/// 光带沿可调角度方向扫过，中间亮、两端透明渐变，粗细可调。
+/// 运动使用 ease-in-out，边缘慢、中间快，形成自然反光扫过感。
+/// </summary>
+internal sealed class CountdownLightBandOverlay : PrepareOnClassOverlay
+{
+    public Color Color { get; set; } = Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF);
+
+    /// <summary>光带厚度（相对主界面宽高较大者的比例）。</summary>
+    public double Thickness { get; set; } = 0.12;
+
+    /// <summary>光带运动方向角度（度；0 为水平、正值为顺时针倾斜）。</summary>
+    public double Angle { get; set; } = 30;
+
+    public override void Render(DrawingContext context)
+    {
+        base.Render(context);
+        var w = Bounds.Width;
+        var h = Bounds.Height;
+        if (w < 12 || h < 8)
+        {
+            return;
+        }
+
+        // 非线性运动：ease-in-out 每循环从 -1 扫到 +1（边缘慢、中间快）。
+        var t = Loop;
+        var eased = t < 0.5 ? 4 * t * t * t : 1 - Math.Pow(-2 * t + 2, 3) / 2;
+        var position = -1 + 2 * eased;
+
+        var diagonal = Math.Sqrt(w * w + h * h);
+        var bandWidth = Math.Max(6, diagonal * Thickness);
+        var sweepDistance = diagonal * 1.6;
+        var angleRad = Angle * Math.PI / 180;
+        var centerX = w / 2 + position * sweepDistance * Math.Cos(angleRad);
+        var centerY = h / 2 + position * sweepDistance * Math.Sin(angleRad);
+
+        var alpha = Color.A;
+        if (alpha <= 0)
+        {
+            return;
+        }
+
+        var colorMid = new Color(alpha, Color.R, Color.G, Color.B);
+        var brush = new LinearGradientBrush
+        {
+            StartPoint = new RelativePoint(0, 0.5, RelativeUnit.Relative),
+            EndPoint = new RelativePoint(1, 0.5, RelativeUnit.Relative),
+            GradientStops =
+            {
+                new GradientStop(Colors.Transparent, 0),
+                new GradientStop(colorMid, 0.32),
+                new GradientStop(colorMid, 0.68),
+                new GradientStop(Colors.Transparent, 1)
+            }
+        };
+
+        var bandLength = diagonal * 1.8;
+        using var transform = context.PushTransform(
+            Matrix.CreateTranslation(centerX, centerY) * Matrix.CreateRotation(angleRad));
+        context.DrawRectangle(brush, null,
+            new Rect(-bandLength / 2, -bandWidth / 2, bandLength, bandWidth));
+    }
+}
+
+/// <summary>
 /// 「即将上课」红色警告：全屏内发光 + 边框光晕，并随 <see cref="PrepareOnClassOverlay.Loop"/>
 /// 周期性闪动。仿照流光（跑马灯）的内发光绘制方式，但使用纯色警示（默认红色），
 /// 宿主在专用全屏覆盖窗口（<see cref="MarqueeOverlayWindow"/>）里，覆盖整块屏幕。

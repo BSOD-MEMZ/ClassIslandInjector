@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
@@ -9,9 +10,11 @@ using Avalonia.VisualTree;
 using ClassIsland.Core;
 using ClassIsland.Core.Abstractions.Services;
 using ClassIsland.Core.Models.Notification;
+using ClassIsland.Core.Models.Weather;
 using ClassIsland.Shared;
 using System.Collections;
 using System.Collections.Concurrent;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.Loader;
@@ -93,6 +96,26 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private DateTime _emphasisStartedAt = DateTime.MinValue;
     private bool _lastContentVisible;
     private bool _dynamicColorsInitialized;
+    /// <summary>动态修改 ClassIsland 全局主题色：最近一次应用的 SMTC 主色（宿主重置后重新应用用）。</summary>
+    private Color? _lastDynamicThemeColor;
+    /// <summary>是否已应用过动态主题色（关闭/卸载时恢复宿主配置用）。</summary>
+    private bool _dynamicThemeColorApplied;
+    /// <summary>鼠标悬停保持可见：覆写宿主「鼠标移入淡出」设置前的原值。</summary>
+    private bool? _originalMouseInFadingEnabled;
+    /// <summary>是否已覆写宿主「鼠标移入淡出」设置。</summary>
+    private bool _mouseInFadingOverridden;
+    /// <summary>主界面点击特效：是否已挂接指针按下事件。</summary>
+    private bool _clickHandlerAttached;
+    /// <summary>虚假天气：最近注入的 WeatherInfo 实例（用于引用比较避免注入死循环）。</summary>
+    private WeatherInfo? _fakeWeatherInstance;
+    /// <summary>虚假天气：最近一次注入的设置值签名（值变化时允许重新注入）。</summary>
+    private string _fakeWeatherSignature = string.Empty;
+    /// <summary>虚假天气：宿主 Settings 的 PropertyChanged 订阅。</summary>
+    private PropertyChangedEventHandler? _hostWeatherHandler;
+    /// <summary>点击特效：主界面轻微跳跃的开始时间。</summary>
+    private DateTime _clickBounceStart = DateTime.MinValue;
+    /// <summary>点击特效：主界面轻微跳跃是否进行中。</summary>
+    private bool _clickBounceActive;
     private Color _dynamicBackgroundColor;
     private Color _dynamicBorderColor;
     private Color _dynamicShadowColor;
@@ -177,6 +200,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
             _islandRoot.Classes.Add(HostContract.InjectorRootClass);
         }
 
+        AttachClickHandler();
         Apply();
     }
 
@@ -200,6 +224,10 @@ internal sealed class MainWindowStyleInjector : IDisposable
         ApplyShapeToHost();
         ApplyWallpaper();
         ApplyTextureHost();
+        ApplyDynamicThemeColorState();
+        ApplyMouseHoverKeepVisible();
+        ApplyClickEffectState();
+        ApplyFakeWeatherState();
         ReloadStyleSheet();
         ReloadNotificationTransitionStyles();
         ReloadCarouselAnimationStyles();
@@ -466,6 +494,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
         ApplyVisibilityAnimation(ref scale, ref y, ref opacity);
         ApplyEmphasisAnimation(ref scale, ref x, ref y, ref opacity);
+        ApplyBounceToTransform(ref scale, ref y);
 
         var transforms = new TransformGroup
         {
@@ -557,7 +586,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
                                    GetEffectProgress(_emphasisStartedAt, _settings.EmphasisDurationSeconds) < 1 ||
                                    _ripples.Count > 0 || _prepareOnClassOverlays.Count > 0 ||
                                    _prepareWarningOverlay != null ||
-                                   _colorTransitionActive || _wallpaperTransitionActive;
+                                   _colorTransitionActive || _wallpaperTransitionActive || _clickBounceActive;
         if (hasContinuousAnimation || hasTransientAnimation)
         {
             _animationTimer.Start();
@@ -654,6 +683,19 @@ internal sealed class MainWindowStyleInjector : IDisposable
     /// </summary>
     public void OnSmtcMediaChanged(AlbumAccentColors? colors, byte[]? thumbnailBytes, bool isPlaying)
     {
+        // 动态修改 ClassIsland 全局主题强调色（FluentAvalonia CustomAccentColor）。
+        if (_settings.DynamicThemeColorEnabled)
+        {
+            if (isPlaying && colors != null)
+            {
+                ApplyDynamicThemeColor(colors.Background);
+            }
+            else if (!isPlaying && _settings.RevertColorsWhenPaused)
+            {
+                RevertDynamicThemeColor();
+            }
+        }
+
         if (IsAnyDynamicColorEnabled())
         {
             if (isPlaying)
@@ -720,6 +762,561 @@ internal sealed class MainWindowStyleInjector : IDisposable
             ParseColorOrDefault(_settings.BackgroundColor, Color.FromArgb(0xCC, 0x20, 0x20, 0x20)),
             ParseColorOrDefault(_settings.BorderColor, Color.FromArgb(0x99, 0xFF, 0xFF, 0xFF)),
             ParseColorOrDefault(_settings.ShadowColor, Color.FromArgb(0x99, 0, 0, 0)));
+    }
+
+    // ============ 动态修改 ClassIsland 全局主题色 ============
+
+    /// <summary>
+    /// 用 SMTC 专辑主色动态修改 ClassIsland 全局主题强调色（FluentAvalonia CustomAccentColor）。
+    /// 宿主 IThemeService 为 DI 单例；任何失败静默降级，不影响其它功能。
+    /// </summary>
+    private void ApplyDynamicThemeColor(Color color)
+    {
+        try
+        {
+            ApplyDynamicThemeColorCore(color);
+        }
+        catch
+        {
+            // 宿主结构变化时忽略。
+        }
+    }
+
+    private void ApplyDynamicThemeColorCore(Color color)
+    {
+        var themeService = IAppHost.TryGetService<IThemeService>();
+        if (themeService == null)
+        {
+            return;
+        }
+
+        _lastDynamicThemeColor = color;
+        _dynamicThemeColorApplied = true;
+        themeService.SetTheme(ReadHostThemeMode(), color);
+    }
+
+    /// <summary>
+    /// 恢复宿主在设置里配置的主题色（自定义 / 壁纸或屏幕取色 / 跟随系统）。
+    /// </summary>
+    private void RevertDynamicThemeColor()
+    {
+        try
+        {
+            RevertDynamicThemeColorCore();
+        }
+        catch
+        {
+            // 宿主结构变化时忽略。
+        }
+    }
+
+    private void RevertDynamicThemeColorCore()
+    {
+        var themeService = IAppHost.TryGetService<IThemeService>();
+        if (themeService == null)
+        {
+            return;
+        }
+
+        _lastDynamicThemeColor = null;
+        _dynamicThemeColorApplied = false;
+        themeService.SetTheme(ReadHostThemeMode(), ReadHostConfiguredThemeColor());
+    }
+
+    /// <summary>
+    /// 每次 Apply 时同步动态主题色状态：开关关闭时恢复宿主配置；
+    /// 开启时若已取到过专辑色则重新应用（宿主可能已按自身设置重置主题）。
+    /// </summary>
+    private void ApplyDynamicThemeColorState()
+    {
+        if (!_settings.DynamicThemeColorEnabled)
+        {
+            if (_dynamicThemeColorApplied)
+            {
+                RevertDynamicThemeColor();
+            }
+
+            return;
+        }
+
+        if (_lastDynamicThemeColor != null)
+        {
+            try
+            {
+                ApplyDynamicThemeColorCore(_lastDynamicThemeColor.Value);
+            }
+            catch
+            {
+                // 忽略。
+            }
+        }
+    }
+
+    /// <summary>
+    /// 读取宿主当前主题模式（Settings.Theme：0=跟随系统 1=浅色 2=深色），
+    /// 避免 SetTheme 时意外改变明暗模式。
+    /// </summary>
+    private int ReadHostThemeMode()
+    {
+        var settings = GetHostSettings();
+        if (settings == null)
+        {
+            return 0;
+        }
+
+        try
+        {
+            return settings.GetType().GetProperty("Theme")?.GetValue(settings) is int theme ? theme : 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// 按宿主 ColorSource 逻辑计算其当前应使用的主题主色：
+    /// 0=自定义 PrimaryColor；1/3=壁纸/屏幕取色 SelectedPlatte；2=跟随系统(null)。
+    /// </summary>
+    private Color? ReadHostConfiguredThemeColor()
+    {
+        var settings = GetHostSettings();
+        if (settings == null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var colorSource = settings.GetType().GetProperty("ColorSource")?.GetValue(settings) is int source ? source : 0;
+            switch (colorSource)
+            {
+                case 0:
+                    return settings.GetType().GetProperty("PrimaryColor")?.GetValue(settings) is Color primary ? primary : null;
+                case 1:
+                case 3:
+                    return settings.GetType().GetProperty("SelectedPlatte")?.GetValue(settings) is Color platte ? platte : null;
+                default:
+                    return null;
+            }
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    // ============ 交互：鼠标悬停保持可见 + 点击特效 ============
+
+    /// <summary>
+    /// 鼠标悬停保持可见：开启时覆写宿主「鼠标移入淡出」设置为关闭，
+    /// 使鼠标移入主界面时主界面不会自动隐藏；禁用/卸载时恢复宿主原值。
+    /// </summary>
+    private void ApplyMouseHoverKeepVisible()
+    {
+        var settings = GetHostSettings();
+        if (settings == null)
+        {
+            return;
+        }
+
+        try
+        {
+            var property = settings.GetType().GetProperty("IsMouseInFadingEnabled", BindingFlags.Instance | BindingFlags.Public);
+            if (property == null)
+            {
+                return;
+            }
+
+            if (_settings.MouseHoverKeepVisible)
+            {
+                if (!_mouseInFadingOverridden)
+                {
+                    _originalMouseInFadingEnabled = property.GetValue(settings) is bool original ? original : null;
+                    _mouseInFadingOverridden = true;
+                }
+
+                property.SetValue(settings, false);
+            }
+            else
+            {
+                RestoreMouseHoverKeepVisible();
+            }
+        }
+        catch
+        {
+            // 宿主结构变化时忽略。
+        }
+    }
+
+    private void RestoreMouseHoverKeepVisible()
+    {
+        if (!_mouseInFadingOverridden)
+        {
+            return;
+        }
+
+        if (_originalMouseInFadingEnabled != null)
+        {
+            try
+            {
+                var settings = GetHostSettings();
+                settings?.GetType()
+                    .GetProperty("IsMouseInFadingEnabled", BindingFlags.Instance | BindingFlags.Public)
+                    ?.SetValue(settings, _originalMouseInFadingEnabled.Value);
+            }
+            catch
+            {
+                // 忽略。
+            }
+        }
+
+        _mouseInFadingOverridden = false;
+        _originalMouseInFadingEnabled = null;
+    }
+
+    private void AttachClickHandler()
+    {
+        if (_clickHandlerAttached || _islandRoot == null)
+        {
+            return;
+        }
+
+        _islandRoot.AddHandler(InputElement.PointerPressedEvent, IslandRootOnPointerPressed);
+        _clickHandlerAttached = true;
+    }
+
+    private void DetachClickHandler()
+    {
+        if (_clickHandlerAttached && _islandRoot != null)
+        {
+            _islandRoot.RemoveHandler(InputElement.PointerPressedEvent, IslandRootOnPointerPressed);
+        }
+
+        _clickHandlerAttached = false;
+    }
+
+    private void ApplyClickEffectState()
+    {
+        if (_settings.ClickEffectEnabled)
+        {
+            AttachClickHandler();
+        }
+        else
+        {
+            DetachClickHandler();
+        }
+    }
+
+    private void IslandRootOnPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (!_settings.Enabled || !_settings.ClickEffectEnabled || _settings.ClickEffectType == ClickEffectType.None ||
+            _islandRoot == null || _mainWindow == null || _windowRoot == null)
+        {
+            return;
+        }
+
+        if (!e.GetCurrentPoint(_islandRoot).Properties.IsLeftButtonPressed)
+        {
+            return;
+        }
+
+        var islandPoint = e.GetPosition(_islandRoot);
+        switch (_settings.ClickEffectType)
+        {
+            case ClickEffectType.Bounce:
+                TriggerClickBounce();
+                break;
+            case ClickEffectType.Ring:
+                CreateClickRing(islandPoint);
+                break;
+        }
+    }
+
+    /// <summary>触发主界面轻微跳跃（点击特效）。</summary>
+    private void TriggerClickBounce()
+    {
+        _clickBounceStart = DateTime.UtcNow;
+        _clickBounceActive = true;
+        UpdateAnimationTimer();
+    }
+
+    /// <summary>
+    /// 在点击位置创建一个自绘的软边扩散圆环（点击特效，不复用提醒 Ripple 渲染）。
+    /// </summary>
+    private void CreateClickRing(Point islandPoint)
+    {
+        if (_mainWindow == null || _islandRoot == null || _windowRoot == null)
+        {
+            return;
+        }
+
+        if (!TryParseColor(_settings.RippleColor, out var color))
+        {
+            return;
+        }
+
+        var effectControls = TryGetFullScreenEffectHost(out var effectWindow);
+        Point center;
+        if (effectWindow != null)
+        {
+            var point = _islandRoot.TranslatePoint(islandPoint, _mainWindow) ?? islandPoint;
+            try
+            {
+                center = effectWindow.PointToClient(_mainWindow.PointToScreen(point));
+            }
+            catch
+            {
+                center = new Point(effectWindow.Bounds.Width / 2, effectWindow.Bounds.Height / 2);
+            }
+        }
+        else
+        {
+            center = _islandRoot.TranslatePoint(islandPoint, _windowRoot) ?? islandPoint;
+        }
+
+        var maxRadius = Math.Max(_islandRoot.Bounds.Width, _islandRoot.Bounds.Height) * 0.5;
+        var ring = new ClickRingOverlay(center, color,
+            TimeSpan.FromSeconds(Math.Max(0.1, _settings.RippleDurationSeconds)),
+            maxRadius)
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch
+        };
+
+        if (effectControls != null)
+        {
+            effectControls.Add(ring);
+            _rippleHosts[ring] = effectControls;
+        }
+        else
+        {
+            _windowRoot.Children.Add(ring);
+        }
+
+        _ripples.Add(ring);
+    }
+
+    /// <summary>
+    /// 把点击「轻微跳跃」叠加到当前变形上：先微缩再回弹、轻微上移，约 0.4 秒内 ease-out 完成。
+    /// </summary>
+    private void ApplyBounceToTransform(ref double scale, ref double y)
+    {
+        if (!_clickBounceActive)
+        {
+            return;
+        }
+
+        var elapsed = (DateTime.UtcNow - _clickBounceStart).TotalSeconds;
+        const double duration = 0.4;
+        if (elapsed >= duration)
+        {
+            _clickBounceActive = false;
+            return;
+        }
+
+        var p = elapsed / duration;
+        var wave = Math.Sin(p * Math.PI); // 0 → 1 → 0
+        scale *= 1 + 0.02 * wave;
+        y -= 8 * wave;
+    }
+
+    // ============ 虚假天气 ============
+
+    /// <summary>
+    /// 虚假天气状态：开启时把伪造的 WeatherInfo 写入宿主 Settings.LastWeatherInfo，
+    /// 并订阅宿主 Settings.PropertyChanged 在每次真实刷新后重新注入；关闭时取消并触发一次真实刷新。
+    /// </summary>
+    private void ApplyFakeWeatherState()
+    {
+        if (!_settings.FakeWeatherEnabled)
+        {
+            DisableFakeWeather();
+            return;
+        }
+
+        var settings = GetHostSettings();
+        if (settings != null && _hostWeatherHandler == null && settings is INotifyPropertyChanged notifier)
+        {
+            _hostWeatherHandler = OnHostSettingsPropertyChanged;
+            notifier.PropertyChanged += _hostWeatherHandler;
+        }
+
+        InjectFakeWeather();
+    }
+
+    private void OnHostSettingsPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == "LastWeatherInfo" && _settings.FakeWeatherEnabled)
+        {
+            InjectFakeWeather();
+        }
+    }
+
+    private void InjectFakeWeather()
+    {
+        var settings = GetHostSettings();
+        if (settings == null)
+        {
+            return;
+        }
+
+        try
+        {
+            var property = settings.GetType().GetProperty("LastWeatherInfo", BindingFlags.Instance | BindingFlags.Public);
+            if (property == null)
+            {
+                return;
+            }
+
+            // 仅在「值未变化且当前已是本插件注入的实例」时跳过，避免注入→事件→再注入死循环；
+            // 值变化（改温度/天气/湿度等）时必须重新注入，保证立即生效。
+            var signature = $"{_settings.FakeWeatherCode}|{_settings.FakeWeatherTemperature}|{_settings.FakeWeatherFeelsLike}|" +
+                            $"{_settings.FakeWeatherHumidity}|{_settings.FakeWeatherPressure}|{_settings.FakeWeatherVisibility}|" +
+                            $"{_settings.FakeWeatherWindDirection}|{_settings.FakeWeatherWindScale}|{_settings.FakeWeatherAqi}|" +
+                            $"{_settings.FakeWeatherAlertIcon}|{_settings.FakeWeatherAlertType}|{_settings.FakeWeatherAlertLevel}|" +
+                            $"{_settings.FakeWeatherAlertTitle}|{_settings.FakeWeatherAlertDetail}|{_settings.FakeWeatherRainRemainingMinutes}";
+            var current = property.GetValue(settings);
+            if (_fakeWeatherInstance != null && ReferenceEquals(current, _fakeWeatherInstance) &&
+                _fakeWeatherSignature == signature)
+            {
+                return;
+            }
+
+            var fake = BuildFakeWeatherInfo();
+            _fakeWeatherInstance = fake;
+            _fakeWeatherSignature = signature;
+            property.SetValue(settings, fake);
+            // 让天气组件/天气规则认为数据已刷新（否则部分显示与规则会等宿主自己刷新）。
+            try
+            {
+                if (IAppHost.TryGetService<IWeatherService>() is { } weatherService)
+                {
+                    weatherService.IsWeatherRefreshed = true;
+                }
+            }
+            catch
+            {
+                // 忽略。
+            }
+        }
+        catch
+        {
+            // 宿主结构变化时忽略。
+        }
+    }
+
+    private WeatherInfo BuildFakeWeatherInfo()
+    {
+        var temperature = _settings.FakeWeatherTemperature.ToString("0.#");
+        var feelsLike = _settings.FakeWeatherFeelsLike.ToString("0.#");
+        var humidity = _settings.FakeWeatherHumidity.ToString("0.#");
+        var pressure = _settings.FakeWeatherPressure.ToString("0.#");
+        var visibility = _settings.FakeWeatherVisibility.ToString("0.#");
+        var weatherInfo = new WeatherInfo
+        {
+            UpdateTimeUnix = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            Current = new CurrentWeather
+            {
+                Weather = _settings.FakeWeatherCode.ToString(),
+                Temperature = new ValueUnitPair { Value = temperature, Unit = "℃" },
+                FeelsLike = new ValueUnitPair { Value = feelsLike, Unit = "℃" },
+                Humidity = new ValueUnitPair { Value = humidity, Unit = "%" },
+                Pressure = new ValueUnitPair { Value = pressure, Unit = "hPa" },
+                Visibility = new ValueUnitPair { Value = visibility, Unit = "km" },
+                Wind = new WindInfo
+                {
+                    Direction = new ValueUnitPair { Value = _settings.FakeWeatherWindDirection, Unit = "" },
+                    Speed = new ValueUnitPair { Value = _settings.FakeWeatherWindScale, Unit = "" }
+                },
+                PublishTime = DateTime.Now
+            },
+            Aqi = new AqiInfo { Aqi = _settings.FakeWeatherAqi.ToString("0.#") }
+        };
+        // 预警图标：宿主 WeatherComponent 用 Images[icon] 渲染图标，Type 渲染胶囊文字；
+        // 四个等级 URL 是宿主内置的默认预警图标（触发 IsDefaultIcon 显示「图标+类型」胶囊）。
+        var alertIconUrl = _settings.FakeWeatherAlertIcon switch
+        {
+            1 => "http://f5.market.xiaomi.com/download/Weather/0ac110d2ee20a454ab44f5df30f9fa6ff650e0b72/a.webp", // 蓝色
+            2 => "http://f4.market.mi-img.com/download/Weather/072013febeb1944da85649e5e547ec5a8284816a2/a.webp", // 黄色
+            3 => "http://f5.market.xiaomi.com/download/Weather/06db501333e6d4075a3364a66cdf23ba5733111b3/a.webp", // 橙色
+            4 => "http://f3.market.xiaomi.com/download/Weather/03e3e096d3d9e485fa33bbf833fc3b3c96c23d014/a.webp", // 红色
+            _ => ""
+        };
+        if (_settings.FakeWeatherAlertIcon != 0 ||
+            !string.IsNullOrWhiteSpace(_settings.FakeWeatherAlertTitle) ||
+            !string.IsNullOrWhiteSpace(_settings.FakeWeatherAlertType))
+        {
+            weatherInfo.Alerts.Add(new WeatherAlert
+            {
+                Title = _settings.FakeWeatherAlertTitle,
+                Type = string.IsNullOrWhiteSpace(_settings.FakeWeatherAlertType)
+                    ? _settings.FakeWeatherAlertTitle
+                    : _settings.FakeWeatherAlertType,
+                Level = _settings.FakeWeatherAlertLevel,
+                Detail = _settings.FakeWeatherAlertDetail,
+                PubTime = DateTime.Now,
+                LocationKey = "fake",
+                AlertId = "fake",
+                Images = new Dictionary<string, string> { ["icon"] = alertIconUrl }
+            });
+        }
+
+        // 降水提醒：宿主组件用 Minutely.Precipitation.Value（逐分钟降水强度列表）
+        // 计算 RainRemainingMinutes（正值=距降雨开始，负值=正在下雨预计雨停）显示降水提醒。
+        if (_settings.FakeWeatherRainRemainingMinutes != 0)
+        {
+            var rain = new List<double>();
+            var minutes = Math.Abs(_settings.FakeWeatherRainRemainingMinutes);
+            if (_settings.FakeWeatherRainRemainingMinutes > 0)
+            {
+                // 距降雨开始 minutes 分钟：先干后雨。
+                for (var i = 0; i < minutes; i++)
+                {
+                    rain.Add(0);
+                }
+
+                rain.Add(1);
+                for (var i = 0; i < 30; i++)
+                {
+                    rain.Add(0.5);
+                }
+            }
+            else
+            {
+                // 正在下雨，预计 -minutes 分钟后停。
+                for (var i = 0; i < minutes; i++)
+                {
+                    rain.Add(1);
+                }
+
+                rain.Add(0);
+            }
+
+            weatherInfo.Minutely.Precipitation.Value = rain;
+        }
+
+        return weatherInfo;
+    }
+
+    private void DisableFakeWeather()
+    {
+        if (_hostWeatherHandler != null && GetHostSettings() is INotifyPropertyChanged notifier)
+        {
+            notifier.PropertyChanged -= _hostWeatherHandler;
+        }
+
+        _hostWeatherHandler = null;
+        _fakeWeatherInstance = null;
+        // 关闭后触发宿主立即拉取一次真实天气，尽快覆盖虚假数据。
+        try
+        {
+            _ = IAppHost.TryGetService<IWeatherService>()?.QueryWeatherAsync();
+        }
+        catch
+        {
+            // 忽略。
+        }
     }
 
     private void StartColorTransition(Color newBackground, Color newBorder, Color newShadow)
@@ -1732,6 +2329,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         PrepareOnClassStyle.Arrows => overlay is CountdownArrowOverlay,
         PrepareOnClassStyle.PulseRing => overlay is CountdownPulseRingOverlay,
         PrepareOnClassStyle.Scanline => overlay is CountdownScanlineOverlay,
+        PrepareOnClassStyle.LightBand => overlay is CountdownLightBandOverlay,
         _ => false
     };
 
@@ -1740,6 +2338,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         PrepareOnClassStyle.Arrows => new CountdownArrowOverlay(),
         PrepareOnClassStyle.PulseRing => new CountdownPulseRingOverlay(),
         PrepareOnClassStyle.Scanline => new CountdownScanlineOverlay(),
+        PrepareOnClassStyle.LightBand => new CountdownLightBandOverlay(),
         _ => null
     };
 
@@ -1768,6 +2367,12 @@ internal sealed class MainWindowStyleInjector : IDisposable
                 scan.Thickness = _settings.CountdownScanThickness;
                 scan.Direction = _settings.CountdownScanDirection;
                 scan.TailEnabled = _settings.CountdownScanTailEnabled;
+                break;
+            case CountdownLightBandOverlay band:
+                band.Speed = _settings.CountdownLightBandSpeed;
+                band.Color = TryParseColor(_settings.CountdownLightBandColor, out var bandColor) ? bandColor : Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF);
+                band.Thickness = _settings.CountdownLightBandThickness;
+                band.Angle = _settings.CountdownLightBandAngle;
                 break;
         }
     }
@@ -2881,6 +3486,10 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _dynamicColorsInitialized = false;
         RemoveWallpaper();
         StopSpectrum();
+        RevertDynamicThemeColor();
+        RestoreMouseHoverKeepVisible();
+        DetachClickHandler();
+        DisableFakeWeather();
         RemoveTextureHost();
         RemoveAllPrepareOnClassOverlays();
         _lineMasks.Clear();
