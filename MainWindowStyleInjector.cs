@@ -1679,6 +1679,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
     {
         _emphasisStartedAt = DateTime.UtcNow;
         CreateRipple();
+        CreateMarquee();
         UpdateAnimationTimer();
     }
 
@@ -2031,6 +2032,48 @@ internal sealed class MainWindowStyleInjector : IDisposable
             _windowRoot.Children.Add(ripple);
         }
         _ripples.Add(ripple);
+    }
+
+    /// <summary>
+    /// 全屏流光（跑马灯）覆盖层：仿 Gemini 等语音助手激活时的全屏内发光效果。
+    /// 独立于 <see cref="RippleType"/>，可与任意 Ripple 类型叠加播放；
+    /// 同样由 16ms 时钟推进，播完自动移除。
+    /// </summary>
+    private void CreateMarquee()
+    {
+        if (!_settings.MarqueeEnabled || _windowRoot == null || _islandRoot == null)
+        {
+            return;
+        }
+
+        if (!TryParseColor(_settings.MarqueeColor, out var color))
+        {
+            return;
+        }
+
+        var effectControls = TryGetFullScreenEffectHost(out _);
+        var marquee = new MarqueeOverlay(
+            _settings.MarqueeDurationSeconds,
+            _settings.MarqueeSpeed,
+            _settings.MarqueeOpacity,
+            _settings.MarqueeFrameThickness,
+            color)
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch
+        };
+
+        if (effectControls != null)
+        {
+            effectControls.Add(marquee);
+            _rippleHosts[marquee] = effectControls;
+        }
+        else
+        {
+            // 早期启动、全屏特效窗口尚未创建时的兜底路径。
+            _windowRoot.Children.Add(marquee);
+        }
+        _ripples.Add(marquee);
     }
 
     private IList? TryGetFullScreenEffectHost(out Window? effectWindow)

@@ -194,6 +194,12 @@ public sealed class InjectorSettings
     private double _rippleOpacity = 1;
     private bool _rippleConstraintEnabled = true;
     private double _rippleConstraintRadius;
+    private bool _marqueeEnabled;
+    private string _marqueeColor = "#66FFFFFF";
+    private double _marqueeDurationSeconds = 1.6;
+    private double _marqueeOpacity = 0.85;
+    private double _marqueeSpeed = 1;
+    private double _marqueeFrameThickness = 0.05;
     private bool _dynamicBackgroundColorEnabled;
     private bool _dynamicBorderColorEnabled;
     private bool _dynamicShadowColorEnabled;
@@ -280,6 +286,12 @@ public sealed class InjectorSettings
     public double RippleOpacity { get => _rippleOpacity; set => Set(ref _rippleOpacity, Math.Clamp(value, 0.1, 1)); }
     public bool RippleConstraintEnabled { get => _rippleConstraintEnabled; set => Set(ref _rippleConstraintEnabled, value); }
     public double RippleConstraintRadius { get => _rippleConstraintRadius; set => Set(ref _rippleConstraintRadius, Math.Clamp(value, 0, 2000)); }
+    public bool MarqueeEnabled { get => _marqueeEnabled; set => Set(ref _marqueeEnabled, value); }
+    public string MarqueeColor { get => _marqueeColor; set => Set(ref _marqueeColor, value.Trim()); }
+    public double MarqueeDurationSeconds { get => _marqueeDurationSeconds; set => Set(ref _marqueeDurationSeconds, Math.Clamp(value, 0.1, 10)); }
+    public double MarqueeOpacity { get => _marqueeOpacity; set => Set(ref _marqueeOpacity, Math.Clamp(value, 0.1, 1)); }
+    public double MarqueeSpeed { get => _marqueeSpeed; set => Set(ref _marqueeSpeed, Math.Clamp(value, 0.1, 8)); }
+    public double MarqueeFrameThickness { get => _marqueeFrameThickness; set => Set(ref _marqueeFrameThickness, Math.Clamp(value, 0.01, 0.15)); }
     public bool DynamicBackgroundColorEnabled { get => _dynamicBackgroundColorEnabled; set => Set(ref _dynamicBackgroundColorEnabled, value); }
     public bool DynamicBorderColorEnabled { get => _dynamicBorderColorEnabled; set => Set(ref _dynamicBorderColorEnabled, value); }
     public bool DynamicShadowColorEnabled { get => _dynamicShadowColorEnabled; set => Set(ref _dynamicShadowColorEnabled, value); }
@@ -403,6 +415,12 @@ public sealed class InjectorSettings
         RippleOpacity = source.RippleOpacity;
         RippleConstraintEnabled = source.RippleConstraintEnabled;
         RippleConstraintRadius = source.RippleConstraintRadius;
+        MarqueeEnabled = source.MarqueeEnabled;
+        MarqueeColor = source.MarqueeColor;
+        MarqueeDurationSeconds = source.MarqueeDurationSeconds;
+        MarqueeOpacity = source.MarqueeOpacity;
+        MarqueeSpeed = source.MarqueeSpeed;
+        MarqueeFrameThickness = source.MarqueeFrameThickness;
         DynamicBackgroundColorEnabled = source.DynamicBackgroundColorEnabled;
         WallpaperEnabled = source.WallpaperEnabled;
         WallpaperSource = source.WallpaperSource;

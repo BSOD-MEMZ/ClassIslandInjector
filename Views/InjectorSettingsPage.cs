@@ -88,6 +88,12 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly Slider _rippleOpacity = Slider(0.1, 1, 0.05);
     private readonly ToggleSwitch _rippleConstraint = Toggle();
     private readonly Spin _rippleConstraintRadius = Spinner(0, 2000, 10, "0");
+    private readonly ToggleSwitch _marqueeEnabled = Toggle();
+    private readonly ColorPicker _marqueeColor = ColorPicker();
+    private readonly Spin _marqueeDuration = Spinner(0.1, 10, 0.05);
+    private readonly Slider _marqueeOpacity = Slider(0.1, 1, 0.05);
+    private readonly Spin _marqueeSpeed = Spinner(0.1, 8, 0.1);
+    private readonly Spin _marqueeFrameThickness = Spinner(0.01, 0.15, 0.01);
     private readonly ComboBox _prepareOnClassStyle = Combo(PrepareOnClassStyles);
     private readonly ColorPicker _countdownArrowColor = ColorPicker();
     private readonly Spin _countdownArrowCount = Spinner(1, 24, 1, "0");
@@ -369,6 +375,12 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         };
         VisibleWhen(hanabiInfoBar, _rippleType, RippleType.Hanabi);
         panel.Children.Add(hanabiInfoBar);
+        panel.Children.Add(SwitchableGroup("\uE85E", "全屏流光（跑马灯）", "仿手机「智慧识屏」/ 语音助手激活时的全屏内发光效果：屏幕内部透明、四周边框彩色发光，彩虹沿边框旋转流动，独立开关，可与上方任意 Ripple 效果叠加播放。", _marqueeEnabled,
+            Item("流光颜色", "流光的整体色调；纯白为完整彩虹，带色调会整体偏向该颜色。", _marqueeColor),
+            Item("流光时长", "流光效果的播放时长（秒）。", _marqueeDuration),
+            Item("流光不透明度", "流光效果的整体透明度。", _marqueeOpacity),
+            Item("旋转速度", "彩虹沿边框旋转的速度（每秒圈数）。", _marqueeSpeed),
+            Item("边框厚度", "发光边框的粗细（相对屏幕短边的比例）。", _marqueeFrameThickness)));
         AddSection(panel, "\uE4C4", "即将上课样式");
         panel.Children.Add(Setting("\uE4C4", "预览即将上课样式", "立即预览 5 秒即将上课动画，别忘了先在下面选中一个特效。", Button("预览", PreviewPrepareOnClass)));
         panel.Children.Add(Setting("\uE4C4", "即将上课样式", "选择即将上课倒计时期间显示的特效；选择「无」则不显示。", _prepareOnClassStyle));
@@ -648,6 +660,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                      _visibilityAnimation, _visibilityDuration, _emphasisAnimation, _emphasisAmount, _emphasisDuration,
                      _notificationTransition, _notificationTransitionDuration,
                      _rippleType, _rippleColor, _rippleDuration, _rippleThickness, _rippleOpacity, _rippleConstraint, _rippleConstraintRadius,
+                     _marqueeEnabled, _marqueeColor, _marqueeDuration, _marqueeOpacity, _marqueeSpeed, _marqueeFrameThickness,
                      _prepareOnClassStyle,
                      _countdownArrowColor, _countdownArrowCount, _countdownArrowPerGroup, _countdownArrowSpacing,
                      _countdownArrowGroupSpacing, _countdownArrowSpeed, _countdownArrowThickness,
@@ -983,6 +996,12 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _rippleOpacity.Value = settings.RippleOpacity;
         _rippleConstraint.IsChecked = settings.RippleConstraintEnabled;
         _rippleConstraintRadius.DoubleValue = settings.RippleConstraintRadius;
+        _marqueeEnabled.IsChecked = settings.MarqueeEnabled;
+        _marqueeColor.Color = ReadColor(settings.MarqueeColor, Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF));
+        _marqueeDuration.DoubleValue = settings.MarqueeDurationSeconds;
+        _marqueeOpacity.Value = settings.MarqueeOpacity;
+        _marqueeSpeed.DoubleValue = settings.MarqueeSpeed;
+        _marqueeFrameThickness.DoubleValue = settings.MarqueeFrameThickness;
         Select(_prepareOnClassStyle, PrepareOnClassStyles, settings.PrepareOnClassStyle);
         _countdownArrowColor.Color = ReadColor(settings.CountdownArrowColor, Color.FromArgb(0xBF, 0xF8, 0xFA, 0xFC));
         _countdownArrowCount.DoubleValue = settings.CountdownArrowCount;
@@ -1080,6 +1099,12 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.RippleOpacity = _rippleOpacity.Value;
             settings.RippleConstraintEnabled = _rippleConstraint.IsChecked == true;
             settings.RippleConstraintRadius = _rippleConstraintRadius.DoubleValue;
+            settings.MarqueeEnabled = _marqueeEnabled.IsChecked == true;
+            settings.MarqueeColor = _marqueeColor.Color.ToString();
+            settings.MarqueeDurationSeconds = _marqueeDuration.DoubleValue;
+            settings.MarqueeOpacity = _marqueeOpacity.Value;
+            settings.MarqueeSpeed = _marqueeSpeed.DoubleValue;
+            settings.MarqueeFrameThickness = _marqueeFrameThickness.DoubleValue;
             settings.PrepareOnClassStyle = Selected(_prepareOnClassStyle, PrepareOnClassStyle.None);
             settings.CountdownArrowColor = _countdownArrowColor.Color.ToString();
             settings.CountdownArrowCount = (int)Math.Round(_countdownArrowCount.DoubleValue);
