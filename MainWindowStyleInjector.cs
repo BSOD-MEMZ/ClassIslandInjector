@@ -85,6 +85,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
     // A custom ripple normally lives in ClassIsland's full-screen topmost effect
     // window.  This map lets us remove it from the same host when it completes.
     private readonly Dictionary<IRippleEffect, IList> _rippleHosts = [];
+    /// <summary>流光跑马灯专用全屏覆盖窗口（覆盖整块屏幕含任务栏区域）。</summary>
+    private MarqueeOverlayWindow? _marqueeWindow;
     private DateTime _visibilityStartedAt = DateTime.MinValue;
     private DateTime _emphasisStartedAt = DateTime.MinValue;
     private bool _lastContentVisible;
@@ -2036,12 +2038,12 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     /// <summary>
     /// 全屏流光（跑马灯）覆盖层：仿 Gemini 等语音助手激活时的全屏内发光效果。
-    /// 独立于 <see cref="RippleType"/>，可与任意 Ripple 类型叠加播放；
-    /// 同样由 16ms 时钟推进，播完自动移除。
+    /// 独立于 <see cref="RippleType"/>，可与任意 Ripple 类型叠加播放。
+    /// 渲染在专用全屏覆盖窗口里（覆盖任务栏区域），由 16ms 时钟推进，播完自动移除。
     /// </summary>
     private void CreateMarquee()
     {
-        if (!_settings.MarqueeEnabled || _windowRoot == null || _islandRoot == null)
+        if (!_settings.MarqueeEnabled || _mainWindow == null)
         {
             return;
         }
@@ -2051,7 +2053,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
-        var effectControls = TryGetFullScreenEffectHost(out _);
+        var marqueeWindow = _marqueeWindow ??= new MarqueeOverlayWindow();
         var marquee = new MarqueeOverlay(
             _settings.MarqueeDurationSeconds,
             _settings.MarqueeSpeed,
@@ -2063,16 +2065,11 @@ internal sealed class MainWindowStyleInjector : IDisposable
             VerticalAlignment = VerticalAlignment.Stretch
         };
 
-        if (effectControls != null)
-        {
-            effectControls.Add(marquee);
-            _rippleHosts[marquee] = effectControls;
-        }
-        else
-        {
-            // 早期启动、全屏特效窗口尚未创建时的兜底路径。
-            _windowRoot.Children.Add(marquee);
-        }
+        // 全屏覆盖到任务栏之下（覆盖屏幕底边），并置顶压过任务栏。
+        var screen = _mainWindow.Screens.ScreenFromWindow(_mainWindow) ?? _mainWindow.Screens.Primary;
+        marqueeWindow.ShowFullScreen(screen);
+        marqueeWindow.Host.Children.Add(marquee);
+        _rippleHosts[marquee] = marqueeWindow.Host.Children;
         _ripples.Add(marquee);
     }
 
@@ -2189,6 +2186,12 @@ internal sealed class MainWindowStyleInjector : IDisposable
         if (_rippleHosts.Remove(ripple, out var host))
         {
             host.Remove(ripple);
+            // 流光专用窗口的覆盖层全部移除后隐藏窗口。
+            if (_marqueeWindow != null && ReferenceEquals(host, _marqueeWindow.Host.Children))
+            {
+                _marqueeWindow.HideWhenEmpty();
+            }
+
             return;
         }
 
@@ -2548,6 +2551,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     public void Dispose()
     {
+        _marqueeWindow?.Close();
+        _marqueeWindow = null;
         RestoreHostState();
     }
 }

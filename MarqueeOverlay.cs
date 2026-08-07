@@ -18,8 +18,6 @@ internal sealed class MarqueeOverlay : Control, IRippleEffect
     private readonly double _frameThicknessFraction; // 边框厚度相对屏幕短边的比例
     private readonly Color _tint;
     private readonly DateTime _startedAt = DateTime.UtcNow;
-    /// <summary>已应用的模糊半径（避免每帧重复赋值 Effect 触发重绘）。</summary>
-    private double _appliedBlurRadius = -1;
 
     public MarqueeOverlay(double durationSeconds, double speed, double opacityScale,
         double frameThicknessFraction, Color tint)
@@ -32,43 +30,11 @@ internal sealed class MarqueeOverlay : Control, IRippleEffect
         IsHitTestVisible = false;
         // 内发光限定在特效窗口/主界面内部。
         ClipToBounds = true;
-        // 构造时先给一个默认模糊（运行时按实际尺寸在 Advance 里细化）；
-        // 不能在 Render 里设置 Effect，否则抛「Visual was invalidated during the render pass」。
-        Effect = new BlurEffect { Radius = 16 };
     }
 
     public bool IsCompleted => (DateTime.UtcNow - _startedAt).TotalSeconds >= _duration;
 
-    public void Advance()
-    {
-        // 高斯模糊半径依赖实际尺寸，需在渲染期之外（动画时钟回调）设置 Effect。
-        EnsureBlurEffect();
-        InvalidateVisual();
-    }
-
-    /// <summary>
-    /// 按当前尺寸设置高斯模糊半径（构造后先用了默认值，这里在布局完成/尺寸变化时细化）。
-    /// 模糊半径随边框厚度联动；外层超出屏幕的部分被裁掉，向内的一侧形成柔和的「向内发光」。
-    /// </summary>
-    private void EnsureBlurEffect()
-    {
-        var width = Bounds.Width;
-        var height = Bounds.Height;
-        if (width <= 0 || height <= 0)
-        {
-            return;
-        }
-
-        var thickness = Math.Max(2, Math.Min(width, height) * _frameThicknessFraction);
-        var blurRadius = Math.Clamp(thickness * 1.0, 6, 72);
-        if (Math.Abs(_appliedBlurRadius - blurRadius) <= 0.5)
-        {
-            return;
-        }
-
-        _appliedBlurRadius = blurRadius;
-        Effect = new BlurEffect { Radius = blurRadius };
-    }
+    public void Advance() => InvalidateVisual();
 
     public override void Render(DrawingContext context)
     {
@@ -92,57 +58,143 @@ internal sealed class MarqueeOverlay : Control, IRippleEffect
 
         using (context.PushOpacity(opacity))
         {
-            DrawInnerGlow(context, width, height);
-            DrawRotatingFrame(context, width, height, elapsed);
+            DrawInnerGlow(context, width, height, elapsed);
+            DrawSoftFrame(context, width, height, elapsed);
         }
     }
 
     /// <summary>
-    /// 内发光：屏幕内部保持透明，越靠近边缘颜色越深，营造从边框向内泛光的柔和氛围。
+    /// 内发光：屏幕内部保持透明，越靠边缘颜色越深、越往内越柔和地淡出（向内扩散变模糊）。
+    /// 用径向渐变天然形成平滑柔和的过渡，不模糊边框本身，外沿保持清晰。
     /// </summary>
-    private void DrawInnerGlow(DrawingContext context, double width, double height)
+    private void DrawInnerGlow(DrawingContext context, double width, double height, double elapsed)
     {
-        var edgeAlpha = (byte)(38 * TintFactor());
+        var edgeAlpha = (byte)(72 * TintFactor());
         if (edgeAlpha <= 0)
         {
             return;
         }
 
+        var hue = (elapsed * _speed * 90.0 + 360.0) % 360.0;
+        var edge = Tint(HsvToColor(hue, 0.85, 1.0, edgeAlpha));
+        var transparent = Color.FromArgb(0, edge.R, edge.G, edge.B);
         var brush = new RadialGradientBrush
         {
             GradientStops =
             {
-                new GradientStop(Color.FromArgb(0, _tint.R, _tint.G, _tint.B), 0.62),
-                new GradientStop(new Color(edgeAlpha, _tint.R, _tint.G, _tint.B), 1)
+                new GradientStop(transparent, 0.52),
+                new GradientStop(edge, 1)
             }
         };
         context.DrawRectangle(brush, null, new Rect(0, 0, width, height), 0, 0, default(BoxShadows));
     }
 
     /// <summary>
-    /// 边框跑马灯：紧贴屏幕边缘的发光描边，直角让四条边与四个边角全部铺满。
-    /// 底层是一圈缓慢旋转的柔和彩虹（边框始终有深色），上层是一条明亮的彩虹弧段
-    /// 沿边框快速旋转（跑马灯主光）。
+    /// 边框跑马灯：外沿紧贴屏幕边缘、颜色最深且锐利；向内用逐边线性渐变遮罩
+    /// 平滑淡出（柔和扩散）。四条边与四个角采用互不重叠的分区（角拆成两个三角），
+    /// 避免重复绘制导致角落颜色格外深。彩虹沿边框旋转流动。
     /// </summary>
-    private void DrawRotatingFrame(DrawingContext context, double width, double height, double elapsed)
+    private void DrawSoftFrame(DrawingContext context, double width, double height, double elapsed)
     {
         var minDim = Math.Min(width, height);
         var thickness = Math.Max(2, minDim * _frameThicknessFraction);
-
-        // 边框外沿与屏幕边缘齐平（内缩半个线宽让描边完整可见），圆角 0 → 四角铺满。
-        var inset = thickness / 2;
-        var rect = new Rect(inset, inset, width - inset * 2, height - inset * 2);
-        var rounded = new RoundedRect(rect, 0, 0);
+        // 内侧光晕扩散深度（外沿不透明 → 向内淡出）。
+        var glowDepth = Math.Max(thickness * 2.4, 14);
+        var fullRect = new Rect(0, 0, width, height);
         var rotation = elapsed * _speed * 360.0;
 
-        // ① 底层：柔和全圈彩虹（边框始终有深色）。
-        var baseBrush = BuildConic(rotation * 0.25, 80);
-        DrawFrameGlow(context, rounded, baseBrush, thickness, 2);
+        // 旋转彩虹内容：底层全圈彩虹 + 跑马灯主光弧段。
+        var baseBrush = BuildConic(rotation * 0.25, 170);
+        var cometBrush = BuildComet(rotation, 245);
 
-        // ② 上层：明亮彩虹弧段沿边框旋转（跑马灯主光）。
-        var cometBrush = BuildComet(rotation, 235);
-        DrawFrameGlow(context, rounded, cometBrush, thickness * 1.2, 2);
+        void DrawContent()
+        {
+            context.DrawRectangle(baseBrush, null, fullRect, 0, 0, default(BoxShadows));
+            context.DrawRectangle(cometBrush, null, fullRect, 0, 0, default(BoxShadows));
+        }
+
+        // 各边的「距边渐变」遮罩（外沿不透明 → 向内淡出）。
+        var topMask = EdgeMask(new RelativePoint(0, 0, RelativeUnit.Relative), new RelativePoint(0, 1, RelativeUnit.Relative));
+        var bottomMask = EdgeMask(new RelativePoint(0, 1, RelativeUnit.Relative), new RelativePoint(0, 0, RelativeUnit.Relative));
+        var leftMask = EdgeMask(new RelativePoint(0, 0, RelativeUnit.Relative), new RelativePoint(1, 0, RelativeUnit.Relative));
+        var rightMask = EdgeMask(new RelativePoint(1, 0, RelativeUnit.Relative), new RelativePoint(0, 0, RelativeUnit.Relative));
+
+        // 四条边（不含角，与角分区互不重叠）。
+        var gd = glowDepth;
+        DrawMaskedRegion(context, new Rect(gd, 0, width - 2 * gd, gd), topMask, DrawContent);
+        DrawMaskedRegion(context, new Rect(gd, height - gd, width - 2 * gd, gd), bottomMask, DrawContent);
+        DrawMaskedRegion(context, new Rect(0, gd, gd, height - 2 * gd), leftMask, DrawContent);
+        DrawMaskedRegion(context, new Rect(width - gd, gd, gd, height - 2 * gd), rightMask, DrawContent);
+
+        // 四个角：各拆成两个三角，分别用相邻边的「距边渐变」遮罩，
+        // 与相邻边在边界处无缝衔接（min(距边)），且互不重叠、不会格外深。
+        DrawCorner(context, new Rect(0, 0, gd, gd),
+            new Point(0, 0), new Point(gd, gd), new Point(0, gd), leftMask, new Point(gd, 0), topMask, DrawContent);
+        DrawCorner(context, new Rect(width - gd, 0, gd, gd),
+            new Point(width, 0), new Point(width - gd, gd), new Point(width, gd), rightMask, new Point(width - gd, 0), topMask, DrawContent);
+        DrawCorner(context, new Rect(0, height - gd, gd, gd),
+            new Point(0, height), new Point(gd, height - gd), new Point(0, height - gd), leftMask, new Point(gd, height), bottomMask, DrawContent);
+        DrawCorner(context, new Rect(width - gd, height - gd, gd, gd),
+            new Point(width, height), new Point(width - gd, height - gd), new Point(width, height - gd), rightMask, new Point(width - gd, height), bottomMask, DrawContent);
     }
+
+    /// <summary>在指定区域内用「外沿不透明 → 向内淡出」的渐变遮罩绘制内容。</summary>
+    private static void DrawMaskedRegion(DrawingContext context, Rect region, LinearGradientBrush mask,
+        Action drawContent)
+    {
+        using (context.PushClip(region))
+        using (context.PushOpacityMask(mask, region))
+        {
+            drawContent();
+        }
+    }
+
+    /// <summary>
+    /// 绘制一个角：沿对角线拆成两个三角，各用相邻边的「距边渐变」遮罩，
+    /// 使角与相邻边在边界处无缝衔接（相当于 min(到相邻两条边的距离)）。
+    /// </summary>
+    private static void DrawCorner(DrawingContext context, Rect corner,
+        Point diagA, Point diagB, Point tri1, LinearGradientBrush tri1Mask,
+        Point tri2, LinearGradientBrush tri2Mask, Action drawContent)
+    {
+        DrawTriangle(context, corner, diagA, diagB, tri1, tri1Mask, drawContent);
+        DrawTriangle(context, corner, diagA, diagB, tri2, tri2Mask, drawContent);
+    }
+
+    /// <summary>用三角形几何裁剪 + 遮罩绘制内容（遮罩相对整个角区域映射，保证与相邻边连续）。</summary>
+    private static void DrawTriangle(DrawingContext context, Rect maskBounds, Point a, Point b, Point c,
+        LinearGradientBrush mask, Action drawContent)
+    {
+        var geometry = new StreamGeometry();
+        using (var gc = geometry.Open())
+        {
+            gc.BeginFigure(a, true);
+            gc.LineTo(b);
+            gc.LineTo(c);
+            gc.EndFigure(true);
+        }
+
+        using (context.PushGeometryClip(geometry))
+        using (context.PushOpacityMask(mask, maskBounds))
+        {
+            drawContent();
+        }
+    }
+
+    /// <summary>构建「先保持不透明、再柔和淡出到透明」的遮罩渐变（软边）。</summary>
+    private static LinearGradientBrush EdgeMask(RelativePoint start, RelativePoint end) => new()
+    {
+        StartPoint = start,
+        EndPoint = end,
+        GradientStops =
+        {
+            new GradientStop(Colors.White, 0),
+            new GradientStop(Colors.White, 0.3),
+            new GradientStop(Color.FromArgb(190, 255, 255, 255), 0.55),
+            new GradientStop(Color.FromArgb(100, 255, 255, 255), 0.78),
+            new GradientStop(Colors.Transparent, 1)
+        }
+    };
 
     /// <summary>构造绕中心旋转的锥形彩虹画刷（全圈，指定最大不透明度）。</summary>
     private ConicGradientBrush BuildConic(double rotation, byte maxAlpha)
@@ -187,26 +239,6 @@ internal sealed class MarqueeOverlay : Control, IRippleEffect
             Angle = rotation,
             GradientStops = stops
         };
-    }
-
-    /// <summary>
-    /// 沿屏幕边缘绘制描边：配合控件级 <see cref="BlurEffect"/> 高斯模糊，
-    /// 两层描边（外层更宽更淡）补充光晕深度，最终呈现柔和的向内辉光。
-    /// </summary>
-    private static void DrawFrameGlow(DrawingContext context, RoundedRect rounded, Brush brush,
-        double thickness, int passes)
-    {
-        for (var i = 0; i < passes; i++)
-        {
-            var spread = i / (double)(passes - 1);
-            var stroke = thickness * (1 + spread * 1.3);
-            var alphaScale = Math.Pow(1 - spread, 1.5);
-            var pen = new Pen(brush, stroke);
-            using (context.PushOpacity(alphaScale))
-            {
-                context.DrawRectangle(null, pen, rounded, default(BoxShadows));
-            }
-        }
     }
 
     /// <summary>色调 alpha 越高越偏向该颜色（0 为纯彩虹）。</summary>
