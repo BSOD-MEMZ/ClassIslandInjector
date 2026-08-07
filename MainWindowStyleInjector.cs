@@ -115,6 +115,14 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private readonly Dictionary<Grid, Border> _textureHosts = [];
     /// <summary>当前底纹画刷（随设置变更重建）。</summary>
     private IBrush? _textureBrush;
+    /// <summary>动态频谱底纹：系统声音输出回环捕获器（仅 Spectrum 纹理时启用）。</summary>
+    private AudioSpectrumCapture? _spectrumCapture;
+    /// <summary>频谱底纹激活状态（决定 16ms 动画计时器是否保持运行）。</summary>
+    private bool _spectrumActive;
+    /// <summary>各行底纹宿主上挂接的频谱覆盖层（逐帧 InvalidateVisual 重绘）。</summary>
+    private readonly List<SpectrumTextureOverlay> _spectrumOverlays = [];
+    /// <summary>频谱诊断日志节流时间戳。</summary>
+    private DateTime _lastSpectrumLog = DateTime.MinValue;
     private readonly List<Border> _wallpaperLayers = [];
     private int _wallpaperFront;
     private Bitmap? _wallpaperBitmap;
@@ -414,6 +422,11 @@ internal sealed class MainWindowStyleInjector : IDisposable
             AdvanceWallpaperTransition();
         }
 
+        if (_spectrumActive)
+        {
+            UpdateSpectrum();
+        }
+
         var phase = _animationClock.Elapsed.TotalSeconds / _settings.AnimationPeriodSeconds * Math.Tau;
         ApplyTransform(Math.Sin(phase));
         AdvanceRipples();
@@ -538,7 +551,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     private void UpdateAnimationTimer()
     {
-        var hasContinuousAnimation = _settings.AnimationEnabled && _settings.AnimationMode != IslandAnimationMode.None;
+        var hasContinuousAnimation = (_settings.AnimationEnabled && _settings.AnimationMode != IslandAnimationMode.None) ||
+                                     _spectrumActive;
         var hasTransientAnimation = GetEffectProgress(_visibilityStartedAt, _settings.VisibilityDurationSeconds) < 1 ||
                                    GetEffectProgress(_emphasisStartedAt, _settings.EmphasisDurationSeconds) < 1 ||
                                    _ripples.Count > 0 || _prepareOnClassOverlays.Count > 0 ||
@@ -573,6 +587,12 @@ internal sealed class MainWindowStyleInjector : IDisposable
             (_settings.Enabled && _settings.BackgroundTextureType != BackgroundTexture.None))
         {
             UpdateTextureBounds(descendants);
+        }
+
+        // 频谱兜底刷新：即使 16ms 动画计时器未运行，50ms 状态计时器也能保持频谱重绘。
+        if (_spectrumActive)
+        {
+            UpdateSpectrum();
         }
 
         var contentRoot = _mainWindow.FindControl<Control>(HostContract.GridRoot);
@@ -911,6 +931,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
         if (!_settings.Enabled || _settings.BackgroundTextureType == BackgroundTexture.None)
         {
+            StopSpectrum();
             RemoveTextureHost();
             return;
         }
@@ -1072,19 +1093,39 @@ internal sealed class MainWindowStyleInjector : IDisposable
         var enabled = _settings.Enabled && _settings.BackgroundTextureType != BackgroundTexture.None;
         if (!enabled)
         {
+            StopSpectrum();
             RemoveTextureHost();
             return;
         }
 
-        var color = TryParseColor(_settings.BackgroundTextureColor, out var parsed)
-            ? parsed
-            : Color.FromArgb(0x2E, 0xFF, 0xFF, 0xFF);
-        _textureBrush = BuildTextureBrush(_settings.BackgroundTextureType, color, _settings.BackgroundTextureSize);
-
-        // 设置变更时同步刷新既有宿主的画刷。
-        foreach (var host in _textureHosts.Values)
+        // 动态频谱：由逐帧绘制的覆盖层渲染，宿主需重建以挂接覆盖层。
+        if (_settings.BackgroundTextureType == BackgroundTexture.Spectrum)
         {
-            host.Background = _textureBrush;
+            StartSpectrum();
+            if (_textureBrush != null)
+            {
+                RemoveTextureHost();
+            }
+
+            _textureBrush = null;
+        }
+        else
+        {
+            StopSpectrum();
+            // 从频谱切回常规纹理时，宿主带着覆盖层子项，需重建。
+            if (_spectrumOverlays.Count > 0)
+            {
+                RemoveTextureHost();
+            }
+
+            var color = TryParseColor(_settings.BackgroundTextureColor, out var parsed)
+                ? parsed
+                : Color.FromArgb(0x2E, 0xFF, 0xFF, 0xFF);
+            _textureBrush = BuildTextureBrush(_settings.BackgroundTextureType, color, _settings.BackgroundTextureSize);
+            foreach (var host in _textureHosts.Values)
+            {
+                host.Background = _textureBrush;
+            }
         }
 
         UpdateTextureBounds();
@@ -1093,7 +1134,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     private void EnsureTextureBrush()
     {
-        if (_textureBrush != null)
+        if (_textureBrush != null || _settings.BackgroundTextureType == BackgroundTexture.Spectrum)
         {
             return;
         }
@@ -1115,15 +1156,30 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return existing;
         }
 
-        EnsureTextureBrush();
         var host = new Border
         {
             IsHitTestVisible = false,
             ClipToBounds = true,
-            Background = _textureBrush,
             VerticalAlignment = VerticalAlignment.Stretch,
             HorizontalAlignment = HorizontalAlignment.Stretch
         };
+        if (_settings.BackgroundTextureType == BackgroundTexture.Spectrum)
+        {
+            // 频谱覆盖层直接绘制柱条，挂为宿主子项（铺满宿主，柱条底部对齐）。
+            StartSpectrum();
+            if (_spectrumCapture != null)
+            {
+                var overlay = new SpectrumTextureOverlay(_spectrumCapture);
+                _spectrumOverlays.Add(overlay);
+                host.Child = overlay;
+            }
+        }
+        else
+        {
+            EnsureTextureBrush();
+            host.Background = _textureBrush;
+        }
+
         gridRoot.Children.Insert(FindTextureInsertIndex(gridRoot), host);
         _textureHosts[gridRoot] = host;
         return host;
@@ -1158,13 +1214,15 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         _textureHosts.Clear();
+        _spectrumOverlays.Clear();
         _textureBrush = null;
     }
 
     /// <summary>
     /// 构建可平铺的纹理画刷（网格 / 点阵 / 斜线 / 十字）。
+    /// 「动态频谱」不使用画刷，由 SpectrumTextureOverlay 逐帧绘制。
     /// </summary>
-    private static IBrush BuildTextureBrush(BackgroundTexture type, Color color, double size)
+    private IBrush BuildTextureBrush(BackgroundTexture type, Color color, double size)
     {
         size = Math.Max(8, size);
         var pen = new Pen(new SolidColorBrush(color), Math.Max(0.5, size / 12));
@@ -1200,6 +1258,85 @@ internal sealed class MainWindowStyleInjector : IDisposable
             TileMode = TileMode.Tile,
             DestinationRect = new RelativeRect(0, 0, size, size, RelativeUnit.Absolute)
         };
+    }
+
+    /// <summary>
+    /// 启用动态频谱底纹：启动系统声音输出回环捕获，并保证 16ms 动画计时器保持运行。
+    /// NAudio 加载/初始化失败时静默降级（频谱保持静止，不影响其它功能）。
+    /// </summary>
+    private void StartSpectrum()
+    {
+        if (_spectrumCapture == null)
+        {
+            try
+            {
+                _spectrumCapture = new AudioSpectrumCapture();
+            }
+            catch
+            {
+                _spectrumCapture = null;
+                return;
+            }
+        }
+
+        _spectrumCapture.Start();
+        _spectrumActive = true;
+        UpdateAnimationTimer();
+    }
+
+    /// <summary>
+    /// 停用动态频谱底纹：停止回环捕获并释放动画计时器驱动。
+    /// </summary>
+    private void StopSpectrum()
+    {
+        if (!_spectrumActive && _spectrumCapture == null)
+        {
+            return;
+        }
+
+        _spectrumActive = false;
+        _spectrumCapture?.Stop();
+        UpdateAnimationTimer();
+    }
+
+    /// <summary>
+    /// 每帧更新动态频谱底纹：把最新参数同步给各行频谱覆盖层并请求重绘。
+    /// 柱条在覆盖层 Render 中读取回环电平直接绘制（底部对齐，可选上下镜像）。
+    /// </summary>
+    private void UpdateSpectrum()
+    {
+        if (!_spectrumActive)
+        {
+            return;
+        }
+
+        var color = TryParseColor(_settings.BackgroundTextureColor, out var parsed)
+            ? parsed
+            : Color.FromArgb(0x2E, 0xFF, 0xFF, 0xFF);
+        var bars = Math.Clamp(_settings.BackgroundTextureSpectrumBars, 4, 64);
+        var sensitivity = _settings.BackgroundTextureSpectrumSensitivity;
+        var mirrored = _settings.BackgroundTextureSpectrumMirrored;
+        var autoWidth = _settings.BackgroundTextureSpectrumAutoWidth;
+        foreach (var overlay in _spectrumOverlays)
+        {
+            overlay.Update(color, bars, sensitivity, mirrored, autoWidth);
+        }
+
+        // 节流诊断日志：排查「频谱不动」时查看配置目录 preview-debug.log。
+        if ((DateTime.UtcNow - _lastSpectrumLog).TotalSeconds >= 2)
+        {
+            _lastSpectrumLog = DateTime.UtcNow;
+            var running = _spectrumCapture?.IsRunning == true;
+            var maxLevel = 0f;
+            if (running && _spectrumCapture != null)
+            {
+                var sample = new float[32];
+                _spectrumCapture.GetLevels(sample);
+                maxLevel = sample.Max();
+            }
+
+            DebugLog($"频谱诊断: active={_spectrumActive} running={running} overlays={_spectrumOverlays.Count} maxLevel={maxLevel:F3} timer={_animationTimer.IsEnabled}");
+        }
     }
 
     private void DisposeWallpaperBitmap()
@@ -2743,6 +2880,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _colorTransitionActive = false;
         _dynamicColorsInitialized = false;
         RemoveWallpaper();
+        StopSpectrum();
         RemoveTextureHost();
         RemoveAllPrepareOnClassOverlays();
         _lineMasks.Clear();
@@ -2795,5 +2933,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _marqueeWindow?.Close();
         _marqueeWindow = null;
         RestoreHostState();
+        _spectrumCapture?.Dispose();
+        _spectrumCapture = null;
     }
 }

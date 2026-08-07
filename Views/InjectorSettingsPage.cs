@@ -49,6 +49,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly ComboBox _backgroundTextureType = Combo(BackgroundTextures);
     private readonly ColorPicker _backgroundTextureColor = ColorPicker();
     private readonly Spin _backgroundTextureSize = Spinner(8, 80, 2, "0");
+    private readonly Slider _backgroundTextureSpectrumSensitivity = Slider(0.1, 10, 0.05);
+    private readonly Spin _backgroundTextureSpectrumBars = Spinner(4, 64, 1, "0");
+    private readonly ToggleSwitch _backgroundTextureSpectrumMirrored = Toggle();
+    private readonly ToggleSwitch _backgroundTextureSpectrumAutoWidth = Toggle();
 
     private readonly ToggleSwitch _shadow = Toggle();
     private readonly ColorPicker _shadowColor = ColorPicker();
@@ -259,6 +263,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         new(BackgroundTexture.Dots, "点阵"),
         new(BackgroundTexture.DiagonalLines, "斜线"),
         new(BackgroundTexture.Cross, "十字网格"),
+        new(BackgroundTexture.Spectrum, "动态频谱"),
     ];
 
     public InjectorSettingsPage()
@@ -320,11 +325,23 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("渐变终止色", "线性渐变背景的结束颜色。", _gradientEndColor, _gradient));
         EnabledWhenManualColor(backgroundColorItem, _customBackground, _dynamicBackgroundColor);
         panel.Children.Add(backgroundGroup);
-        panel.Children.Add(SwitchableGroup("\uE92B", "底纹纹理", "在底色之上叠加可平铺的纹理图案。", _backgroundTextureEnabled,
+        var spectrumSensitivityItem = Item("频谱灵敏度", "动态频谱柱条的放大倍率（越大跳动越剧烈）。", _backgroundTextureSpectrumSensitivity);
+        var spectrumBarsItem = Item("频谱柱条数", "主界面约 400 像素宽时的柱条数；主界面变宽时柱条自动增多、变窄时自动减少，柱条宽度保持恒定。", _backgroundTextureSpectrumBars);
+        var spectrumMirroredItem = Item("双面对称", "同时向上和向下绘制镜像频谱。", _backgroundTextureSpectrumMirrored);
+        var spectrumAutoWidthItem = Item("自动匹配宽度", "开启后柱条数随主界面宽度自动增减（柱宽恒定）；关闭时使用固定柱条数，柱条随主界面拉伸。", _backgroundTextureSpectrumAutoWidth);
+        panel.Children.Add(SwitchableGroup("\uE92B", "底纹纹理", "在底色之上叠加可平铺的纹理图案；选择「动态频谱」可实时展示系统声音输出的频谱。", _backgroundTextureEnabled,
             Item("纹理图案", "选择填充纹理的类型。", _backgroundTextureType),
             Item("纹理颜色", "支持透明度的纹理线条颜色。", _backgroundTextureColor),
-            Item("纹理大小", "单个纹理单元的大小（像素）。", _backgroundTextureSize)));
+            Item("纹理大小", "单个纹理单元的大小（像素）；动态频谱不使用该项。", _backgroundTextureSize),
+            spectrumSensitivityItem,
+            spectrumBarsItem,
+            spectrumMirroredItem,
+            spectrumAutoWidthItem));
         AutoSelectOnEnable(_backgroundTextureEnabled, _backgroundTextureType, BackgroundTextures);
+        VisibleWhen(spectrumSensitivityItem, _backgroundTextureType, BackgroundTexture.Spectrum);
+        VisibleWhen(spectrumBarsItem, _backgroundTextureType, BackgroundTexture.Spectrum);
+        VisibleWhen(spectrumMirroredItem, _backgroundTextureType, BackgroundTexture.Spectrum);
+        VisibleWhen(spectrumAutoWidthItem, _backgroundTextureType, BackgroundTexture.Spectrum);
         var wallpaperPathItem = Item("图片 / 文件夹", "底图文件或幻灯片文件夹的路径。", WallpaperPathFooter());
         var wallpaperSlideshowItem = Item("幻灯片间隔", "文件夹幻灯片切换间隔（秒）。", _wallpaperSlideshowInterval);
         var wallpaperGroup = SwitchableGroup("\uF42D", "背景图片", "为 ClassIsland 主界面添加背景图片", _wallpaperEnabled,
@@ -793,6 +810,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                      _customBackground, _backgroundColor, _dynamicBackgroundColor, _dynamicBorderColor, _dynamicShadowColor,
                      _revertColorsWhenPaused, _albumColorPollingInterval, _albumColorTransition,
                      _gradient, _gradientEndColor, _gradientDirection, _backgroundTextureType, _backgroundTextureColor, _backgroundTextureSize,
+                     _backgroundTextureSpectrumSensitivity, _backgroundTextureSpectrumBars, _backgroundTextureSpectrumMirrored,
+                     _backgroundTextureSpectrumAutoWidth,
                      _backgroundTextureEnabled,
                      _shadow, _shadowColor, _shadowBlur, _shadowOffsetX, _shadowOffsetY, _shadowOpacity,
                      _border, _borderColor, _borderThickness,
@@ -1105,6 +1124,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _backgroundTextureEnabled.IsChecked = settings.BackgroundTextureType != BackgroundTexture.None;
         _backgroundTextureColor.Color = ReadColor(settings.BackgroundTextureColor, Color.FromArgb(0x2E, 0xFF, 0xFF, 0xFF));
         _backgroundTextureSize.DoubleValue = settings.BackgroundTextureSize;
+        _backgroundTextureSpectrumSensitivity.Value = settings.BackgroundTextureSpectrumSensitivity;
+        _backgroundTextureSpectrumBars.DoubleValue = settings.BackgroundTextureSpectrumBars;
+        _backgroundTextureSpectrumMirrored.IsChecked = settings.BackgroundTextureSpectrumMirrored;
+        _backgroundTextureSpectrumAutoWidth.IsChecked = settings.BackgroundTextureSpectrumAutoWidth;
         _shadow.IsChecked = settings.ShadowEnabled;
         _shadowColor.Color = ReadColor(settings.ShadowColor, Color.FromArgb(0x99, 0, 0, 0));
         _shadowBlur.DoubleValue = settings.ShadowBlur;
@@ -1225,6 +1248,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                 : BackgroundTexture.None;
             settings.BackgroundTextureColor = _backgroundTextureColor.Color.ToString();
             settings.BackgroundTextureSize = _backgroundTextureSize.DoubleValue;
+            settings.BackgroundTextureSpectrumSensitivity = _backgroundTextureSpectrumSensitivity.Value;
+            settings.BackgroundTextureSpectrumBars = (int)Math.Round(_backgroundTextureSpectrumBars.DoubleValue);
+            settings.BackgroundTextureSpectrumMirrored = _backgroundTextureSpectrumMirrored.IsChecked == true;
+            settings.BackgroundTextureSpectrumAutoWidth = _backgroundTextureSpectrumAutoWidth.IsChecked == true;
             settings.ShadowEnabled = _shadow.IsChecked == true;
             settings.ShadowColor = _shadowColor.Color.ToString();
             settings.ShadowBlur = _shadowBlur.DoubleValue;

@@ -120,7 +120,9 @@ public enum BackgroundTexture
     Grid,
     Dots,
     DiagonalLines,
-    Cross
+    Cross,
+    /// <summary>动态频谱：捕获系统声音输出并实时绘制频谱柱条。</summary>
+    Spectrum
 }
 
 /// <summary>
@@ -168,6 +170,10 @@ public sealed class InjectorSettings
     private BackgroundTexture _backgroundTextureType = BackgroundTexture.None;
     private string _backgroundTextureColor = "#2EFFFFFF";
     private double _backgroundTextureSize = 24;
+    private double _backgroundTextureSpectrumSensitivity = 1;
+    private int _backgroundTextureSpectrumBars = 32;
+    private bool _backgroundTextureSpectrumMirrored;
+    private bool _backgroundTextureSpectrumAutoWidth = true;
     private bool _shadowEnabled;
     private string _shadowColor = "#99000000";
     private double _shadowBlur = 16;
@@ -270,6 +276,10 @@ public sealed class InjectorSettings
     public BackgroundTexture BackgroundTextureType { get => _backgroundTextureType; set => Set(ref _backgroundTextureType, value); }
     public string BackgroundTextureColor { get => _backgroundTextureColor; set => Set(ref _backgroundTextureColor, value.Trim()); }
     public double BackgroundTextureSize { get => _backgroundTextureSize; set => Set(ref _backgroundTextureSize, Math.Clamp(value, 8, 80)); }
+    public double BackgroundTextureSpectrumSensitivity { get => _backgroundTextureSpectrumSensitivity; set => Set(ref _backgroundTextureSpectrumSensitivity, Math.Clamp(value, 0.1, 10)); }
+    public int BackgroundTextureSpectrumBars { get => _backgroundTextureSpectrumBars; set => Set(ref _backgroundTextureSpectrumBars, Math.Clamp(value, 4, 64)); }
+    public bool BackgroundTextureSpectrumMirrored { get => _backgroundTextureSpectrumMirrored; set => Set(ref _backgroundTextureSpectrumMirrored, value); }
+    public bool BackgroundTextureSpectrumAutoWidth { get => _backgroundTextureSpectrumAutoWidth; set => Set(ref _backgroundTextureSpectrumAutoWidth, value); }
     public bool ShadowEnabled { get => _shadowEnabled; set => Set(ref _shadowEnabled, value); }
     public string ShadowColor { get => _shadowColor; set => Set(ref _shadowColor, value.Trim()); }
     public double ShadowBlur { get => _shadowBlur; set => Set(ref _shadowBlur, Math.Clamp(value, 0, 200)); }
@@ -404,6 +414,10 @@ public sealed class InjectorSettings
         BackgroundTextureType = source.BackgroundTextureType;
         BackgroundTextureColor = source.BackgroundTextureColor;
         BackgroundTextureSize = source.BackgroundTextureSize;
+        BackgroundTextureSpectrumSensitivity = source.BackgroundTextureSpectrumSensitivity;
+        BackgroundTextureSpectrumBars = source.BackgroundTextureSpectrumBars;
+        BackgroundTextureSpectrumMirrored = source.BackgroundTextureSpectrumMirrored;
+        BackgroundTextureSpectrumAutoWidth = source.BackgroundTextureSpectrumAutoWidth;
         ShadowEnabled = source.ShadowEnabled;
         ShadowColor = source.ShadowColor;
         ShadowBlur = source.ShadowBlur;
