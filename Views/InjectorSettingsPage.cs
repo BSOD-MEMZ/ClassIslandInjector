@@ -6,9 +6,11 @@ using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using ClassIsland.Core;
 using ClassIsland.Core.Abstractions.Controls;
+using ClassIsland.Core.Abstractions.Services;
 using ClassIsland.Core.Assists;
 using ClassIsland.Core.Attributes;
 using ClassIsland.Core.Controls;
+using ClassIsland.Shared;
 using FluentAvalonia.UI.Controls;
 
 namespace ClassIslandInjector.Views;
@@ -111,6 +113,23 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly Spin _countdownScanSpeed = Spinner(0.1, 8, 0.1);
     private readonly ComboBox _countdownScanDirection = Combo(ScanDirections);
     private readonly ToggleSwitch _countdownScanTailEnabled = Toggle();
+    private readonly ToggleSwitch _prepareWarningEnabled = Toggle();
+    private readonly ColorPicker _prepareWarningColor = ColorPicker();
+    private readonly Spin _prepareWarningTriggerSeconds = Spinner(5, 600, 5, "0");
+    private readonly Spin _prepareWarningFlashSpeed = Spinner(0.1, 10, 0.1);
+    private readonly Slider _prepareWarningFlashAmount = Slider(0, 1, 0.05);
+    private readonly Spin _prepareWarningFrameThickness = Spinner(0.005, 0.1, 0.005, "0.###");
+    private readonly Slider _prepareWarningOpacity = Slider(0.1, 1, 0.05);
+    private readonly Slider _cinematicShake = Slider(0, 60, 1);
+    private readonly Slider _cinematicBlur = Slider(0, 40, 1);
+    private readonly Slider _cinematicFlash = Slider(0, 1, 0.05);
+    // 卡片总开关（页面归一化用，不持久化）：关闭时对应样式值写为 None / HostDefault。
+    private readonly ToggleSwitch _backgroundTextureEnabled = Toggle();
+    private readonly ToggleSwitch _visibilityAnimationEnabled = Toggle();
+    private readonly ToggleSwitch _emphasisAnimationEnabled = Toggle();
+    private readonly ToggleSwitch _notificationTransitionEnabled = Toggle();
+    private readonly ToggleSwitch _rippleEnabled = Toggle();
+    private readonly ToggleSwitch _prepareOnClassEnabled = Toggle();
     private readonly TextBox _presetName = new() { MinWidth = 200, Watermark = "预设名称" };
     private readonly ComboBox _userPresetList = new()
     {
@@ -160,7 +179,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
     private static readonly Choice<VisibilityAnimation>[] VisibilityAnimations =
     [
-        new(VisibilityAnimation.None, "无"),
         new(VisibilityAnimation.Fade, "淡入淡出"),
         new(VisibilityAnimation.Scale, "缩放"),
         new(VisibilityAnimation.SlideFromTop, "从上方滑入"),
@@ -169,7 +187,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
     private static readonly Choice<EmphasisAnimation>[] EmphasisAnimations =
     [
-        new(EmphasisAnimation.None, "无"),
         new(EmphasisAnimation.Pulse, "脉冲"),
         new(EmphasisAnimation.Bounce, "弹跳"),
         new(EmphasisAnimation.Shake, "摇晃"),
@@ -178,7 +195,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
     private static readonly Choice<NotificationTransition>[] NotificationTransitions =
     [
-        new(NotificationTransition.HostDefault, "跟随 ClassIsland"),
         new(NotificationTransition.Fade, "淡入淡出"),
         new(NotificationTransition.SlideDown, "向下滑动"),
         new(NotificationTransition.SlideUp, "向上滑动"),
@@ -188,7 +204,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
     private static readonly Choice<RippleType>[] RippleTypes =
     [
-        new(RippleType.None, "无"),
         new(RippleType.Ring, "单环"),
         new(RippleType.DoubleRing, "双环"),
         new(RippleType.Glow, "光晕"),
@@ -201,6 +216,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         new(RippleType.Burst, "放射"),
         new(RippleType.Explode, "爆炸（高级）"),
         new(RippleType.Particle, "粒子"),
+        new(RippleType.Cinematic, "屏幕涟漪（高级）"),
     ];
 
     private static readonly Choice<CarouselAnimationType>[] CarouselAnimationTypes =
@@ -214,7 +230,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
     private static readonly Choice<PrepareOnClassStyle>[] PrepareOnClassStyles =
     [
-        new(PrepareOnClassStyle.None, "无"),
         new(PrepareOnClassStyle.Arrows, "箭头"),
         new(PrepareOnClassStyle.PulseRing, "扩散光环"),
         new(PrepareOnClassStyle.Scanline, "扫描线"),
@@ -240,7 +255,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
     private static readonly Choice<BackgroundTexture>[] BackgroundTextures =
     [
-        new(BackgroundTexture.None, "无"),
         new(BackgroundTexture.Grid, "网格线"),
         new(BackgroundTexture.Dots, "点阵"),
         new(BackgroundTexture.DiagonalLines, "斜线"),
@@ -264,6 +278,18 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         };
 
         panel.Children.Add(new IconText { Glyph = "\uEC4A", Text = "样式注入器", Margin = new Thickness(0, 0, 0, 4) });
+        if (MainWindowStyleInjector.IsSeparatedMode())
+        {
+            panel.Children.Add(new InfoBar
+            {
+                Severity = InfoBarSeverity.Warning,
+                Title = "检测到分体主界面",
+                Message = "本插件暂不支持 ClassIsland 的分体主界面模式，请立即关闭分体主界面。",
+                IsOpen = true,
+                IsClosable = false,
+                ActionButton = Button("去关闭分体主界面", OpenAppearanceSettings)
+            });
+        }
         panel.Children.Add(Setting("\uE813", "实时预览", "开启后，下方对设置项的修改会立即保存并应用到主界面；关闭时需手动点击「保存并应用」。", _livePreview));
         if (!SystemCapabilities.SmtcAvailable)
         {
@@ -280,9 +306,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(Setting("\uEDC7", "运行时注入", "启用后由插件接管主界面根节点的视觉效果。", _enabled));
 
         AddSection(panel, "\uF42F", "用户预设");
-        panel.Children.Add(Setting("\uF42F", "保存当前为预设", "把插件当前全部设置项保存为一个命名预设（同名覆盖）。", PresetSaveFooter()));
+        panel.Children.Add(Setting("\uF42F", "保存当前为预设", "把插件当前全部设置项保存为一个命名预设（同名覆盖）", PresetSaveFooter()));
         panel.Children.Add(Setting("\uF42F", "套用 / 删除预设", "套用会把全部设置项替换为该预设保存时的状态。", PresetManageFooter()));
-        panel.Children.Add(Setting("\uE0BD", "恢复插件默认", "把全部设置恢复为插件默认（不会修改 Overrides.axaml）。", Button("恢复默认", ResetToDefaults)));
+        panel.Children.Add(Setting("\uE0BD", "恢复插件默认", "把全部设置恢复为插件默认（不会修改 Overrides.axaml）", Button("恢复默认", ResetToDefaults)));
 
         AddSection(panel, "\uE51F", "背景");
         var backgroundColorItem = Item("背景色", "支持透明度的主界面背景颜色。", _backgroundColor);
@@ -294,10 +320,11 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("渐变终止色", "线性渐变背景的结束颜色。", _gradientEndColor, _gradient));
         EnabledWhenManualColor(backgroundColorItem, _customBackground, _dynamicBackgroundColor);
         panel.Children.Add(backgroundGroup);
-        panel.Children.Add(Group("\uE92B", "底纹纹理", "在底色之上叠加可平铺的纹理图案。",
+        panel.Children.Add(SwitchableGroup("\uE92B", "底纹纹理", "在底色之上叠加可平铺的纹理图案。", _backgroundTextureEnabled,
             Item("纹理图案", "选择填充纹理的类型。", _backgroundTextureType),
             Item("纹理颜色", "支持透明度的纹理线条颜色。", _backgroundTextureColor),
             Item("纹理大小", "单个纹理单元的大小（像素）。", _backgroundTextureSize)));
+        AutoSelectOnEnable(_backgroundTextureEnabled, _backgroundTextureType, BackgroundTextures);
         var wallpaperPathItem = Item("图片 / 文件夹", "底图文件或幻灯片文件夹的路径。", WallpaperPathFooter());
         var wallpaperSlideshowItem = Item("幻灯片间隔", "文件夹幻灯片切换间隔（秒）。", _wallpaperSlideshowInterval);
         var wallpaperGroup = SwitchableGroup("\uF42D", "背景图片", "为 ClassIsland 主界面添加背景图片", _wallpaperEnabled,
@@ -313,10 +340,11 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         VisibleWhenAny(wallpaperPathItem, _wallpaperSource, WallpaperSource.LocalImage, WallpaperSource.FolderSlideshow);
         VisibleWhen(wallpaperSlideshowItem, _wallpaperSource, WallpaperSource.FolderSlideshow);
         panel.Children.Add(wallpaperGroup);
-        panel.Children.Add(Group("\uF361", "动态取色", "从音乐软件或浏览器获取 SMTC 信息，并进行莫奈取色",
+        panel.Children.Add(Group("\uE51E", "动态取色", "从音乐软件或浏览器获取 SMTC 信息，并进行莫奈取色",
             Item("暂停/停止时恢复原色", "媒体暂停或停止播放时，从专辑取色平滑恢复为原始颜色，恢复播放后再跟随专辑。", _revertColorsWhenPaused),
             Item("兜底刷新间隔", "事件驱动失效时的兜底刷新间隔（秒）。", _albumColorPollingInterval),
-            Item("颜色过渡时长", "专辑颜色变化时，背景、边框、阴影平滑过渡到新颜色的时长（秒），0 为立即切换。", _albumColorTransition)));
+            Item("颜色过渡时长", "专辑颜色变化时，背景、边框、阴影平滑过渡到新颜色的时长（秒），0 为立即切换。", _albumColorTransition),
+            Item("这是什么？", "了解 SMTC 与动态取色是如何工作的。", Button("查看工作原理", ShowSmtcExplanation))));
 
         AddSection(panel, "\uE254", "边框与阴影");
         var shadowColorItem = Item("阴影颜色", "支持透明度的阴影颜色。", _shadowColor);
@@ -340,8 +368,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("动画类型", "选择循环动画的运动方式。", _animationMode),
             Item("动画幅度", "控制循环动画的强弱。", _animationAmount),
             Item("动画周期", "完成一次循环所需的时间（秒）。", _animationPeriod)));
-        panel.Children.Add(ChoiceGroup("\uEFED", "主界面显示动画", "选择主界面出现或消失时使用的动画。", _visibilityAnimation, VisibilityAnimation.None,
+        panel.Children.Add(SwitchableGroup("\uEFED", "主界面显示动画", "选择主界面出现或消失时使用的动画；总开关关闭时不播放显示动画。", _visibilityAnimationEnabled,
+            Item("动画类型", "选择主界面出现或消失时使用的动画。", _visibilityAnimation),
             Item("显示动画时长", "主界面显示动画的时长（秒）。", _visibilityDuration)));
+        AutoSelectOnEnable(_visibilityAnimationEnabled, _visibilityAnimation, VisibilityAnimations);
         panel.Children.Add(SwitchableGroup("\uEFED", "列表翻页动画", "自定义 ClassIsland 列表/轮播容器的上翻切换动画（轮播容器、上课提醒横幅等）。", _carouselAnimation,
             Item("动画类型", "列表切换时的动画方式。", _carouselAnimationType),
             Item("动画时长", "单次翻页动画的时长（秒）。", _carouselAnimationDuration),
@@ -349,21 +379,37 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
         AddSection(panel, "\uE025", "提醒");
         panel.Children.Add(Setting("\uEFFE", "预览提醒", "一次性预览强调动画、遮罩过渡与 Ripple 效果。", Button("预览提醒", PreviewNotification)));
-        panel.Children.Add(ChoiceGroup("\uE02B", "提醒强调动画", "选择收到提醒时使用的强调效果。", _emphasisAnimation, EmphasisAnimation.None,
+        panel.Children.Add(SwitchableGroup("\uE02B", "提醒强调动画", "选择收到提醒时使用的强调效果。", _emphasisAnimationEnabled,
+            Item("动画类型", "选择收到提醒时使用的强调效果。", _emphasisAnimation),
             Item("强调幅度", "控制强调动画的强弱。", _emphasisAmount),
             Item("强调时长", "提醒强调动画的时长（秒）。", _emphasisDuration)));
-        panel.Children.Add(ChoiceGroup("\uE833", "提醒遮罩动画", "选择提醒遮罩出现和消失时的过渡效果。", _notificationTransition, NotificationTransition.HostDefault,
+        AutoSelectOnEnable(_emphasisAnimationEnabled, _emphasisAnimation, EmphasisAnimations);
+        panel.Children.Add(SwitchableGroup("\uE833", "提醒遮罩动画", "选择提醒遮罩出现和消失时的过渡效果。", _notificationTransitionEnabled,
+            Item("过渡类型", "选择提醒遮罩出现和消失时的过渡效果。", _notificationTransition),
             Item("遮罩动画时长", "提醒遮罩动画的时长（秒）。", _notificationTransitionDuration)));
+        AutoSelectOnEnable(_notificationTransitionEnabled, _notificationTransition, NotificationTransitions);
         var rippleColorItem = Item("Ripple 颜色", "支持透明度的提醒扩散颜色。", _rippleColor);
         var rippleDurationItem = Item("Ripple 时长", "扩散效果的播放时长（秒）。", _rippleDuration);
         var rippleThicknessItem = Item("Ripple 线宽", "线性 Ripple 的线条粗细。", _rippleThickness);
         var rippleOpacityItem = Item("全局不透明度", "全局降低 Ripple 效果的透明度，避免上课时分心。", _rippleOpacity);
         var rippleConstraintItem = Item("限制扩散范围", "以主界面中心为圆心创建圆形裁剪，约束所有类型 Ripple 的扩散范围。", _rippleConstraint);
         var rippleConstraintRadiusItem = Item("约束半径", "Ripple 扩散的圆形约束半径（像素），0 为自动按主界面大小计算。", _rippleConstraintRadius, _rippleConstraint);
-        var rippleGroup = ChoiceGroup("\uEFFF", "提醒 Ripple", "选择提醒时的扩散效果。高级特效视觉效果更强，也会占用更多的性能。", _rippleType, RippleType.None,
-            rippleColorItem, rippleDurationItem, rippleThicknessItem, rippleOpacityItem, rippleConstraintItem, rippleConstraintRadiusItem);
-        EnabledWhenNotAny(rippleColorItem, _rippleType, RippleType.Hanabi, RippleType.Explode);
-        EnabledWhenNotAny(rippleThicknessItem, _rippleType, RippleType.Hanabi, RippleType.Explode, RippleType.Particle);
+        // 屏幕涟漪（高级）的专属设置，随 Ripple 组一起展开，仅选中「屏幕涟漪」时可用。
+        var cinematicShakeItem = Item("晃动幅度", "提醒时画面晃动的最远位移（像素），0 为关闭晃动。", _cinematicShake);
+        var cinematicBlurItem = Item("模糊半径", "起始模糊半径。", _cinematicBlur);
+        var cinematicFlashItem = Item("闪光强度", "中心白光的亮度扩散强度，0 为关闭闪光。", _cinematicFlash);
+        var rippleGroup = SwitchableGroup("\uEFFF", "提醒 Ripple", "选择提醒时的扩散效果，高级特效视觉效果更强。", _rippleEnabled,
+            Item("Ripple 类型", "选择提醒时的扩散效果。", _rippleType),
+            rippleColorItem, rippleDurationItem, rippleThicknessItem, rippleOpacityItem, rippleConstraintItem, rippleConstraintRadiusItem,
+            cinematicShakeItem, cinematicBlurItem, cinematicFlashItem);
+        EnabledWhenNotAny(rippleColorItem, _rippleType, _rippleEnabled, RippleType.Hanabi, RippleType.Explode, RippleType.Cinematic);
+        EnabledWhenNotAny(rippleThicknessItem, _rippleType, _rippleEnabled, RippleType.Hanabi, RippleType.Explode, RippleType.Particle, RippleType.Cinematic);
+        EnabledWhenNotAny(rippleConstraintItem, _rippleType, _rippleEnabled, RippleType.Cinematic);
+        EnabledWhenNotAny(rippleConstraintRadiusItem, _rippleType, _rippleEnabled, RippleType.Cinematic);
+        EnabledWhen(cinematicShakeItem, _rippleType, _rippleEnabled, RippleType.Cinematic);
+        EnabledWhen(cinematicBlurItem, _rippleType, _rippleEnabled, RippleType.Cinematic);
+        EnabledWhen(cinematicFlashItem, _rippleType, _rippleEnabled, RippleType.Cinematic);
+        AutoSelectOnEnable(_rippleEnabled, _rippleType, RippleTypes);
         panel.Children.Add(rippleGroup);
         var hanabiInfoBar = new InfoBar
         {
@@ -375,7 +421,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         };
         VisibleWhen(hanabiInfoBar, _rippleType, RippleType.Hanabi);
         panel.Children.Add(hanabiInfoBar);
-        panel.Children.Add(SwitchableGroup("\uE85E", "全屏流光（跑马灯）", "仿手机「智慧识屏」/ 语音助手激活时的全屏内发光效果：屏幕内部透明、四周边框彩色发光，彩虹沿边框旋转流动，独立开关，可与上方任意 Ripple 效果叠加播放。", _marqueeEnabled,
+        panel.Children.Add(SwitchableGroup("\uE85E", "全屏流光", "仿照手机智慧识屏或语音助手激活时的全屏内发光效果，可与上方任意 Ripple 效果叠加播放。", _marqueeEnabled,
             Item("流光颜色", "流光的整体色调；纯白为完整彩虹，带色调会整体偏向该颜色。", _marqueeColor),
             Item("流光时长", "流光效果的播放时长（秒）。", _marqueeDuration),
             Item("流光不透明度", "流光效果的整体透明度。", _marqueeOpacity),
@@ -383,7 +429,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("边框厚度", "发光边框的粗细（相对屏幕短边的比例）。", _marqueeFrameThickness)));
         AddSection(panel, "\uE4C4", "即将上课样式");
         panel.Children.Add(Setting("\uE4C4", "预览即将上课样式", "立即预览 5 秒即将上课动画，别忘了先在下面选中一个特效。", Button("预览", PreviewPrepareOnClass)));
-        panel.Children.Add(Setting("\uE4C4", "即将上课样式", "选择即将上课倒计时期间显示的特效；选择「无」则不显示。", _prepareOnClassStyle));
+        panel.Children.Add(SwitchableGroup("\uE4C4", "即将上课样式", "选择即将上课倒计时期间显示的特效。", _prepareOnClassEnabled,
+            Item("样式", "选择即将上课倒计时期间显示的特效。", _prepareOnClassStyle)));
+        AutoSelectOnEnable(_prepareOnClassEnabled, _prepareOnClassStyle, PrepareOnClassStyles);
         var arrowGroup = Group("\uE0F7", "箭头", "斜向箭头从右向左滑动。",
             Item("箭头颜色", "支持透明度的箭头颜色。", _countdownArrowColor),
             Item("箭头组数", "屏幕上同时滑动的箭头组数量。", _countdownArrowCount),
@@ -403,12 +451,20 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("扫描颜色", "支持透明度的扫描线颜色。", _countdownScanColor),
             Item("扫描线宽", "扫描线的粗细。", _countdownScanThickness),
             Item("扫描速度", "每秒扫描次数。", _countdownScanSpeed));
-        VisibleWhen(arrowGroup, _prepareOnClassStyle, PrepareOnClassStyle.Arrows);
-        VisibleWhen(pulseGroup, _prepareOnClassStyle, PrepareOnClassStyle.PulseRing);
-        VisibleWhen(scanGroup, _prepareOnClassStyle, PrepareOnClassStyle.Scanline);
+        var warningGroup = SwitchableGroup("\uE024", "即将上课警告", "注意：本效果较为恐怖，且会阻断鼠标和触摸输入，请谨慎使用！", _prepareWarningEnabled,
+            Item("警告颜色", "支持透明度的警告内发光颜色。", _prepareWarningColor),
+            Item("提前触发秒数", "距上课剩余秒数小于该值时显示警告。", _prepareWarningTriggerSeconds),
+            Item("闪动速度", "警告每秒闪动的次数。", _prepareWarningFlashSpeed),
+            Item("闪动幅度", "闪动时亮度起伏的深度，0 为常亮。", _prepareWarningFlashAmount),
+            Item("边框厚度", "发光边框的粗细（相对屏幕短边的比例）。", _prepareWarningFrameThickness),
+            Item("透明度", "警告效果的整体透明度（在颜色自带透明度之上叠加）。", _prepareWarningOpacity));
+        VisibleWhenEnabledAnd(arrowGroup, _prepareOnClassEnabled, _prepareOnClassStyle, PrepareOnClassStyle.Arrows);
+        VisibleWhenEnabledAnd(pulseGroup, _prepareOnClassEnabled, _prepareOnClassStyle, PrepareOnClassStyle.PulseRing);
+        VisibleWhenEnabledAnd(scanGroup, _prepareOnClassEnabled, _prepareOnClassStyle, PrepareOnClassStyle.Scanline);
         panel.Children.Add(arrowGroup);
         panel.Children.Add(pulseGroup);
         panel.Children.Add(scanGroup);
+        panel.Children.Add(warningGroup);
 
         AddSection(panel, "\uF263", "高级样式表");
         panel.Children.Add(Setting("\uF263", "覆盖样式表路径", "填写 .axaml 样式表的完整路径。", _styleSheetPath));
@@ -484,6 +540,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 12, 0, 0) };
         actions.Children.Add(Button("保存并应用", SaveAndApply));
         actions.Children.Add(Button("重载样式表", ReloadStyleSheet));
+        actions.Children.Add(Button("重启 ClassIsland", RestartClassIsland));
         panel.Children.Add(actions);
         panel.Children.Add(_status);
         return new ScrollViewer { Content = panel };
@@ -575,6 +632,88 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _status.Text = "已请求重载样式表；若样式表存在语法错误，ClassIsland 会保留稳定运行状态。";
     }
 
+    /// <summary>重启 ClassIsland（确认后经宿主公开 API AppBase.Current.Restart 拉起新进程并退出）。</summary>
+    private async void RestartClassIsland()
+    {
+        SaveAndApply();
+        var dialog = new ContentDialog
+        {
+            Title = "确认重启 ClassIsland？",
+            Content = "重启后插件设置将立即生效；未保存的 ClassIsland 系统设置可能会丢失。",
+            PrimaryButtonText = "重启",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Close
+        };
+
+        var result = await dialog.ShowAsync();
+        if (result != ContentDialogResult.Primary)
+        {
+            return;
+        }
+
+        try
+        {
+            AppBase.Current.Restart();
+        }
+        catch (Exception ex)
+        {
+            _status.Text = $"重启失败：{ex.Message}";
+        }
+    }
+
+    /// <summary>打开 ClassIsland 设置窗口并导航到「外观」页（含分体主界面开关）。</summary>
+    private void OpenAppearanceSettings()
+    {
+        try
+        {
+            IAppHost.TryGetService<IUriNavigationService>()
+                ?.Navigate(new Uri("classisland://app/settings/appearance"));
+        }
+        catch
+        {
+            _status.Text = "无法打开 ClassIsland 设置页。";
+        }
+    }
+
+    /// <summary>弹出对话框，解释 SMTC 与动态取色的工作原理。</summary>
+    private async void ShowSmtcExplanation()
+    {
+        var content = new StackPanel
+        {
+            Spacing = 10,
+            MaxWidth = 460
+        };
+        content.Children.Add(DialogParagraph("SMTC 是什么？", true));
+        content.Children.Add(DialogParagraph("SMTC（System Media Transport Controls，系统媒体传输控件）是 Windows 10 起内置的媒体会话机制。音乐播放器、浏览器等应用会把当前正在播放的媒体交给系统，包括标题、歌手、专辑、封面缩略图和播放状态。"));
+        content.Children.Add(DialogParagraph("取色原理", true));
+        content.Children.Add(DialogParagraph("当媒体变化时，插件读取当前焦点会话的专辑封面缩略图，然后用安卓的莫奈取色算法从封面中提取主题强调色。"));
+        content.Children.Add(DialogParagraph("应用与过渡", true));
+        content.Children.Add(DialogParagraph("提取出的主题色会应用到主界面背景、边框与阴影。"));
+        content.Children.Add(DialogParagraph("兜底机制是什么？", true));
+        content.Children.Add(DialogParagraph("切歌、暂停、恢复等变化由系统事件即时推送，几乎无延迟，但假如事件驱动意外失效，会按兜底刷新间隔作为保底。"));
+        content.Children.Add(DialogParagraph("限制", true));
+        content.Children.Add(DialogParagraph("需要 Windows 10 1809（build 17763）或更高版本；媒体应用需要支持 SMTC，主流播放器（网易云音乐、QQ 音乐、酷狗音乐、PotPlayer 等）和浏览器（最新版 Edge 等）大多支持"));
+
+        var dialog = new ContentDialog
+        {
+            Title = "SMTC 与动态取色原理",
+            Content = content,
+            CloseButtonText = "知道了",
+            DefaultButton = ContentDialogButton.Close
+        };
+        await dialog.ShowAsync();
+    }
+
+    /// <summary>说明对话框用的段落（header 为小标题加粗，body 为正文）。</summary>
+    private static TextBlock DialogParagraph(string text, bool header = false) => new()
+    {
+        Text = text,
+        TextWrapping = TextWrapping.Wrap,
+        FontWeight = header ? FontWeight.Bold : FontWeight.Normal,
+        FontSize = header ? 14 : 13,
+        Opacity = header ? 1 : 0.85
+    };
+
     private void PreviewNotification()
     {
         SaveAndApply();
@@ -587,10 +726,11 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         MainWindowStyleInjector.DebugLog($"设置页 PreviewPrepareOnClass 被调用，combo.SelectedItem={_prepareOnClassStyle.SelectedItem}, 当前设置样式={InjectorRuntime.Settings.PrepareOnClassStyle}");
         SaveAndApply();
         MainWindowStyleInjector.DebugLog($"SaveAndApply 后样式={InjectorRuntime.Settings.PrepareOnClassStyle}");
-        if (InjectorRuntime.Settings.PrepareOnClassStyle == PrepareOnClassStyle.None)
+        if (InjectorRuntime.Settings.PrepareOnClassStyle == PrepareOnClassStyle.None &&
+            !InjectorRuntime.Settings.PrepareWarningEnabled)
         {
-            _status.Text = "请先在「即将上课样式」中选择一种特效，再点击预览。";
-            MainWindowStyleInjector.DebugLog("样式为 None，提前返回，未调用注入器预览");
+            _status.Text = "请先在「即将上课样式」中选择一种特效，或开启「红色警告」，再点击预览。";
+            MainWindowStyleInjector.DebugLog("样式为 None 且未开启红色警告，提前返回，未调用注入器预览");
             return;
         }
 
@@ -653,19 +793,24 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                      _customBackground, _backgroundColor, _dynamicBackgroundColor, _dynamicBorderColor, _dynamicShadowColor,
                      _revertColorsWhenPaused, _albumColorPollingInterval, _albumColorTransition,
                      _gradient, _gradientEndColor, _gradientDirection, _backgroundTextureType, _backgroundTextureColor, _backgroundTextureSize,
+                     _backgroundTextureEnabled,
                      _shadow, _shadowColor, _shadowBlur, _shadowOffsetX, _shadowOffsetY, _shadowOpacity,
                      _border, _borderColor, _borderThickness,
                      _wallpaperEnabled, _wallpaperSource, _wallpaperPath, _wallpaperOpacity, _wallpaperDisplayMode,
                      _wallpaperScale, _wallpaperOffsetX, _wallpaperOffsetY, _wallpaperSlideshowInterval, _wallpaperBlur,
-                     _visibilityAnimation, _visibilityDuration, _emphasisAnimation, _emphasisAmount, _emphasisDuration,
-                     _notificationTransition, _notificationTransitionDuration,
-                     _rippleType, _rippleColor, _rippleDuration, _rippleThickness, _rippleOpacity, _rippleConstraint, _rippleConstraintRadius,
+                     _visibilityAnimation, _visibilityAnimationEnabled, _visibilityDuration,
+                     _emphasisAnimation, _emphasisAnimationEnabled, _emphasisAmount, _emphasisDuration,
+                     _notificationTransition, _notificationTransitionEnabled, _notificationTransitionDuration,
+                     _rippleType, _rippleEnabled, _rippleColor, _rippleDuration, _rippleThickness, _rippleOpacity, _rippleConstraint, _rippleConstraintRadius,
+                     _cinematicShake, _cinematicBlur, _cinematicFlash,
                      _marqueeEnabled, _marqueeColor, _marqueeDuration, _marqueeOpacity, _marqueeSpeed, _marqueeFrameThickness,
-                     _prepareOnClassStyle,
+                     _prepareOnClassStyle, _prepareOnClassEnabled,
                      _countdownArrowColor, _countdownArrowCount, _countdownArrowPerGroup, _countdownArrowSpacing,
                      _countdownArrowGroupSpacing, _countdownArrowSpeed, _countdownArrowThickness,
                      _countdownPulseColor, _countdownPulseThickness, _countdownPulseSpeed, _countdownPulseMaxRadius,
                      _countdownScanColor, _countdownScanThickness, _countdownScanSpeed, _countdownScanDirection, _countdownScanTailEnabled,
+                     _prepareWarningEnabled, _prepareWarningColor, _prepareWarningTriggerSeconds, _prepareWarningFlashSpeed, _prepareWarningFlashAmount,
+                     _prepareWarningFrameThickness, _prepareWarningOpacity,
                      _styleSheetPath, _watchStyleSheet
                  })
         {
@@ -957,6 +1102,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _gradientEndColor.Color = ReadColor(settings.GradientEndColor, Color.FromArgb(0xCC, 0x40, 0x40, 0xA0));
         Select(_gradientDirection, GradientDirections, settings.GradientDirection);
         Select(_backgroundTextureType, BackgroundTextures, settings.BackgroundTextureType);
+        _backgroundTextureEnabled.IsChecked = settings.BackgroundTextureType != BackgroundTexture.None;
         _backgroundTextureColor.Color = ReadColor(settings.BackgroundTextureColor, Color.FromArgb(0x2E, 0xFF, 0xFF, 0xFF));
         _backgroundTextureSize.DoubleValue = settings.BackgroundTextureSize;
         _shadow.IsChecked = settings.ShadowEnabled;
@@ -979,17 +1125,21 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _wallpaperSlideshowInterval.DoubleValue = settings.WallpaperSlideshowIntervalSeconds;
         _wallpaperBlur.DoubleValue = settings.WallpaperBlurRadius;
         Select(_visibilityAnimation, VisibilityAnimations, settings.VisibilityAnimation);
+        _visibilityAnimationEnabled.IsChecked = settings.VisibilityAnimation != VisibilityAnimation.None;
         _visibilityDuration.DoubleValue = settings.VisibilityDurationSeconds;
         Select(_emphasisAnimation, EmphasisAnimations, settings.EmphasisAnimation);
+        _emphasisAnimationEnabled.IsChecked = settings.EmphasisAnimation != EmphasisAnimation.None;
         _emphasisAmount.Value = settings.EmphasisAmount;
         _emphasisDuration.DoubleValue = settings.EmphasisDurationSeconds;
         Select(_notificationTransition, NotificationTransitions, settings.NotificationTransition);
+        _notificationTransitionEnabled.IsChecked = settings.NotificationTransition != NotificationTransition.HostDefault;
         _notificationTransitionDuration.DoubleValue = settings.NotificationTransitionDurationSeconds;
         _carouselAnimation.IsChecked = settings.CarouselAnimationEnabled;
         Select(_carouselAnimationType, CarouselAnimationTypes, settings.CarouselAnimationType);
         _carouselAnimationDuration.DoubleValue = settings.CarouselAnimationDurationSeconds;
         _carouselAnimationOffset.DoubleValue = settings.CarouselAnimationOffset;
         Select(_rippleType, RippleTypes, settings.RippleType);
+        _rippleEnabled.IsChecked = settings.RippleType != RippleType.None;
         _rippleColor.Color = ReadColor(settings.RippleColor, Color.FromArgb(0xAA, 0x7D, 0xD3, 0xFC));
         _rippleDuration.DoubleValue = settings.RippleDurationSeconds;
         _rippleThickness.DoubleValue = settings.RippleThickness;
@@ -1003,6 +1153,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _marqueeSpeed.DoubleValue = settings.MarqueeSpeed;
         _marqueeFrameThickness.DoubleValue = settings.MarqueeFrameThickness;
         Select(_prepareOnClassStyle, PrepareOnClassStyles, settings.PrepareOnClassStyle);
+        _prepareOnClassEnabled.IsChecked = settings.PrepareOnClassStyle != PrepareOnClassStyle.None;
         _countdownArrowColor.Color = ReadColor(settings.CountdownArrowColor, Color.FromArgb(0xBF, 0xF8, 0xFA, 0xFC));
         _countdownArrowCount.DoubleValue = settings.CountdownArrowCount;
         _countdownArrowPerGroup.DoubleValue = settings.CountdownArrowPerGroup;
@@ -1019,6 +1170,16 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _countdownScanSpeed.DoubleValue = settings.CountdownScanSpeed;
         Select(_countdownScanDirection, ScanDirections, settings.CountdownScanDirection);
         _countdownScanTailEnabled.IsChecked = settings.CountdownScanTailEnabled;
+        _prepareWarningEnabled.IsChecked = settings.PrepareWarningEnabled;
+        _prepareWarningColor.Color = ReadColor(settings.PrepareWarningColor, Color.FromArgb(0x66, 0xFF, 0, 0));
+        _prepareWarningTriggerSeconds.DoubleValue = settings.PrepareWarningTriggerSeconds;
+        _prepareWarningFlashSpeed.DoubleValue = settings.PrepareWarningFlashSpeed;
+        _prepareWarningFlashAmount.Value = settings.PrepareWarningFlashAmount;
+        _prepareWarningFrameThickness.DoubleValue = settings.PrepareWarningFrameThickness;
+        _prepareWarningOpacity.Value = settings.PrepareWarningOpacity;
+        _cinematicShake.Value = settings.CinematicShakeAmount;
+        _cinematicBlur.Value = settings.CinematicBlurRadius;
+        _cinematicFlash.Value = settings.CinematicFlashAmount;
         RefreshUserPresets();
     }
 
@@ -1059,7 +1220,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.GradientEnabled = _gradient.IsChecked == true;
             settings.GradientEndColor = _gradientEndColor.Color.ToString();
             settings.GradientDirection = Selected(_gradientDirection, GradientDirection.TopLeftToBottomRight);
-            settings.BackgroundTextureType = Selected(_backgroundTextureType, BackgroundTexture.None);
+            settings.BackgroundTextureType = _backgroundTextureEnabled.IsChecked == true
+                ? Selected(_backgroundTextureType, BackgroundTexture.None)
+                : BackgroundTexture.None;
             settings.BackgroundTextureColor = _backgroundTextureColor.Color.ToString();
             settings.BackgroundTextureSize = _backgroundTextureSize.DoubleValue;
             settings.ShadowEnabled = _shadow.IsChecked == true;
@@ -1081,18 +1244,26 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.WallpaperOffsetY = _wallpaperOffsetY.DoubleValue;
             settings.WallpaperSlideshowIntervalSeconds = _wallpaperSlideshowInterval.DoubleValue;
             settings.WallpaperBlurRadius = _wallpaperBlur.DoubleValue;
-            settings.VisibilityAnimation = Selected(_visibilityAnimation, VisibilityAnimation.None);
+            settings.VisibilityAnimation = _visibilityAnimationEnabled.IsChecked == true
+                ? Selected(_visibilityAnimation, VisibilityAnimation.None)
+                : VisibilityAnimation.None;
             settings.VisibilityDurationSeconds = _visibilityDuration.DoubleValue;
-            settings.EmphasisAnimation = Selected(_emphasisAnimation, EmphasisAnimation.None);
+            settings.EmphasisAnimation = _emphasisAnimationEnabled.IsChecked == true
+                ? Selected(_emphasisAnimation, EmphasisAnimation.None)
+                : EmphasisAnimation.None;
             settings.EmphasisAmount = _emphasisAmount.Value;
             settings.EmphasisDurationSeconds = _emphasisDuration.DoubleValue;
-            settings.NotificationTransition = Selected(_notificationTransition, NotificationTransition.HostDefault);
+            settings.NotificationTransition = _notificationTransitionEnabled.IsChecked == true
+                ? Selected(_notificationTransition, NotificationTransition.HostDefault)
+                : NotificationTransition.HostDefault;
             settings.NotificationTransitionDurationSeconds = _notificationTransitionDuration.DoubleValue;
             settings.CarouselAnimationEnabled = _carouselAnimation.IsChecked == true;
             settings.CarouselAnimationType = Selected(_carouselAnimationType, CarouselAnimationType.SlideUp);
             settings.CarouselAnimationDurationSeconds = _carouselAnimationDuration.DoubleValue;
             settings.CarouselAnimationOffset = _carouselAnimationOffset.DoubleValue;
-            settings.RippleType = Selected(_rippleType, RippleType.None);
+            settings.RippleType = _rippleEnabled.IsChecked == true
+                ? Selected(_rippleType, RippleType.None)
+                : RippleType.None;
             settings.RippleColor = _rippleColor.Color.ToString();
             settings.RippleDurationSeconds = _rippleDuration.DoubleValue;
             settings.RippleThickness = _rippleThickness.DoubleValue;
@@ -1105,7 +1276,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.MarqueeOpacity = _marqueeOpacity.Value;
             settings.MarqueeSpeed = _marqueeSpeed.DoubleValue;
             settings.MarqueeFrameThickness = _marqueeFrameThickness.DoubleValue;
-            settings.PrepareOnClassStyle = Selected(_prepareOnClassStyle, PrepareOnClassStyle.None);
+            settings.PrepareOnClassStyle = _prepareOnClassEnabled.IsChecked == true
+                ? Selected(_prepareOnClassStyle, PrepareOnClassStyle.None)
+                : PrepareOnClassStyle.None;
             settings.CountdownArrowColor = _countdownArrowColor.Color.ToString();
             settings.CountdownArrowCount = (int)Math.Round(_countdownArrowCount.DoubleValue);
             settings.CountdownArrowPerGroup = (int)Math.Round(_countdownArrowPerGroup.DoubleValue);
@@ -1122,6 +1295,16 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.CountdownScanSpeed = _countdownScanSpeed.DoubleValue;
             settings.CountdownScanDirection = Selected(_countdownScanDirection, ScanlineDirection.Horizontal);
             settings.CountdownScanTailEnabled = _countdownScanTailEnabled.IsChecked == true;
+            settings.PrepareWarningEnabled = _prepareWarningEnabled.IsChecked == true;
+            settings.PrepareWarningColor = _prepareWarningColor.Color.ToString();
+            settings.PrepareWarningTriggerSeconds = _prepareWarningTriggerSeconds.DoubleValue;
+            settings.PrepareWarningFlashSpeed = _prepareWarningFlashSpeed.DoubleValue;
+            settings.PrepareWarningFlashAmount = _prepareWarningFlashAmount.Value;
+            settings.PrepareWarningFrameThickness = _prepareWarningFrameThickness.DoubleValue;
+            settings.PrepareWarningOpacity = _prepareWarningOpacity.Value;
+            settings.CinematicShakeAmount = _cinematicShake.Value;
+            settings.CinematicBlurRadius = _cinematicBlur.Value;
+            settings.CinematicFlashAmount = _cinematicFlash.Value;
         }
         finally
         {
@@ -1173,24 +1356,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         return group;
     }
 
-    private static SettingsExpander ChoiceGroup<T>(string glyph, string header, string description, ComboBox selector, T disabledValue, params SettingsExpanderItem[] items)
-    {
-        var group = Group(glyph, header, description, items);
-        group.Footer = selector;
-        void Sync()
-        {
-            var isEnabled = !EqualityComparer<T>.Default.Equals(Selected(selector, disabledValue), disabledValue);
-            foreach (var item in items)
-            {
-                item.IsEnabled = isEnabled;
-            }
-        }
-
-        selector.SelectionChanged += (_, _) => Sync();
-        Sync();
-        return group;
-    }
-
     private static SettingsExpanderItem Item(string header, string description, Control footer, ToggleSwitch? dependency = null)
     {
         var item = new SettingsExpanderItem
@@ -1229,15 +1394,62 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         Sync();
     }
 
-    private static void EnabledWhenNotAny<T>(Control target, ComboBox selector, params T[] disabledValues)
+    private static void EnabledWhenNotAny<T>(Control target, ComboBox selector, ToggleSwitch? masterToggle, params T[] disabledValues)
     {
         void Sync()
         {
+            var on = masterToggle == null || masterToggle.IsChecked == true;
             var selected = selector.SelectedItem is Choice<T> choice ? choice.Value : default!;
-            target.IsEnabled = selected != null && Array.IndexOf(disabledValues, selected) < 0;
+            target.IsEnabled = on && selected != null && Array.IndexOf(disabledValues, selected) < 0;
+        }
+
+        if (masterToggle != null)
+        {
+            masterToggle.PropertyChanged += (_, _) => Sync();
         }
 
         selector.SelectionChanged += (_, _) => Sync();
+        Sync();
+    }
+
+    /// <summary>仅当下拉框选中指定值（且总开关打开）时启用目标。</summary>
+    private static void EnabledWhen<T>(Control target, ComboBox selector, ToggleSwitch? masterToggle, T enabledValue)
+    {
+        void Sync() => target.IsEnabled =
+            (masterToggle == null || masterToggle.IsChecked == true) &&
+            EqualityComparer<T>.Default.Equals(Selected(selector, enabledValue), enabledValue);
+        if (masterToggle != null)
+        {
+            masterToggle.PropertyChanged += (_, _) => Sync();
+        }
+
+        selector.SelectionChanged += (_, _) => Sync();
+        Sync();
+    }
+
+    /// <summary>仅当总开关打开且下拉框选中指定值时显示目标（即将上课子样式卡片用）。</summary>
+    private static void VisibleWhenEnabledAnd<T>(Control target, ToggleSwitch toggle, ComboBox selector, T value)
+    {
+        void Sync() => target.IsVisible =
+            toggle.IsChecked == true &&
+            EqualityComparer<T>.Default.Equals(Selected(selector, value), value);
+        toggle.PropertyChanged += (_, _) => Sync();
+        selector.SelectionChanged += (_, _) => Sync();
+        Sync();
+    }
+
+    /// <summary>打开总开关且下拉框尚未选中任何项时，自动选第一个选项（处理全新安装/旧配置为 None 的情况）。</summary>
+    private static void AutoSelectOnEnable<T>(ToggleSwitch toggle, ComboBox selector, IEnumerable<Choice<T>> choices)
+    {
+        void Sync()
+        {
+            if (toggle.IsChecked == true && selector.SelectedItem == null)
+            {
+                selector.SelectedItem = choices.FirstOrDefault();
+            }
+        }
+
+        toggle.PropertyChanged += (_, _) => Sync();
         Sync();
     }
 

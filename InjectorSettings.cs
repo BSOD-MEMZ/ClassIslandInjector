@@ -60,7 +60,8 @@ public enum RippleType
     Hexagon,
     Burst,
     Explode,
-    Particle
+    Particle,
+    Cinematic
 }
 
 /// <summary>
@@ -233,6 +234,16 @@ public sealed class InjectorSettings
     private double _countdownScanSpeed = 1;
     private ScanlineDirection _countdownScanDirection = ScanlineDirection.Horizontal;
     private bool _countdownScanTailEnabled = true;
+    private bool _prepareWarningEnabled;
+    private string _prepareWarningColor = "#66FF0000";
+    private double _prepareWarningTriggerSeconds = 30;
+    private double _prepareWarningFlashSpeed = 3;
+    private double _prepareWarningFlashAmount = 0.55;
+    private double _prepareWarningFrameThickness = 0.02;
+    private double _prepareWarningOpacity = 1;
+    private double _cinematicShakeAmount = 14;
+    private double _cinematicBlurRadius = 16;
+    private double _cinematicFlashAmount = 0.8;
     private int _updateDepth;
     private bool _changePending;
 
@@ -325,6 +336,16 @@ public sealed class InjectorSettings
     public double CountdownScanSpeed { get => _countdownScanSpeed; set => Set(ref _countdownScanSpeed, Math.Clamp(value, 0.1, 8)); }
     public ScanlineDirection CountdownScanDirection { get => _countdownScanDirection; set => Set(ref _countdownScanDirection, value); }
     public bool CountdownScanTailEnabled { get => _countdownScanTailEnabled; set => Set(ref _countdownScanTailEnabled, value); }
+    public bool PrepareWarningEnabled { get => _prepareWarningEnabled; set => Set(ref _prepareWarningEnabled, value); }
+    public string PrepareWarningColor { get => _prepareWarningColor; set => Set(ref _prepareWarningColor, value.Trim()); }
+    public double PrepareWarningTriggerSeconds { get => _prepareWarningTriggerSeconds; set => Set(ref _prepareWarningTriggerSeconds, Math.Clamp(value, 5, 600)); }
+    public double PrepareWarningFlashSpeed { get => _prepareWarningFlashSpeed; set => Set(ref _prepareWarningFlashSpeed, Math.Clamp(value, 0.1, 10)); }
+    public double PrepareWarningFlashAmount { get => _prepareWarningFlashAmount; set => Set(ref _prepareWarningFlashAmount, Math.Clamp(value, 0, 1)); }
+    public double PrepareWarningFrameThickness { get => _prepareWarningFrameThickness; set => Set(ref _prepareWarningFrameThickness, Math.Clamp(value, 0.005, 0.1)); }
+    public double PrepareWarningOpacity { get => _prepareWarningOpacity; set => Set(ref _prepareWarningOpacity, Math.Clamp(value, 0.1, 1)); }
+    public double CinematicShakeAmount { get => _cinematicShakeAmount; set => Set(ref _cinematicShakeAmount, Math.Clamp(value, 0, 80)); }
+    public double CinematicBlurRadius { get => _cinematicBlurRadius; set => Set(ref _cinematicBlurRadius, Math.Clamp(value, 0, 60)); }
+    public double CinematicFlashAmount { get => _cinematicFlashAmount; set => Set(ref _cinematicFlashAmount, Math.Clamp(value, 0, 1)); }
 
     public void ResetToDefaults()
     {
@@ -449,6 +470,16 @@ public sealed class InjectorSettings
         CountdownScanSpeed = source.CountdownScanSpeed;
         CountdownScanDirection = source.CountdownScanDirection;
         CountdownScanTailEnabled = source.CountdownScanTailEnabled;
+        PrepareWarningEnabled = source.PrepareWarningEnabled;
+        PrepareWarningColor = source.PrepareWarningColor;
+        PrepareWarningTriggerSeconds = source.PrepareWarningTriggerSeconds;
+        PrepareWarningFlashSpeed = source.PrepareWarningFlashSpeed;
+        PrepareWarningFlashAmount = source.PrepareWarningFlashAmount;
+        PrepareWarningFrameThickness = source.PrepareWarningFrameThickness;
+        PrepareWarningOpacity = source.PrepareWarningOpacity;
+        CinematicShakeAmount = source.CinematicShakeAmount;
+        CinematicBlurRadius = source.CinematicBlurRadius;
+        CinematicFlashAmount = source.CinematicFlashAmount;
         EndUpdate();
     }
 

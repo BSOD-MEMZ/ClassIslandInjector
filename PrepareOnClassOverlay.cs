@@ -174,3 +174,64 @@ internal sealed class CountdownScanlineOverlay : PrepareOnClassOverlay
         }
     }
 }
+
+/// <summary>
+/// 「即将上课」红色警告：全屏内发光 + 边框光晕，并随 <see cref="PrepareOnClassOverlay.Loop"/>
+/// 周期性闪动。仿照流光（跑马灯）的内发光绘制方式，但使用纯色警示（默认红色），
+/// 宿主在专用全屏覆盖窗口（<see cref="MarqueeOverlayWindow"/>）里，覆盖整块屏幕。
+/// </summary>
+internal sealed class PrepareOnClassWarningOverlay : PrepareOnClassOverlay
+{
+    public Color Color { get; set; } = Color.FromArgb(0x66, 0xFF, 0, 0);
+
+    /// <summary>每秒闪动次数（与 <see cref="Speed"/> 保持同一数值）。</summary>
+    public double FlashSpeed { get; set; } = 3;
+
+    /// <summary>闪动幅度：0 常亮，1 完全熄灭的闪烁。</summary>
+    public double FlashAmount { get; set; } = 0.55;
+
+    /// <summary>边框厚度（相对屏幕短边的比例）。</summary>
+    public double FrameThickness { get; set; } = 0.02;
+
+    /// <summary>整体透明度（0..1，在颜色自带 alpha 之上再叠加）。</summary>
+    public double OpacityScale { get; set; } = 1;
+
+    public override void Render(DrawingContext context)
+    {
+        base.Render(context);
+        if (Bounds.Width < 12 || Bounds.Height < 8)
+        {
+            return;
+        }
+
+        // 闪动：亮度在 [1-FlashAmount, 1] 之间按正弦起伏（Loop 每秒循环 FlashSpeed 次）。
+        var flash = 1 - FlashAmount * (0.5 + 0.5 * Math.Sin(Loop * Math.Tau));
+        var maxDim = Math.Min(Bounds.Width, Bounds.Height);
+        var edgeAlpha = (byte)Math.Clamp(Color.A * OpacityScale * flash, 0, 255);
+        if (edgeAlpha <= 0)
+        {
+            return;
+        }
+
+        // 全屏内发光：中心透明、边缘红色，向内柔和过渡（与流光的内发光同款画法）。
+        var edge = new Color(edgeAlpha, Color.R, Color.G, Color.B);
+        var transparent = Color.FromArgb(0, Color.R, Color.G, Color.B);
+        var glowBrush = new RadialGradientBrush
+        {
+            GradientStops =
+            {
+                new GradientStop(transparent, 0.5),
+                new GradientStop(edge, 1)
+            }
+        };
+        context.DrawRectangle(glowBrush, null, new Rect(0, 0, Bounds.Width, Bounds.Height));
+
+        // 边框光晕：沿屏幕边缘的红色描边（比内发光更深更锐利），随闪动一起起伏。
+        var frameAlpha = (byte)Math.Clamp(Color.A * 1.5 * OpacityScale * flash, 0, 255);
+        var frameThickness = Math.Max(2, maxDim * FrameThickness);
+        var framePen = new Pen(new SolidColorBrush(new Color(frameAlpha, Color.R, Color.G, Color.B)), frameThickness);
+        var inset = frameThickness / 2;
+        context.DrawRectangle(null, framePen,
+            new Rect(inset, inset, Bounds.Width - frameThickness, Bounds.Height - frameThickness));
+    }
+}

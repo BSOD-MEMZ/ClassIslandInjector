@@ -606,7 +606,7 @@ internal sealed class IslandVisualEditorWindow : Window
         {
             Severity = InfoBarSeverity.Warning,
             Title = "危险操作提示",
-            Message = "可视化编辑器会直接改动主界面的外观与变形，操作不当可能导致布局异常或视觉混乱，请谨慎使用。",
+            Message = "可视化编辑器会直接改动主界面的外观与变形，操作不当可能导致布局异常或视觉混乱，出于安全考虑已禁用大部分功能且停止维护。",
             IsOpen = true,
             IsClosable = true
         };

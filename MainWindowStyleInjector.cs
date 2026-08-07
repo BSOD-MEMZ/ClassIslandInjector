@@ -54,6 +54,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private object? _suppressingEffectPlayer;
     private readonly List<IRippleEffect> _ripples = [];
     private readonly Dictionary<Control, PrepareOnClassOverlay> _prepareOnClassOverlays = [];
+    /// <summary>「即将上课 · 红色警告」全屏覆盖层（宿于流光专用全屏窗口，独立于行级覆盖层）。</summary>
+    private PrepareOnClassWarningOverlay? _prepareWarningOverlay;
     /// <summary>预览期间被强制点亮（Opacity=1）的 GridOverlay 宿主，移除覆盖层时还原。</summary>
     private readonly Dictionary<Control, Grid> _prepareOnClassOverlayHosts = [];
     /// <summary>「预览即将上课」的激活截止时间（5 秒）。</summary>
@@ -540,6 +542,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         var hasTransientAnimation = GetEffectProgress(_visibilityStartedAt, _settings.VisibilityDurationSeconds) < 1 ||
                                    GetEffectProgress(_emphasisStartedAt, _settings.EmphasisDurationSeconds) < 1 ||
                                    _ripples.Count > 0 || _prepareOnClassOverlays.Count > 0 ||
+                                   _prepareWarningOverlay != null ||
                                    _colorTransitionActive || _wallpaperTransitionActive;
         if (hasContinuousAnimation || hasTransientAnimation)
         {
@@ -614,6 +617,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         {
             RemovePrepareOnClassOverlay(line);
         }
+        UpdatePrepareWarningOverlay();
         UpdatePreviewOverlayHostVisibility();
         SyncPrepareOnClassOverlayHosts();
         UpdateAnimationTimer();
@@ -1487,7 +1491,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
     /// </summary>
     private void AdvancePrepareOnClassOverlays()
     {
-        if (_prepareOnClassOverlays.Count == 0)
+        if (_prepareOnClassOverlays.Count == 0 && _prepareWarningOverlay == null)
         {
             return;
         }
@@ -1502,6 +1506,20 @@ internal sealed class MainWindowStyleInjector : IDisposable
             if (overlay.IsFadeComplete)
             {
                 RemovePrepareOnClassOverlay(line);
+            }
+        }
+
+        // 全屏红色警告覆盖层：与行级覆盖层同一时钟推进、淡入淡出、闪动由 Speed 驱动。
+        if (_prepareWarningOverlay is { } warning)
+        {
+            warning.Phase = phase * warning.Speed;
+            warning.Opacity = warning.FadeOpacity;
+            warning.InvalidateVisual();
+            if (warning.IsFadeComplete)
+            {
+                _marqueeWindow?.Host.Children.Remove(warning);
+                _prepareWarningOverlay = null;
+                _marqueeWindow?.HideWhenEmpty();
             }
         }
 
@@ -1653,6 +1671,90 @@ internal sealed class MainWindowStyleInjector : IDisposable
         {
             RemovePrepareOnClassOverlay(line);
         }
+
+        if (_prepareWarningOverlay is { } warning)
+        {
+            _marqueeWindow?.Host.Children.Remove(warning);
+            _prepareWarningOverlay = null;
+            _marqueeWindow?.HideWhenEmpty();
+        }
+    }
+
+    /// <summary>
+    /// 维护「即将上课 · 红色警告」全屏覆盖层的生命周期：距上课不足触发秒数
+    /// （或预览期间）时创建并显示，离开后淡出并移除。由 OnStateTick 的 50ms 轮询驱动。
+    /// </summary>
+    private void UpdatePrepareWarningOverlay()
+    {
+        var shouldShow = _settings.PrepareWarningEnabled &&
+                         (IsPreviewingPrepareOnClass() || IsWithinWarningWindow());
+        if (!shouldShow)
+        {
+            if (_prepareWarningOverlay is { IsFadingOut: false } leaving)
+            {
+                leaving.BeginFadeOut();
+            }
+
+            return;
+        }
+
+        if (_prepareWarningOverlay == null)
+        {
+            if (_mainWindow == null)
+            {
+                return;
+            }
+
+            var overlay = new PrepareOnClassWarningOverlay
+            {
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Stretch
+            };
+            var marqueeWindow = _marqueeWindow ??= new MarqueeOverlayWindow();
+            var screen = _mainWindow.Screens.ScreenFromWindow(_mainWindow) ?? _mainWindow.Screens.Primary;
+            marqueeWindow.ShowFullScreen(screen);
+            marqueeWindow.Host.Children.Add(overlay);
+            _prepareWarningOverlay = overlay;
+            ApplyPrepareWarningParams(overlay);
+        }
+        else
+        {
+            _prepareWarningOverlay.CancelFadeOut();
+            ApplyPrepareWarningParams(_prepareWarningOverlay);
+        }
+    }
+
+    /// <summary>距上课剩余秒数是否已进入警告窗口（剩余 &gt; 0 且不超过触发阈值）。</summary>
+    private bool IsWithinWarningWindow()
+    {
+        var left = TryGetOnClassLeftTime();
+        return left is { } time && time > TimeSpan.Zero &&
+               time.TotalSeconds <= _settings.PrepareWarningTriggerSeconds;
+    }
+
+    /// <summary>通过宿主公开服务读取距上课剩余时间（失败返回 null，不冒泡异常）。</summary>
+    private static TimeSpan? TryGetOnClassLeftTime()
+    {
+        try
+        {
+            return IAppHost.TryGetService<ILessonsService>()?.OnClassLeftTime;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void ApplyPrepareWarningParams(PrepareOnClassWarningOverlay overlay)
+    {
+        overlay.Speed = _settings.PrepareWarningFlashSpeed;
+        overlay.FlashSpeed = _settings.PrepareWarningFlashSpeed;
+        overlay.FlashAmount = _settings.PrepareWarningFlashAmount;
+        overlay.FrameThickness = _settings.PrepareWarningFrameThickness;
+        overlay.OpacityScale = _settings.PrepareWarningOpacity;
+        overlay.Color = TryParseColor(_settings.PrepareWarningColor, out var color)
+            ? color
+            : Color.FromArgb(0x66, 0xFF, 0, 0);
     }
 
     private void ObserveLine(Control line)
@@ -1967,7 +2069,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
         var isHanabi = _settings.RippleType == RippleType.Hanabi;
         // 使用自带配色的类型不读取用户颜色设置。
-        var ignoresColor = _settings.RippleType is RippleType.Hanabi or RippleType.Explode;
+        var ignoresColor = _settings.RippleType is RippleType.Hanabi or RippleType.Explode or RippleType.Cinematic;
         var color = Colors.White;
         if (!ignoresColor && !TryParseColor(_settings.RippleColor, out color))
         {
@@ -1975,8 +2077,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         var effectControls = TryGetFullScreenEffectHost(out var effectWindow);
-        // 花火/爆炸比岛屿大得多，必须进全屏特效窗口，否则早期启动会被裁切。
-        if (_settings.RippleType is RippleType.Hanabi or RippleType.Explode && effectControls == null)
+        // 花火/爆炸/屏幕涟漪比岛屿大得多，必须进全屏特效窗口，否则早期启动会被裁切。
+        if (_settings.RippleType is RippleType.Hanabi or RippleType.Explode or RippleType.Cinematic &&
+            effectControls == null)
         {
             return;
         }
@@ -2007,6 +2110,39 @@ internal sealed class MainWindowStyleInjector : IDisposable
             }
 
             _ripples.Add(explosion);
+            return;
+        }
+
+        if (_settings.RippleType == RippleType.Cinematic)
+        {
+            // 屏幕涟漪：抓取当前全屏画面（含任务栏与其它窗口），叠加晃动/涟漪/闪光/模糊的电影感特效。
+            var frame = CaptureFullScreen();
+            if (frame == null)
+            {
+                return;
+            }
+
+            var cinematic = new CinematicRippleOverlay(frame,
+                TimeSpan.FromSeconds(_settings.RippleDurationSeconds),
+                _settings.RippleOpacity,
+                _settings.CinematicShakeAmount,
+                _settings.CinematicBlurRadius,
+                _settings.CinematicFlashAmount)
+            {
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Stretch
+            };
+            if (effectControls != null)
+            {
+                effectControls.Add(cinematic);
+                _rippleHosts[cinematic] = effectControls;
+            }
+            else
+            {
+                _windowRoot.Children.Add(cinematic);
+            }
+
+            _ripples.Add(cinematic);
             return;
         }
 
@@ -2152,6 +2288,106 @@ internal sealed class MainWindowStyleInjector : IDisposable
     }
 
     /// <summary>
+    /// 检测宿主是否开启了「分体主界面」（反射读宿主 Settings.IsIslandSeperated，注意宿主拼写）。
+    /// 分体模式下本插件的背景/边框/圆角/底图注入对独立组件基本失效，设置页据此提示用户。
+    /// </summary>
+    public static bool IsSeparatedMode()
+    {
+        try
+        {
+            var app = AppBase.Current;
+            var appType = app?.GetType();
+            var settings = appType?.GetProperty("Settings", BindingFlags.Instance | BindingFlags.Public)?.GetValue(app);
+            var separated = settings?.GetType()
+                .GetProperty("IsIslandSeperated", BindingFlags.Instance | BindingFlags.Public)?.GetValue(settings);
+            return separated is true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 抓取当前全屏画面（物理像素，含任务栏与其它窗口），供「屏幕涟漪」特效使用。
+    /// 用 System.Drawing.Graphics.CopyFromScreen 抓取主窗口所在显示器；
+    /// 失败时回退抓取主窗口内容；仍失败则返回 null（放弃本次特效）。
+    /// </summary>
+    private Bitmap? CaptureFullScreen()
+    {
+        try
+        {
+            var window = _mainWindow;
+            var screen = window?.Screens.ScreenFromWindow(window) ?? window?.Screens.Primary;
+            if (screen == null)
+            {
+                return null;
+            }
+
+            // Screen.Bounds 为物理像素且含任务栏区域（虚拟桌面坐标系）。
+            var bounds = screen.Bounds;
+            using var source = new System.Drawing.Bitmap(bounds.Width, bounds.Height);
+            using (var graphics = System.Drawing.Graphics.FromImage(source))
+            {
+                graphics.CopyFromScreen(bounds.X, bounds.Y, 0, 0, source.Size);
+            }
+
+            // 转成 Avalonia 位图（PNG 中转，与 GifFrameLoader 同款做法）。
+            using var stream = new MemoryStream();
+            source.Save(stream, System.Drawing.Imaging.ImageFormat.Png);
+            stream.Position = 0;
+            return new Bitmap(stream);
+        }
+        catch
+        {
+            return CaptureMainWindowFrame();
+        }
+    }
+
+    /// <summary>
+    /// 抓取主窗口当前渲染帧（含主界面全部内容），作为全屏抓屏失败时的兜底。
+    /// 失败时再回退抓取岛屿根节点；仍失败则返回 null。
+    /// </summary>
+    private Bitmap? CaptureMainWindowFrame()
+    {
+        try
+        {
+            var window = _mainWindow;
+            if (window == null)
+            {
+                return null;
+            }
+
+            var scaling = window.RenderScaling > 0 ? window.RenderScaling : 1;
+            var width = Math.Max(1, (int)(window.Bounds.Width * scaling));
+            var height = Math.Max(1, (int)(window.Bounds.Height * scaling));
+            var bitmap = new RenderTargetBitmap(new PixelSize(width, height), new Vector(96 * scaling, 96 * scaling));
+            bitmap.Render(window);
+            return bitmap;
+        }
+        catch
+        {
+            try
+            {
+                if (_islandRoot == null)
+                {
+                    return null;
+                }
+
+                var width = Math.Max(1, (int)_islandRoot.Bounds.Width);
+                var height = Math.Max(1, (int)_islandRoot.Bounds.Height);
+                var bitmap = new RenderTargetBitmap(new PixelSize(width, height), new Vector(96, 96));
+                bitmap.Render(_islandRoot);
+                return bitmap;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+    }
+
+    /// <summary>
     /// 自动约束半径：包含主界面岛屿并留出舒适的扩散余量，同时确保全屏特效窗口里的
     /// Ripple 不会扩散到整块桌面。
     /// </summary>
@@ -2183,6 +2419,11 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     private void RemoveRipple(IRippleEffect ripple)
     {
+        if (ripple is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
+
         if (_rippleHosts.Remove(ripple, out var host))
         {
             host.Remove(ripple);

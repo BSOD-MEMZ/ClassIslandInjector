@@ -21,6 +21,7 @@ internal sealed class MarqueeOverlayWindow : Window
     private const uint SwpNoMove = 0x0002;
     private const uint SwpNoSize = 0x0001;
     private const uint SwpNoActivate = 0x0010;
+    private const uint SwpFrameChanged = 0x0020;
     private static readonly IntPtr HwndTopmost = new(-1);
 
     private readonly Panel _host = new();
@@ -38,6 +39,9 @@ internal sealed class MarqueeOverlayWindow : Window
         TransparencyLevelHint = [WindowTransparencyLevel.Transparent];
         Background = Brushes.Transparent;
         Content = _host;
+        // 窗口真正显示后（句柄就绪）再确保点击穿透等扩展样式生效，
+        // 否则 Show 时句柄可能尚未创建，导致全屏窗口挡住鼠标操作。
+        Opened += (_, _) => ApplyClickThrough();
     }
 
     /// <summary>
@@ -59,13 +63,31 @@ internal sealed class MarqueeOverlayWindow : Window
             Show();
         }
 
-        // 压过任务栏（顶置带顶部）+ 点击穿透 + 不抢焦点 + 工具窗。
+        ApplyTopmost();
+        ApplyClickThrough();
+    }
+
+    /// <summary>压过任务栏（置顶带顶部）。</summary>
+    private void ApplyTopmost()
+    {
         var handle = TryGetPlatformHandle()?.Handle;
         if (handle is { } hwnd && hwnd != IntPtr.Zero)
         {
             NativeMethods.SetWindowPos(hwnd, HwndTopmost, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate);
-            var exStyle = NativeMethods.GetWindowLong(hwnd, GwlExStyle);
-            NativeMethods.SetWindowLong(hwnd, GwlExStyle, exStyle | WsExTransparent | WsExToolWindow | WsExNoActivate);
+        }
+    }
+
+    /// <summary>设置点击穿透 + 不抢焦点 + 工具窗扩展样式；改样式后需带 SWP_FRAMECHANGED 再 SetWindowPos 才生效。</summary>
+    private void ApplyClickThrough()
+    {
+        var handle = TryGetPlatformHandle()?.Handle;
+        if (handle is { } hwnd && hwnd != IntPtr.Zero)
+        {
+            var exStyle = NativeMethods.GetWindowLongPtr(hwnd, GwlExStyle).ToInt64();
+            NativeMethods.SetWindowLongPtr(hwnd, GwlExStyle,
+                (IntPtr)(exStyle | WsExTransparent | WsExToolWindow | WsExNoActivate));
+            NativeMethods.SetWindowPos(hwnd, HwndTopmost, 0, 0, 0, 0,
+                SwpNoMove | SwpNoSize | SwpNoActivate | SwpFrameChanged);
         }
     }
 
@@ -83,10 +105,10 @@ internal sealed class MarqueeOverlayWindow : Window
         [DllImport("user32.dll")]
         public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
 
-        [DllImport("user32.dll")]
-        public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+        public static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
 
-        [DllImport("user32.dll")]
-        public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+        [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+        public static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
     }
 }
