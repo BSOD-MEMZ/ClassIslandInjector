@@ -3051,6 +3051,31 @@ internal sealed class MainWindowStyleInjector : IDisposable
     }
 
     /// <summary>
+    /// 检测宿主是否处于「多行主界面」模式（主界面包含多行 MainWindowLine）。
+    /// 多行模式下本插件仅极少数功能无法生效，插件整体仍可继续正常运行，设置页据此提示用户。
+    /// </summary>
+    public static bool IsMultiLineMode()
+    {
+        try
+        {
+            var mainWindow = AppBase.Current.MainWindow;
+            if (mainWindow == null)
+            {
+                return false;
+            }
+
+            var lineCount = mainWindow.GetVisualDescendants()
+                .OfType<Control>()
+                .Count(x => x.GetType().FullName == HostContract.MainWindowLineTypeName);
+            return lineCount > 1;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// 抓取当前全屏画面（物理像素，含任务栏与其它窗口），供「屏幕涟漪」特效使用。
     /// 用 System.Drawing.Graphics.CopyFromScreen 抓取主窗口所在显示器；
     /// 失败时回退抓取主窗口内容；仍失败则返回 null（放弃本次特效）。

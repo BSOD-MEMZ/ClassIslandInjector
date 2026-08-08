@@ -361,6 +361,17 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                 ActionButton = Button("去关闭分体主界面", OpenAppearanceSettings)
             });
         }
+        if (MainWindowStyleInjector.IsMultiLineMode())
+        {
+            panel.Children.Add(new InfoBar
+            {
+                Severity = InfoBarSeverity.Informational,
+                Title = "检测到多行主界面",
+                Message = "本插件有极少数功能不支持多行主界面，但插件仍可继续运行。",
+                IsOpen = true,
+                IsClosable = false
+            });
+        }
         panel.Children.Add(Setting("\uE813", "实时预览", "开启后，下方对设置项的修改会立即保存并应用到主界面；关闭时需手动点击「保存并应用」。", _livePreview));
         if (!SystemCapabilities.SmtcAvailable)
         {
@@ -568,7 +579,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(clickEffectGroup);
 
         AddSection(panel, "\uE4DC", "虚假天气");
-        panel.Children.Add(SwitchableGroup("\uE4DC", "虚假天气", "向 ClassIsland 注入自定义天气数据（天气组件、天气通知与相关规则都会立即跟随变化）。", _fakeWeatherEnabled,
+        panel.Children.Add(SwitchableGroup("\uE4DC", "虚假天气", "向 ClassIsland 注入自定义天气数据", _fakeWeatherEnabled,
             Item("天气类型", "选择要显示的天气。", _fakeWeatherCode),
             Item("温度", "虚假天气的温度（℃）。", _fakeWeatherTemperature),
             Item("体感温度", "体感温度（℃）。", _fakeWeatherFeelsLike),
