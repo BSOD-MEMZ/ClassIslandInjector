@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "indexUrl": "https://xxtsoft.top/support/injector/tables/index.json",
+  "updatedAt": "2026-08-08T12:00:00+08:00",
+  "tables": [
+    {
+      "id": "classisland-2.1.0.1",
+      "name": "ClassIsland 2.1.0.1 对照表",
+      "minHostVersion": "2.1.0.0",
+      "maxHostVersion": "",
+      "apiVersion": "2.0.0.0",
+      "minPluginVersion": "1.2.0.0",
+      "createdAt": "2026-08-08T21:43:00+08:00",
+      "author": "xxt8582753",
+      "url": "https://xxtsoft.top/support/injector/tables/classisland-2.1.0.1.json",
+      "notes": "适配 ClassIsland 2.1.x 的宿主点位对照表。"
+    }
+  ]
+}

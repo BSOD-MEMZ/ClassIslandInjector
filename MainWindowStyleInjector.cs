@@ -866,7 +866,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
         try
         {
-            return settings.GetType().GetProperty("Theme")?.GetValue(settings) is int theme ? theme : 0;
+            return settings.GetType().GetProperty(HostContract.ThemeProperty)?.GetValue(settings) is int theme ? theme : 0;
         }
         catch
         {
@@ -888,14 +888,14 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
         try
         {
-            var colorSource = settings.GetType().GetProperty("ColorSource")?.GetValue(settings) is int source ? source : 0;
+            var colorSource = settings.GetType().GetProperty(HostContract.ColorSourceProperty)?.GetValue(settings) is int source ? source : 0;
             switch (colorSource)
             {
                 case 0:
-                    return settings.GetType().GetProperty("PrimaryColor")?.GetValue(settings) is Color primary ? primary : null;
+                    return settings.GetType().GetProperty(HostContract.PrimaryColorProperty)?.GetValue(settings) is Color primary ? primary : null;
                 case 1:
                 case 3:
-                    return settings.GetType().GetProperty("SelectedPlatte")?.GetValue(settings) is Color platte ? platte : null;
+                    return settings.GetType().GetProperty(HostContract.SelectedPlatteProperty)?.GetValue(settings) is Color platte ? platte : null;
                 default:
                     return null;
             }
@@ -922,7 +922,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
         try
         {
-            var property = settings.GetType().GetProperty("IsMouseInFadingEnabled", BindingFlags.Instance | BindingFlags.Public);
+            var property = settings.GetType().GetProperty(HostContract.IsMouseInFadingEnabledProperty, BindingFlags.Instance | BindingFlags.Public);
             if (property == null)
             {
                 return;
@@ -962,7 +962,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
             {
                 var settings = GetHostSettings();
                 settings?.GetType()
-                    .GetProperty("IsMouseInFadingEnabled", BindingFlags.Instance | BindingFlags.Public)
+                    .GetProperty(HostContract.IsMouseInFadingEnabledProperty, BindingFlags.Instance | BindingFlags.Public)
                     ?.SetValue(settings, _originalMouseInFadingEnabled.Value);
             }
             catch
@@ -1163,7 +1163,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
         try
         {
-            var property = settings.GetType().GetProperty("LastWeatherInfo", BindingFlags.Instance | BindingFlags.Public);
+            var property = settings.GetType().GetProperty(HostContract.LastWeatherInfoProperty, BindingFlags.Instance | BindingFlags.Public);
             if (property == null)
             {
                 return;
@@ -1791,7 +1791,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         for (var i = 0; i < gridRoot.Children.Count; i++)
         {
             if (gridRoot.Children[i] is Border border &&
-                border.Name is HostContract.BackgroundBorder or HostContract.BackgroundBorderWrapper)
+                (border.Name == HostContract.BackgroundBorder || border.Name == HostContract.BackgroundBorderWrapper))
             {
                 return i + 1;
             }
@@ -2753,7 +2753,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         };
         // 设置遮罩内容会触发 LineOnPropertyChanged → 强调动画 + Ripple。
         maskProperty.SetValue(line, content);
-        SetPseudoClass(line, ":mask-in", true);
+        SetPseudoClass(line, HostContract.PseudoMaskIn, true);
         _ = ClearPreviewMaskAsync(line, maskProperty);
     }
 
@@ -2764,7 +2764,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
     {
         try
         {
-            var property = line.GetType().GetProperty("PseudoClasses",
+            var property = line.GetType().GetProperty(HostContract.PseudoClassesProperty,
                 BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             if (property?.GetValue(line) is Classes classes)
             {
@@ -2788,12 +2788,12 @@ internal sealed class MainWindowStyleInjector : IDisposable
             }
 
             maskProperty.SetValue(line, null);
-            SetPseudoClass(line, ":mask-in", false);
-            SetPseudoClass(line, ":mask-out", true);
+            SetPseudoClass(line, HostContract.PseudoMaskIn, false);
+            SetPseudoClass(line, HostContract.PseudoMaskOut, true);
             await Task.Delay(300);
             if (line.IsAttachedToVisualTree())
             {
-                SetPseudoClass(line, ":mask-out", false);
+                SetPseudoClass(line, HostContract.PseudoMaskOut, false);
             }
         }
         catch
@@ -3039,9 +3039,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
         {
             var app = AppBase.Current;
             var appType = app?.GetType();
-            var settings = appType?.GetProperty("Settings", BindingFlags.Instance | BindingFlags.Public)?.GetValue(app);
+            var settings = appType?.GetProperty(HostContract.SettingsProperty, BindingFlags.Instance | BindingFlags.Public)?.GetValue(app);
             var separated = settings?.GetType()
-                .GetProperty("IsIslandSeperated", BindingFlags.Instance | BindingFlags.Public)?.GetValue(settings);
+                .GetProperty(HostContract.IsIslandSeperatedProperty, BindingFlags.Instance | BindingFlags.Public)?.GetValue(settings);
             return separated is true;
         }
         catch
@@ -3229,7 +3229,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
             if (_hostSettingsType != appType || _hostSettingsProperty == null)
             {
                 _hostSettingsType = appType;
-                _hostSettingsProperty = appType.GetProperty("Settings", BindingFlags.Instance | BindingFlags.Public);
+                _hostSettingsProperty = appType.GetProperty(HostContract.SettingsProperty, BindingFlags.Instance | BindingFlags.Public);
             }
 
             return _hostSettingsProperty?.GetValue(app);
@@ -3275,8 +3275,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         _hostShapeCaptured = true;
-        _originalHostRadiusX = ReadHostRadius(settings, "RadiusX");
-        _originalHostRadiusY = ReadHostRadius(settings, "RadiusY");
+        _originalHostRadiusX = ReadHostRadius(settings, HostContract.RadiusXProperty);
+        _originalHostRadiusY = ReadHostRadius(settings, HostContract.RadiusYProperty);
         _effectiveCornerRadius = _originalHostRadiusX;
     }
 
@@ -3307,12 +3307,12 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
         if (radius < 0)
         {
-            _effectiveCornerRadius = ReadHostRadius(settings, "RadiusX");
+            _effectiveCornerRadius = ReadHostRadius(settings, HostContract.RadiusXProperty);
             return;
         }
 
-        WriteHostRadius(settings, "RadiusX", radius);
-        WriteHostRadius(settings, "RadiusY", radius);
+        WriteHostRadius(settings, HostContract.RadiusXProperty, radius);
+        WriteHostRadius(settings, HostContract.RadiusYProperty, radius);
         _effectiveCornerRadius = radius;
     }
 
@@ -3357,7 +3357,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
             : ParseColorOrDefault(_settings.ShadowColor, _dynamicShadowColor);
 
         foreach (var borderControl in _mainWindow.GetVisualDescendants().OfType<Border>()
-                     .Where(x => x.Name is HostContract.BackgroundBorder or HostContract.BackgroundBorderOverlayMask or HostContract.OverlayMask))
+                     .Where(x => x.Name == HostContract.BackgroundBorder ||
+                                 x.Name == HostContract.BackgroundBorderOverlayMask ||
+                                 x.Name == HostContract.OverlayMask))
         {
             var originalCornerRadius = borderControl.CornerRadius;
             var originalBackground = borderControl.Background;
@@ -3446,6 +3448,15 @@ internal sealed class MainWindowStyleInjector : IDisposable
     }
 
     // ============ 宿主反射元数据缓存 ============
+
+    /// <summary>对照表切换后清空宿主反射元数据缓存，使新的成员名立即生效。</summary>
+    public static void ClearReflectionCaches()
+    {
+        EffectPlayerFieldCache.Clear();
+        MaskContentPropertyCache.Clear();
+        CurrentNotificationRequestPropertyCache.Clear();
+        ChannelIdPropertyCache.Clear();
+    }
 
     private static FieldInfo? GetEffectPlayerField(Type type) =>
         EffectPlayerFieldCache.GetOrAdd(type, static t => t.GetField(

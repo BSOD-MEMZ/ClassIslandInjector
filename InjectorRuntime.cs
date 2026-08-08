@@ -27,6 +27,7 @@ internal static class InjectorRuntime
         _presets = InjectorPresetStore.Load(configDirectory);
         SmtcAlbumColorPicker.SetLogPath(Path.Combine(configDirectory, "album-color.log"));
         Settings.Changed += OnSettingsChanged;
+        ContractCatalogService.Initialize(configDirectory);
         _injector = new MainWindowStyleInjector(Settings);
     }
 
@@ -91,6 +92,23 @@ internal static class InjectorRuntime
         _injector ??= new MainWindowStyleInjector(Settings);
         return _injector;
     }
+
+    /// <summary>
+    /// 应用下载/切换的宿主对照表：写入 HostContract、持久化、清空反射缓存并重新 Attach，
+    /// 使新点位立即生效。
+    /// </summary>
+    public static void ApplyContractCatalog(ContractCatalog catalog)
+    {
+        ContractCatalogService.SetActive(catalog);
+        Dispatcher.UIThread.Post(() =>
+        {
+            MainWindowStyleInjector.ClearReflectionCaches();
+            GetInjector().Attach();
+        });
+    }
+
+    /// <summary>当前 ClassIsland 宿主版本号（供对照表匹配与展示）。</summary>
+    public static string HostVersion => ContractCatalogService.GetHostVersion();
 
     public static void ReloadStyleSheet()
     {

@@ -62,6 +62,17 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly TextBox _fakeWeatherAlertDetail = new() { MinWidth = 260, Watermark = "如：预计未来 6 小时……（可留空）" };
     private readonly Spin _fakeWeatherRainRemainingMinutes = Spinner(-180, 180, 1, "0");
     private readonly ComboBox _startupOpenTarget = Combo(StartupOpenTargets);
+    private readonly ComboBox _contractTableList = new()
+    {
+        MinWidth = 220,
+        HorizontalContentAlignment = HorizontalAlignment.Left
+    };
+    private readonly TextBlock _contractCurrent = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.8 };
+    private readonly TextBlock _contractStatus = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.8 };
+    /// <summary>顶部「宿主点位失效」InfoBar（页面构建后按健康检查结果刷新）。</summary>
+    private InfoBar? _degradationInfoBar;
+    /// <summary>顶部「插件版本过低」InfoBar（按所选对照表的最低插件版本要求刷新）。</summary>
+    private InfoBar? _pluginUpdateInfoBar;
     private readonly Spin _albumColorPollingInterval = Spinner(0.5, 120, 0.5);
     private readonly Spin _albumColorTransition = Spinner(0, 10, 0.1);
     private readonly ToggleSwitch _gradient = Toggle();
@@ -338,6 +349,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         WireVisualEditor();
         WireLivePreview();
         LoadFromSettings();
+        // 对照表被应用/切换后刷新本页状态（顶部降级提示、当前对照表、下拉选中）。
+        ContractCatalogService.CatalogChanged += (_, _) => Dispatcher.UIThread.Post(RefreshContractUi);
+        // 用户切换下拉选择时，按该对照表的最低插件版本要求刷新「插件版本过低」提示。
+        _contractTableList.SelectionChanged += (_, _) => UpdatePluginUpdateInfoBar(_contractTableList.SelectedItem as ContractIndexEntry);
     }
 
     private Control BuildContent()
@@ -372,6 +387,27 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                 IsClosable = false
             });
         }
+        _degradationInfoBar = new InfoBar
+        {
+            Severity = InfoBarSeverity.Warning,
+            Title = "检测到宿主点位失效",
+            Message = string.Empty,
+            IsOpen = false,
+            IsClosable = true
+        };
+        panel.Children.Add(_degradationInfoBar);
+        RefreshHealthInfoBar();
+        _pluginUpdateInfoBar = new InfoBar
+        {
+            Severity = InfoBarSeverity.Warning,
+            Title = "插件版本过低",
+            Message = string.Empty,
+            IsOpen = false,
+            IsClosable = true,
+            ActionButton = LinkButton("去 GitHub 更新", Plugin.Manifest?.Url ?? "https://github.com/BSOD-MEMZ/ClassIslandInjector")
+        };
+        panel.Children.Add(_pluginUpdateInfoBar);
+        UpdatePluginUpdateInfoBar(null);
         panel.Children.Add(Setting("\uE813", "实时预览", "开启后，下方对设置项的修改会立即保存并应用到主界面；关闭时需手动点击「保存并应用」。", _livePreview));
         if (!SystemCapabilities.SmtcAvailable)
         {
@@ -560,7 +596,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("闪动速度", "警告每秒闪动的次数。", _prepareWarningFlashSpeed),
             Item("闪动幅度", "闪动时亮度起伏的深度，0 为常亮。", _prepareWarningFlashAmount),
             Item("边框厚度", "发光边框的粗细（相对屏幕短边的比例）。", _prepareWarningFrameThickness),
-            Item("透明度", "警告效果的整体透明度（在颜色自带透明度之上叠加）。", _prepareWarningOpacity));
+            Item("透明度", "警告效果的整体透明度。", _prepareWarningOpacity));
         VisibleWhenEnabledAnd(arrowGroup, _prepareOnClassEnabled, _prepareOnClassStyle, PrepareOnClassStyle.Arrows);
         VisibleWhenEnabledAnd(pulseGroup, _prepareOnClassEnabled, _prepareOnClassStyle, PrepareOnClassStyle.PulseRing);
         VisibleWhenEnabledAnd(scanGroup, _prepareOnClassEnabled, _prepareOnClassStyle, PrepareOnClassStyle.Scanline);
@@ -572,8 +608,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(warningGroup);
 
         AddSection(panel, "\uE5C1", "交互");
-        panel.Children.Add(Setting("\uE5C1", "鼠标悬停保持可见", "开启后鼠标移入主界面时主界面不会自动隐藏（覆写宿主「鼠标移入淡出」设置，禁用本插件时恢复）。", _mouseHoverKeepVisible));
-        var clickEffectGroup = SwitchableGroup("\uE5C1", "主界面点击特效", "点击主界面时在点击位置产生轻微的特效反馈（颜色/时长/粗细复用提醒 Ripple 的对应设置）。", _clickEffectEnabled,
+        panel.Children.Add(Setting("\uE5C1", "鼠标悬停保持可见", "注意：此功能可能会破坏 ClassIsland。", _mouseHoverKeepVisible));
+        var clickEffectGroup = SwitchableGroup("\uE5C1", "主界面点击特效", "注意：此功能可能会破坏 ClassIsland，且大概率不工作。", _clickEffectEnabled,
             Item("特效类型", "选择点击特效的样式。", _clickEffectType));
         AutoSelectOnEnable(_clickEffectEnabled, _clickEffectType, ClickEffectTypes);
         panel.Children.Add(clickEffectGroup);
@@ -632,8 +668,14 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
         panel.Children.Add(Setting("\uE61D", "删除所有数据", "一键清空插件全部数据并恢复主界面，让插件回到“全新安装”状态，之后可安全卸载。", Button("删除所有数据", DeleteAllData)));
 
+        AddSection(panel, "\uE761", "宿主对照表");
+        UpdateContractCurrent();
+        panel.Children.Add(Setting("\uE761", "当前状态", "ClassIsland 宿主版本与当前生效的对照表。", _contractCurrent));
+        panel.Children.Add(Setting("\uE761", "可用对照表", "刷新后连接到 xxtsoft，列出所有可用对照表。", ContractTableFooter()));
+        panel.Children.Add(_contractStatus);
+
         AddSection(panel, "\uE9E4", "关于");
-        panel.Children.Add(Setting("\uE2C8", "启动时自动打开", "调试用：ClassIsland 启动后自动打开指定位置（等待约 1.5 秒让设置窗口就绪）。", _startupOpenTarget));
+        panel.Children.Add(Setting("\uE2C8", "启动时自动打开", "调试用：ClassIsland 启动后自动打开指定位置。", _startupOpenTarget));
         var manifest = Plugin.Manifest;
         panel.Children.Add(new SettingsExpander
         {
@@ -664,7 +706,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                 new SettingsExpanderItem
                 {
                     Content = "对一切违规补课和提前开学致以最强烈的谴责",
-                    Footer = LinkButton("加入我们的行动", "")                       
+                    Footer = LinkButton("加入我们的行动", "https://xxtsoft.top/support/sekai/rescue")                       
                 }
             }
         });
@@ -740,6 +782,197 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         var selected = _userPresetList.SelectedItem as string;
         _userPresetList.ItemsSource = names;
         _userPresetList.SelectedItem = names.FirstOrDefault(n => n == selected) ?? (names.Count > 0 ? names[0] : null);
+    }
+
+    // ============ 宿主对照表 ============
+
+    private Control ContractTableFooter() => new StackPanel
+    {
+        Orientation = Orientation.Horizontal,
+        Spacing = 4,
+        VerticalAlignment = VerticalAlignment.Center,
+        Children =
+        {
+            _contractTableList,
+            Button("刷新列表", RefreshContractTables),
+            Button("下载并应用", DownloadAndApplyContract),
+            Button("恢复内置", RestoreBuiltInContract)
+        }
+    };
+
+    /// <summary>从插件网站索引获取可用对照表列表，并按当前宿主版本自动选中适配项（版本区间仅供参考）。</summary>
+    private async void RefreshContractTables()
+    {
+        _contractStatus.Text = "正在获取对照表列表…";
+        try
+        {
+            var index = await ContractCatalogService.FetchIndexAsync(ContractCatalogService.DefaultIndexUrl);
+            if (index.Tables.Count == 0)
+            {
+                _contractTableList.ItemsSource = null;
+                _contractStatus.Text = "索引中没有找到任何对照表。";
+                return;
+            }
+
+            _contractTableList.ItemsSource = index.Tables;
+            _contractTableList.SelectedItem = index.Tables.FirstOrDefault(EntryMatchesHost) ?? index.Tables[0];
+            _contractStatus.Text = index.Tables.Any(EntryMatchesHost)
+                ? $"共找到 {index.Tables.Count} 个对照表，已自动选中适配当前宿主（ClassIsland {InjectorRuntime.HostVersion}）的项目。"
+                : $"共找到 {index.Tables.Count} 个对照表，没有适配当前宿主（ClassIsland {InjectorRuntime.HostVersion}）的项，请手动选择。";
+            UpdatePluginUpdateInfoBar(_contractTableList.SelectedItem as ContractIndexEntry);
+        }
+        catch (Exception ex)
+        {
+            _contractStatus.Text = $"获取对照表列表失败：{ex.Message}";
+        }
+    }
+
+    /// <summary>下载并应用选中的对照表，然后按新点位重新注入。</summary>
+    private async void DownloadAndApplyContract()
+    {
+        if (_contractTableList.SelectedItem is not ContractIndexEntry entry)
+        {
+            _contractStatus.Text = "请先在列表中选择要下载的对照表。";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(entry.Url))
+        {
+            _contractStatus.Text = $"「{entry.Name}」缺少下载地址。";
+            return;
+        }
+
+        _contractStatus.Text = $"正在下载「{entry.Name}」…";
+        try
+        {
+            var catalog = await ContractCatalogService.DownloadAsync(entry.Url);
+            SaveAndApply();
+            InjectorRuntime.ApplyContractCatalog(catalog);
+            RefreshContractUi();
+            _contractStatus.Text = $"已应用对照表「{catalog.Name}」并重新注入，当前宿主版本 ClassIsland {InjectorRuntime.HostVersion}。";
+        }
+        catch (Exception ex)
+        {
+            _contractStatus.Text = $"下载或应用对照表失败：{ex.Message}";
+        }
+    }
+
+    /// <summary>恢复内置对照表。</summary>
+    private void RestoreBuiltInContract()
+    {
+        SaveAndApply();
+        InjectorRuntime.ApplyContractCatalog(ContractCatalog.BuiltIn);
+        RefreshContractUi();
+        _contractStatus.Text = "已恢复内置对照表。";
+    }
+
+    /// <summary>刷新对照表区域显示（当前状态、下拉选中、顶部降级提示、插件版本过低提示）。</summary>
+    private void RefreshContractUi()
+    {
+        UpdateContractCurrent();
+        RefreshHealthInfoBar();
+        UpdatePluginUpdateInfoBar(_contractTableList.SelectedItem as ContractIndexEntry);
+        if (_contractTableList.ItemsSource is IEnumerable<ContractIndexEntry> tables)
+        {
+            _contractTableList.SelectedItem = tables.FirstOrDefault(t => t.Id == ContractCatalogService.Current.Id);
+        }
+    }
+
+    private void UpdateContractCurrent()
+    {
+        var current = ContractCatalogService.Current;
+        _contractCurrent.Text = ContractCatalogService.IsBuiltIn
+            ? $"ClassIsland {InjectorRuntime.HostVersion} · 当前对照表：内置默认（随插件版本）"
+            : $"ClassIsland {InjectorRuntime.HostVersion} · 当前对照表：{current.Name}（{current.Id}）· {current.Author}";
+    }
+
+    /// <summary>按健康检查结果刷新顶部「宿主点位失效」InfoBar。</summary>
+    private void RefreshHealthInfoBar()
+    {
+        if (_degradationInfoBar == null)
+        {
+            return;
+        }
+
+        var degradations = ContractCatalogService.Degradations;
+        if (degradations.Count == 0)
+        {
+            _degradationInfoBar.IsOpen = false;
+            return;
+        }
+
+        var features = string.Join("、", degradations.Select(d => d.Feature).Distinct().Take(8));
+        _degradationInfoBar.Title = $"检测到 {degradations.Count} 处宿主点位失效";
+        _degradationInfoBar.Message =
+            $"当前对照表与 ClassIsland {InjectorRuntime.HostVersion} 不完全匹配，以下功能可能已降级：{features}。" +
+            "请到下方「宿主对照表」下载适配当前版本的对照表；插件其余功能仍可继续运行。";
+        _degradationInfoBar.IsOpen = true;
+    }
+
+    /// <summary>
+    /// 按所选对照表的最低插件版本要求刷新顶部「插件版本过低」InfoBar；
+    /// 仅提醒不拦截——用户不更新也可继续使用当前版本。留空表示无限制，不提示。
+    /// </summary>
+    private void UpdatePluginUpdateInfoBar(ContractIndexEntry? entry)
+    {
+        if (_pluginUpdateInfoBar == null)
+        {
+            return;
+        }
+
+        var minText = entry?.MinPluginVersion;
+        if (string.IsNullOrWhiteSpace(minText) || !Version.TryParse(minText, out var minVersion))
+        {
+            _pluginUpdateInfoBar.IsOpen = false;
+            return;
+        }
+
+        var currentText = Plugin.Manifest?.Version;
+        if (string.IsNullOrWhiteSpace(currentText) || !Version.TryParse(currentText, out var currentVersion))
+        {
+            _pluginUpdateInfoBar.IsOpen = false;
+            return;
+        }
+
+        if (currentVersion >= minVersion)
+        {
+            _pluginUpdateInfoBar.IsOpen = false;
+            return;
+        }
+
+        _pluginUpdateInfoBar.Message =
+            $"当前插件版本 {currentText} 低于「{entry!.Name}」要求的最低版本 {minText}，部分功能可能无法正常工作。" +
+            "前往 GitHub 更新插件即可；不更新也可继续使用当前版本。";
+        _pluginUpdateInfoBar.IsOpen = true;
+    }
+
+    /// <summary>索引条目是否适配当前宿主版本。</summary>
+    private static bool EntryMatchesHost(ContractIndexEntry entry)
+    {
+        var host = InjectorRuntime.HostVersion;
+        if (string.IsNullOrWhiteSpace(entry.MinHostVersion) && string.IsNullOrWhiteSpace(entry.MaxHostVersion))
+        {
+            return true;
+        }
+
+        if (!Version.TryParse(host, out var version))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.MinHostVersion) &&
+            Version.TryParse(entry.MinHostVersion, out var min) && version < min)
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.MaxHostVersion) &&
+            Version.TryParse(entry.MaxHostVersion, out var max) && version > max)
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private Control PresetSaveFooter() => new StackPanel

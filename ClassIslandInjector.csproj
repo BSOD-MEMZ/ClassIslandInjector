@@ -25,6 +25,8 @@
     <None Update="README.md" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="icon.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Defaults\Overrides.axaml" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Defaults\contract-catalog.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Defaults\contract-index.sample.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\Firework.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\Firework_new.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\ColorBall.png" CopyToOutputDirectory="PreserveNewest" />

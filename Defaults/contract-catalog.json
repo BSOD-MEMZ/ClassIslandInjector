@@ -1,0 +1,198 @@
+{
+  "schemaVersion": 1,
+  "id": "builtin",
+  "name": "内置",
+  "author": "xxt8582753",
+  "createdAt": "2026-08-08T21:43:00",
+  "notes": "随插件编译进代码的默认对照表，适配插件发布时对应的 ClassIsland 宿主版本；若宿主更新后功能失效，请从插件网站的索引中下载与当前宿主版本匹配的对照表。",
+  "controlNames": {
+    "StackPanelRootContainer": {
+      "value": "StackPanelRootContainer",
+      "feature": "主界面根容器（不透明度/变形）"
+    },
+    "WindowRoot": {
+      "value": "WindowRoot",
+      "feature": "窗口根网格（特效宿泊）"
+    },
+    "ResourceLoaderBorder": {
+      "value": "ResourceLoaderBorder",
+      "feature": "样式宿主（覆盖样式表注入点）"
+    },
+    "WorkingRoot": {
+      "value": "WorkingRoot",
+      "feature": "客户区根（布局边界）"
+    },
+    "RootLayoutTransformControl": {
+      "value": "RootLayoutTransformControl",
+      "feature": "根布局缩放控件"
+    },
+    "GridRoot": {
+      "value": "GridRoot",
+      "feature": "主界面网格根（底图/纹理宿主）"
+    },
+    "BackgroundBorder": {
+      "value": "BackgroundBorder",
+      "feature": "每行主界面背景（底色/边框/圆角）"
+    },
+    "BackgroundBorderWrapper": {
+      "value": "BackgroundBorderWrapper",
+      "feature": "Fluent 主题背景容器",
+      "optional": true
+    },
+    "BackgroundBorderOverlayMask": {
+      "value": "BackgroundBorderOverlayMask",
+      "feature": "背景遮罩"
+    },
+    "OverlayMask": {
+      "value": "OverlayMask",
+      "feature": "通知遮罩"
+    },
+    "GridOverlay": {
+      "value": "GridOverlay",
+      "feature": "覆盖层宿主（即将上课/倒计时箭头）"
+    }
+  },
+  "typeNames": {
+    "MainWindowLine": {
+      "value": "ClassIsland.Controls.MainWindowLine",
+      "feature": "主界面行（提醒/覆盖层/纹理宿主）"
+    },
+    "SlideComponent": {
+      "value": "ClassIsland.Controls.Components.SlideComponent",
+      "feature": "轮播容器（翻页动画）"
+    },
+    "AvaloniaRuntimeXamlLoader": {
+      "value": "Avalonia.Markup.Xaml.AvaloniaRuntimeXamlLoader",
+      "feature": "运行时 XAML 加载器"
+    }
+  },
+  "assemblyNames": {
+    "AvaloniaXamlLoader": {
+      "value": "Avalonia.Markup.Xaml.Loader",
+      "feature": "运行时 XAML 加载器程序集"
+    }
+  },
+  "memberNames": {
+    "Settings": {
+      "value": "Settings",
+      "feature": "宿主设置对象",
+      "target": "settings"
+    },
+    "IsIslandSeperated": {
+      "value": "IsIslandSeperated",
+      "feature": "分体主界面开关（注意宿主拼写）",
+      "target": "settings"
+    },
+    "RadiusX": {
+      "value": "RadiusX",
+      "feature": "原生圆角 X",
+      "target": "settings"
+    },
+    "RadiusY": {
+      "value": "RadiusY",
+      "feature": "原生圆角 Y",
+      "target": "settings"
+    },
+    "IsMouseInFadingEnabled": {
+      "value": "IsMouseInFadingEnabled",
+      "feature": "鼠标悬停淡出开关",
+      "target": "settings"
+    },
+    "LastWeatherInfo": {
+      "value": "LastWeatherInfo",
+      "feature": "天气数据（虚假天气）",
+      "target": "settings"
+    },
+    "Theme": {
+      "value": "Theme",
+      "feature": "主题模式（动态主题色）",
+      "target": "settings"
+    },
+    "ColorSource": {
+      "value": "ColorSource",
+      "feature": "主题色来源（动态主题色）",
+      "target": "settings"
+    },
+    "PrimaryColor": {
+      "value": "PrimaryColor",
+      "feature": "自定义主色（动态主题色）",
+      "target": "settings"
+    },
+    "SelectedPlatte": {
+      "value": "SelectedPlatte",
+      "feature": "壁纸/屏幕取色（动态主题色）",
+      "target": "settings"
+    },
+    "MaskContent": {
+      "value": "MaskContent",
+      "feature": "提醒遮罩内容",
+      "target": "mainWindowLine"
+    },
+    "OverlayContent": {
+      "value": "OverlayContent",
+      "feature": "提醒覆盖内容",
+      "target": "mainWindowLine"
+    },
+    "CurrentNotificationRequest": {
+      "value": "CurrentNotificationRequest",
+      "feature": "当前通知请求",
+      "target": "mainWindowLine"
+    },
+    "PseudoClasses": {
+      "value": "PseudoClasses",
+      "feature": "伪类集合（提醒动画）",
+      "target": "mainWindowLine"
+    },
+    "ChannelId": {
+      "value": "ChannelId",
+      "feature": "通知频道 ID",
+      "target": "notificationRequest"
+    },
+    "TopmostEffectWindow": {
+      "value": "TopmostEffectWindow",
+      "feature": "全屏特效窗口",
+      "target": "mainWindow"
+    },
+    "TopmostEffectWindowBackingField": {
+      "value": "<TopmostEffectWindow>k__BackingField",
+      "feature": "特效窗口后备字段",
+      "target": "mainWindow"
+    },
+    "ViewModel": {
+      "value": "ViewModel",
+      "feature": "特效窗口视图模型",
+      "target": "effectWindow"
+    },
+    "EffectControls": {
+      "value": "EffectControls",
+      "feature": "特效集合",
+      "target": "effectViewModel"
+    }
+  },
+  "classNames": {
+    "InjectorWindowClass": {
+      "value": "classisland-injector",
+      "feature": "注入样式类（窗口）"
+    },
+    "InjectorRootClass": {
+      "value": "classisland-injector-root",
+      "feature": "注入样式类（主界面根）"
+    }
+  },
+  "guids": {
+    "PrepareOnClassChannelId": {
+      "value": "CDDFE7FF-B904-4C73-B458-82793B2F66E9",
+      "feature": "即将上课倒计时频道"
+    }
+  },
+  "pseudoClasses": {
+    "MaskIn": {
+      "value": ":mask-in",
+      "feature": "提醒遮罩进入"
+    },
+    "MaskOut": {
+      "value": ":mask-out",
+      "feature": "提醒遮罩退出"
+    }
+  }
+}
