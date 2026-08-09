@@ -2174,9 +2174,16 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     /// <summary>
     /// 打开 Photoshop 风格底图图层编辑器。编辑器关闭后刷新本页，
     /// 使「图层模式 / 层级」等状态与持久化设置保持一致。
+    /// 同一时刻只允许一个编辑器窗口，已打开时聚焦现有窗口。
     /// </summary>
     private void OpenWallpaperLayerEditor()
     {
+        if (WallpaperLayerEditorWindow.Current is { } existing)
+        {
+            existing.Activate();
+            return;
+        }
+
         SaveAndApply();
         var window = new WallpaperLayerEditorWindow();
         window.Closed += (_, _) => Dispatcher.UIThread.Post(LoadFromSettings);

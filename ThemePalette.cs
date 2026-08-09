@@ -87,6 +87,13 @@ public static class ThemePalette
         return Color.FromRgb(0, 120, 212);
     }
 
+    /// <summary>主题强调色 + 指定不透明度（用于选中高亮、参考线、锚点等需要透明强调色的地方）。</summary>
+    public static Color AccentColorWithAlpha(byte alpha)
+    {
+        var c = AccentColor();
+        return Color.FromArgb(alpha, c.R, c.G, c.B);
+    }
+
     /// <summary>编辑器窗口的基础背景。</summary>
     public static IBrush WindowBackground() => new SolidColorBrush(IsDarkTheme()
         ? Color.FromRgb(24, 26, 30)

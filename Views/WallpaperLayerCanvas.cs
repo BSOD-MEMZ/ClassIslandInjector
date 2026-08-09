@@ -4,6 +4,7 @@ using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
+using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using ClassIsland.Core.Controls;
 using System.Globalization;
@@ -24,7 +25,9 @@ internal enum WallpaperEditorTool
     /// <summary>形状工具：拖拽绘制矢量形状图层。</summary>
     Shape,
     /// <summary>文本工具：点击插入文本框图层。</summary>
-    Text
+    Text,
+    /// <summary>抓手工具：按住拖动平移画布视图。</summary>
+    Hand
 }
 
 /// <summary>
@@ -63,14 +66,14 @@ internal sealed class WallpaperLayerCanvas : UserControl
     private readonly Dictionary<string, Bitmap> _bitmaps = [];
     private readonly Dictionary<string, MemoryStream> _streams = [];
     private readonly Dictionary<string, string> _loadedSignatures = [];
-    /// <summary>缩放工具拖拽框选 / 形状工具预览用的半透明选框。</summary>
+    /// <summary>缩放工具拖拽框选 / 形状工具预览用的半透明选框（跟随主题强调色）。</summary>
     private readonly Border _marqueeRect = new()
     {
         IsVisible = false,
         IsHitTestVisible = false,
-        BorderBrush = new SolidColorBrush(Color.FromArgb(200, 0, 120, 212)),
+        BorderBrush = new SolidColorBrush(ThemePalette.AccentColorWithAlpha(200)),
         BorderThickness = new Thickness(1),
-        Background = new SolidColorBrush(Color.FromArgb(26, 0, 120, 212)),
+        Background = new SolidColorBrush(ThemePalette.AccentColorWithAlpha(26)),
         ZIndex = 200
     };
     private readonly List<Border> _resizeHandles = [];
@@ -279,6 +282,10 @@ internal sealed class WallpaperLayerCanvas : UserControl
         _stage.PointerCaptureLost += StageOnPointerCaptureLost;
         _stage.PointerWheelChanged += StageOnPointerWheelChanged;
         KeyDown += CanvasOnKeyDown;
+        // 支持从系统文件管理器直接拖拽图片到画布创建图层。
+        DragDrop.SetAllowDrop(_stage, true);
+        _stage.AddHandler(DragDrop.DragOverEvent, StageOnDragOver);
+        _stage.AddHandler(DragDrop.DropEvent, StageOnDrop);
 
         _stageHost.Child = _stage;
         _scrollViewer.Content = _stageHost;
@@ -419,6 +426,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
             WallpaperEditorTool.Zoom => new Cursor(StandardCursorType.Cross),
             WallpaperEditorTool.Shape => new Cursor(StandardCursorType.Cross),
             WallpaperEditorTool.Text => new Cursor(StandardCursorType.Ibeam),
+            WallpaperEditorTool.Hand => new Cursor(StandardCursorType.Hand),
             _ => new Cursor(StandardCursorType.Arrow)
         };
     }
@@ -508,6 +516,31 @@ internal sealed class WallpaperLayerCanvas : UserControl
             _selectedId = id;
         }
 
+        Refresh();
+        SelectionChanged?.Invoke();
+    }
+
+    /// <summary>选中指定图层；若该图层属于某个组，则选中整个组（点击组内任意成员 = 选中整组，
+    /// 主选中 = 点击的成员，便于直接拖动/缩放该成员带动整组）。</summary>
+    public void SelectWithGroup(string? id)
+    {
+        if (id == null)
+        {
+            Select(null);
+            return;
+        }
+
+        var layer = _layers.FirstOrDefault(l => l.Id == id);
+        if (layer == null || string.IsNullOrEmpty(layer.GroupId))
+        {
+            Select(id);
+            return;
+        }
+
+        var ids = _layers.Where(l => l.GroupId == layer.GroupId).Select(l => l.Id).ToList();
+        _selectedId = id;
+        _selectedIds.Clear();
+        _selectedIds.AddRange(ids);
         Refresh();
         SelectionChanged?.Invoke();
     }
@@ -1095,6 +1128,9 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 PlaceText(pos);
                 e.Handled = true;
                 break;
+            case WallpaperEditorTool.Hand:
+                BeginHandPan(pos, e);
+                break;
             default:
                 MoveToolPress(pos, e);
                 break;
@@ -1133,6 +1169,10 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 break;
             case DragKind.Move:
                 UpdateMove(_drag, e.GetPosition(_stage));
+                e.Handled = true;
+                break;
+            case DragKind.Pan:
+                UpdatePan(_drag, e.GetPosition(_stage));
                 e.Handled = true;
                 break;
         }
@@ -1181,6 +1221,11 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 e.Pointer.Capture(null);
                 _guideOverlay.Clear();
                 Edited?.Invoke();
+                e.Handled = true;
+                break;
+            case DragKind.Pan:
+                _drag = null;
+                e.Pointer.Capture(null);
                 e.Handled = true;
                 break;
         }
@@ -1285,8 +1330,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
         }
         else if (!_selectedIds.Contains(layer.Id))
         {
-            // 点击不在选中集 → 单选；已在选中集（多选成员）→ 保持整组选中并整组拖动。
-            Select(layer.Id);
+            // 点击不在选中集 → 单选（若属于组则选中整组）；已在选中集 → 保持整组选中并整组拖动。
+            SelectWithGroup(layer.Id);
         }
 
         if (_lockedIds.Contains(layer.Id))
@@ -1295,9 +1340,25 @@ internal sealed class WallpaperLayerCanvas : UserControl
             return;
         }
 
-        // 拖动整组：把参与移动的选中图层从「铺满岛屿」切为「自定义尺寸」，
-        // 否则锚点偏移被忽略导致拖动无效。
-        var moving = SelectedLayers.Where(l => !_lockedIds.Contains(l.Id)).ToList();
+        // 拖动整组：参与移动的 = 选中图层 ∪ 同组成员（跳过锁定），
+        // 并把「铺满岛屿」切为「自定义尺寸」，否则锚点偏移被忽略导致拖动无效。
+        var moving = new List<WallpaperLayerItem>();
+        foreach (var sel in SelectedLayers)
+        {
+            if (_lockedIds.Contains(sel.Id))
+            {
+                continue;
+            }
+
+            foreach (var m in GroupMembers(sel))
+            {
+                if (!_lockedIds.Contains(m.Id) && !moving.Contains(m))
+                {
+                    moving.Add(m);
+                }
+            }
+        }
+
         foreach (var sel in moving)
         {
             if (sel.SizeMode == WallpaperLayerSizeMode.FillIsland)
@@ -1322,7 +1383,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         e.Handled = true;
     }
 
-    /// <summary>选择工具按下：只选中图层（Ctrl 多选），不进入拖拽移动。</summary>
+    /// <summary>选择工具按下：只选中图层（Ctrl 多选；普通点击若属于组则选中整组），不进入拖拽移动。</summary>
     private void SelectToolPress(Point pos, PointerPressedEventArgs e)
     {
         var layer = HitTestLayer(pos);
@@ -1332,17 +1393,38 @@ internal sealed class WallpaperLayerCanvas : UserControl
         }
         else
         {
-            Select(layer?.Id);
+            SelectWithGroup(layer?.Id);
         }
+    }
+
+    /// <summary>抓手工具按下：开始平移画布视图（拖动不选中、不移动任何图层）。</summary>
+    private void BeginHandPan(Point pos, PointerPressedEventArgs e)
+    {
+        if (!e.GetCurrentPoint(_stage).Properties.IsLeftButtonPressed)
+        {
+            return;
+        }
+
+        Focus();
+        _drag = new DragState
+        {
+            Kind = DragKind.Pan,
+            Pointer = e.Pointer,
+            StartPointer = pos,
+            StartScrollOffset = _scrollViewer.Offset
+        };
+        e.Pointer.Capture(_stage);
+        e.Handled = true;
     }
 
     /// <summary>形状工具按下：在起点创建图层并开始拖拽绘制。</summary>
     private void BeginShapeDraw(Point pos, PointerPressedEventArgs e)
     {
+        // 先压撤销再创建图层，保证「撤销」能移除刚绘制的形状。
+        EditStarted?.Invoke();
         var layer = CreateShapeLayer(new Rect(pos.X, pos.Y, 0, 0));
         Select(layer.Id);
         _drag = new DragState { Kind = DragKind.ShapeDraw, Layer = layer, StartPointer = pos };
-        EditStarted?.Invoke();
         e.Pointer.Capture(_stage);
         e.Handled = true;
     }
@@ -1354,7 +1436,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         var rect = NormalizeRect(drag.StartPointer, pointer);
         layer.Width = Math.Max(1, rect.Width);
         layer.Height = Math.Max(1, rect.Height);
-        ApplyRectOffsets(layer, rect);
+        ApplyRectOffsets(layer, ToIslandRect(rect));
         Refresh();
     }
 
@@ -1367,7 +1449,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
             var rect = new Rect(drag.StartPointer.X - 60, drag.StartPointer.Y - 40, 120, 80);
             layer.Width = 120;
             layer.Height = 80;
-            ApplyRectOffsets(layer, rect);
+            ApplyRectOffsets(layer, ToIslandRect(rect));
         }
 
         Refresh();
@@ -1392,17 +1474,16 @@ internal sealed class WallpaperLayerCanvas : UserControl
             Width = 180,
             Height = 48
         };
-        ApplyRectOffsets(layer, new Rect(pos.X - 90, pos.Y - 24, 180, 48));
+        // 先压撤销再添加，保证「撤销」能移除刚创建的图层。
+        EditStarted?.Invoke();
+        ApplyRectOffsets(layer, ToIslandRect(new Rect(pos.X - 90, pos.Y - 24, 180, 48)));
         _layers.Add(layer);
         SyncImageControls();
         Select(layer.Id);
-        EditStarted?.Invoke();
         Refresh();
         SwitchTool(WallpaperEditorTool.Move);
         Edited?.Invoke();
     }
-
-    /// <summary>创建一个形状图层（锚点居中，矩形由 Width/Height + 偏移表达）。</summary>
     private WallpaperLayerItem CreateShapeLayer(Rect rect)
     {
         var layer = new WallpaperLayerItem
@@ -1418,7 +1499,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
             Width = Math.Max(1, rect.Width),
             Height = Math.Max(1, rect.Height)
         };
-        ApplyRectOffsets(layer, rect);
+        ApplyRectOffsets(layer, ToIslandRect(rect));
         _layers.Add(layer);
         // 新建的矢量图层没有位图加载流程，必须立即补入舞台视觉树；否则编辑器只
         // 会显示选中框，保存并由运行时重建后才会出现实际形状。
@@ -1426,12 +1507,76 @@ internal sealed class WallpaperLayerCanvas : UserControl
         return layer;
     }
 
+    /// <summary>把舞台坐标矩形转换为岛屿坐标矩形（舞台原点 = 岛屿左上角 + CanvasMargin）。</summary>
+    private static Rect ToIslandRect(Rect stageRect) =>
+        new(stageRect.X - CanvasMargin, stageRect.Y - CanvasMargin, stageRect.Width, stageRect.Height);
+
     /// <summary>把矩形位置写回图层偏移（保持当前锚点不变）。</summary>
     private void ApplyRectOffsets(WallpaperLayerItem layer, Rect rect)
     {
         var (ox, oy) = WallpaperLayerLayout.ToOffsets(layer, rect, _islandWidth, _islandHeight);
         layer.OffsetX = ox;
         layer.OffsetY = oy;
+    }
+
+    // ============ 拖拽图片到画布 ============
+
+    /// <summary>拖拽悬停：仅文件（图片）显示可放置。</summary>
+    private void StageOnDragOver(object? sender, DragEventArgs e)
+    {
+        e.DragEffects = e.Data.Contains(DataFormats.Files) ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    /// <summary>把拖入的图片文件添加为画布上的图片图层（位置 = 拖放点，尺寸按图片比例自适应）。</summary>
+    private void StageOnDrop(object? sender, DragEventArgs e)
+    {
+        if (!e.Data.Contains(DataFormats.Files))
+        {
+            return;
+        }
+
+        var file = e.Data.GetFiles()?.FirstOrDefault();
+        var path = file?.TryGetLocalPath();
+        if (string.IsNullOrEmpty(path))
+        {
+            return;
+        }
+
+        // 先压撤销再添加，保证「撤销」能移除拖入的图层。
+        EditStarted?.Invoke();
+        AddDroppedImageLayer(path, e.GetPosition(_stage));
+        e.Handled = true;
+    }
+
+    /// <summary>在指定舞台坐标处创建一张图片图层（锚点居中，初始尺寸按图片比例自适应）。</summary>
+    private void AddDroppedImageLayer(string path, Point stagePos)
+    {
+        var layer = new WallpaperLayerItem
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            Name = $"底图图层 {_layers.Count + 1}",
+            Source = WallpaperSource.LocalImage,
+            Path = path,
+            SizeMode = WallpaperLayerSizeMode.Custom,
+            DisplayMode = WallpaperDisplayMode.Fill,
+            AnchorX = WallpaperLayerAnchorX.Center,
+            AnchorY = WallpaperLayerAnchorY.Center
+        };
+        _layers.Add(layer);
+        RefreshImages(); // 加载位图并同步舞台控件
+        var aspect = AspectOf(layer);
+        var w = aspect is > 0 ? _islandHeight * 0.8 * aspect.Value : _islandWidth * 0.6;
+        var h = aspect is > 0 ? _islandHeight * 0.8 : _islandHeight * 0.6;
+        layer.Width = w;
+        layer.Height = h;
+        // 锚点居中 + 偏移，使图层中心对准拖放点（岛屿坐标）。
+        var islandPos = new Point(stagePos.X - CanvasMargin, stagePos.Y - CanvasMargin);
+        ApplyRectOffsets(layer, new Rect(islandPos.X - w / 2, islandPos.Y - h / 2, w, h));
+        SyncImageControls();
+        Select(layer.Id);
+        Refresh();
+        Edited?.Invoke();
     }
 
     /// <summary>缩放工具释放：小矩形 = 单击（缩放/Alt 缩小），大矩形 = 框选放大到视图。</summary>
@@ -1529,10 +1674,11 @@ internal sealed class WallpaperLayerCanvas : UserControl
             ApplyIslandSnapY(layer, rect);
         }
 
-        // 整组移动：其它选中的图层按相同位移同步移动（不参与吸附，保持组内相对位置）。
-        foreach (var other in SelectedLayers)
+        // 整组移动：其它选中 + 组内成员按相同位移同步移动（跳过锁定、去重，保持组内相对位置）。
+        var handled = new HashSet<WallpaperLayerItem>();
+        foreach (var other in SelectedLayers.Concat(GroupMembers(layer)))
         {
-            if (other == layer || _lockedIds.Contains(other.Id))
+            if (other == layer || _lockedIds.Contains(other.Id) || !handled.Add(other))
             {
                 continue;
             }
@@ -1858,6 +2004,64 @@ internal sealed class WallpaperLayerCanvas : UserControl
 
     // ============ 智能对齐标尺（PS 式吸附）============
 
+    /// <summary>获取图层所在组的全部成员（未分组则仅自身）。</summary>
+    private IEnumerable<WallpaperLayerItem> GroupMembers(WallpaperLayerItem layer) =>
+        string.IsNullOrEmpty(layer.GroupId)
+            ? [layer]
+            : _layers.Where(l => l.GroupId == layer.GroupId);
+
+    /// <summary>把选中的多个图层编为一组（同组图层可整组移动；不足 2 个或已同组时不操作）。</summary>
+    public void GroupSelection()
+    {
+        var selected = SelectedLayers.Where(l => !_lockedIds.Contains(l.Id)).ToList();
+        if (selected.Count < 2)
+        {
+            return;
+        }
+
+        if (selected.All(l => l.GroupId == selected[0].GroupId) && !string.IsNullOrEmpty(selected[0].GroupId))
+        {
+            return;
+        }
+
+        EditStarted?.Invoke();
+        var groupId = Guid.NewGuid().ToString("N");
+        foreach (var l in selected)
+        {
+            l.GroupId = groupId;
+        }
+
+        // 把组内成员在列表中排在一起（插到第一个选中位置），图层面板同组相邻。
+        var firstIndex = selected.Min(l => _layers.IndexOf(l));
+        foreach (var l in selected)
+        {
+            _layers.Remove(l);
+        }
+
+        _layers.InsertRange(firstIndex, selected);
+        Refresh();
+        Edited?.Invoke();
+    }
+
+    /// <summary>把选中图层从所在组中拆出（清空 GroupId）。</summary>
+    public void UngroupSelection()
+    {
+        var selected = SelectedLayers.Where(l => !_lockedIds.Contains(l.Id)).ToList();
+        if (selected.Count == 0)
+        {
+            return;
+        }
+
+        EditStarted?.Invoke();
+        foreach (var l in selected)
+        {
+            l.GroupId = string.Empty;
+        }
+
+        Refresh();
+        Edited?.Invoke();
+    }
+
     private List<Rect> OtherLayerRects(WallpaperLayerItem exclude)
     {
         var result = new List<Rect>();
@@ -2066,6 +2270,14 @@ internal sealed class WallpaperLayerCanvas : UserControl
                     ZoomAtViewportCenter(1 / 1.15);
                     e.Handled = true;
                     return;
+                case Key.G when e.KeyModifiers.HasFlag(KeyModifiers.Shift):
+                    UngroupSelection();
+                    e.Handled = true;
+                    return;
+                case Key.G:
+                    GroupSelection();
+                    e.Handled = true;
+                    return;
             }
         }
 
@@ -2090,6 +2302,10 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 break;
             case Key.T:
                 SwitchTool(WallpaperEditorTool.Text);
+                e.Handled = true;
+                break;
+            case Key.H:
+                SwitchTool(WallpaperEditorTool.Hand);
                 e.Handled = true;
                 break;
             case Key.Delete when layer != null && !_lockedIds.Contains(layer.Id):
@@ -2222,7 +2438,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         {
             base.Render(context);
             // 多选时其它选中的虚线框（浅色、无旋转臂）。
-            var secondaryPen = new Pen(new SolidColorBrush(Color.FromArgb(160, 0, 120, 212)), 1)
+            var secondaryPen = new Pen(new SolidColorBrush(ThemePalette.AccentColorWithAlpha(160)), 1)
             {
                 DashStyle = new DashStyle([4, 3], 0)
             };
@@ -2241,7 +2457,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 return;
             }
 
-            var boxPen = new Pen(new SolidColorBrush(Color.FromRgb(0, 120, 212)), 1)
+            var boxPen = new Pen(new SolidColorBrush(ThemePalette.AccentColor()), 1)
             {
                 DashStyle = new DashStyle([4, 3], 0)
             };
@@ -2349,7 +2565,7 @@ internal sealed class AnchorGridPicker : Control
         base.Render(context);
         var selectedRow = AnchorY switch { WallpaperLayerAnchorY.Top => 0, WallpaperLayerAnchorY.Center => 1, _ => 2 };
         var selectedCol = AnchorX switch { WallpaperLayerAnchorX.Left => 0, WallpaperLayerAnchorX.Center => 1, _ => 2 };
-        var accent = new SolidColorBrush(Color.FromRgb(0, 120, 212));
+        var accent = new SolidColorBrush(ThemePalette.AccentColor());
         var idle = new SolidColorBrush(ThemePalette.IsDarkTheme()
             ? Color.FromArgb(150, 255, 255, 255)
             : Color.FromArgb(130, 0, 0, 0));

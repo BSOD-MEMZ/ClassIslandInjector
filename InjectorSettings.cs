@@ -259,6 +259,9 @@ public sealed class WallpaperLayerItem
     /// <summary>图层唯一标识（编辑器/运行时按此对应图层视图）。</summary>
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
+    /// <summary>所在组的标识；空字符串表示未编组。同组图层在画布上可整组移动。</summary>
+    public string GroupId { get; set; } = string.Empty;
+
     public string Name { get; set; } = "底图图层";
 
     public bool Visible { get; set; } = true;
@@ -344,6 +347,7 @@ public sealed class WallpaperLayerItem
     public WallpaperLayerItem Clone() => new()
     {
         Id = Id,
+        GroupId = GroupId,
         Name = Name,
         Visible = Visible,
         Opacity = Opacity,

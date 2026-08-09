@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Media;
 using Avalonia.Threading;
 using ClassIsland.Core.Abstractions.Services;
+using ClassIsland.Core.Models.Theming;
 using ClassIsland.Shared;
 using System.Globalization;
 
@@ -16,6 +17,7 @@ namespace ClassIslandInjector;
 public sealed class WallpaperLayerVisual : Control
 {
     private WallpaperLayerItem? _layer;
+    private EventHandler<ThemeUpdatedEventArgs>? _themeHandler;
 
     public WallpaperLayerVisual()
     {
@@ -27,12 +29,36 @@ public sealed class WallpaperLayerVisual : Control
             var theme = IAppHost.TryGetService<IThemeService>();
             if (theme != null)
             {
-                theme.ThemeUpdated += (_, _) => Dispatcher.UIThread.Post(InvalidateVisual);
+                _themeHandler = (_, _) => Dispatcher.UIThread.Post(InvalidateVisual);
+                theme.ThemeUpdated += _themeHandler;
             }
         }
         catch
         {
             // 主题服务不可用时忽略。
+        }
+    }
+
+    /// <summary>从视觉树分离时退订主题事件，避免被宿主单例持有的委托强引用而泄漏。</summary>
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnDetachedFromVisualTree(e);
+        if (_themeHandler != null)
+        {
+            try
+            {
+                var theme = IAppHost.TryGetService<IThemeService>();
+                if (theme != null)
+                {
+                    theme.ThemeUpdated -= _themeHandler;
+                }
+            }
+            catch
+            {
+                // 忽略退订失败。
+            }
+
+            _themeHandler = null;
         }
     }
 

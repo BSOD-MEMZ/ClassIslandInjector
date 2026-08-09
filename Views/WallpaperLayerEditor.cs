@@ -104,6 +104,9 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     /// <summary>命令栏撤销/重做按钮（按栈状态启停）。</summary>
     private CommandBarButton _undoButton = null!;
     private CommandBarButton _redoButton = null!;
+    /// <summary>命令栏组合/取消组合按钮（按选中状态启停）。</summary>
+    private CommandBarButton _groupButton = null!;
+    private CommandBarButton _ungroupButton = null!;
     /// <summary>拖拽排序：独立置顶的「幽灵快照」预览窗口（参考「主界面 → 组件」拖拽）。</summary>
     private Window? _dragPreviewWindow;
     private Border? _dragPreviewHost;
@@ -111,6 +114,10 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private Point _reorderGrabOffset;
     /// <summary>左侧工具栏按钮（按工具选中态更新）。</summary>
     private readonly Dictionary<WallpaperEditorTool, Button> _toolButtons = [];
+
+    /// <summary>当前打开的编辑器实例。同一时刻只允许一个编辑器窗口（多开会造成关闭确认
+    /// 的 ContentDialog 找不到 TopLevel 而崩溃）。</summary>
+    public static WallpaperLayerEditorWindow? Current { get; private set; }
 
     public WallpaperLayerEditorWindow()
     {
@@ -137,6 +144,15 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         RefreshInspector();
         UpdateStatus();
         Closing += OnClosingConfirm;
+        // 单例跟踪：新窗口打开时覆盖 Current，关闭时若仍是本窗口则清空。
+        Current = this;
+        Closed += (_, _) =>
+        {
+            if (ReferenceEquals(Current, this))
+            {
+                Current = null;
+            }
+        };
     }
 
     private void WireCanvas()
@@ -157,6 +173,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             RefreshLayerList();
             RefreshInspector();
             UpdateStatus();
+            UpdateGroupButtons();
         };
         _canvas.IslandChanged += () =>
         {
@@ -176,6 +193,10 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _redoButton = CommandButton("\uE121", "重做", "重做已撤销的操作", Redo);
         _undoButton.IsEnabled = false;
         _redoButton.IsEnabled = false;
+        _groupButton = CommandButton("\uE92F", "组合", "把选中的多个图层编为一组（Ctrl+G），之后拖动任一组内图层即可整组移动", _canvas.GroupSelection);
+        _ungroupButton = CommandButton("\uE931", "取消组合", "把选中图层从所在组中拆出（Ctrl+Shift+G）", _canvas.UngroupSelection);
+        _groupButton.IsEnabled = false;
+        _ungroupButton.IsEnabled = false;
         var commandBar = new CommandBar
         {
             DefaultLabelPosition = CommandBarDefaultLabelPosition.Right,
@@ -186,16 +207,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 _undoButton,
                 _redoButton,
                 new CommandBarSeparator(),
-                new CommandBarElementContainer
-                {
-                    Content = new IconText
-                    {
-                        Glyph = "\uF42D",
-                        Text = "底图图层编辑器",
-                        VerticalAlignment = VerticalAlignment.Center,
-                        Margin = new Thickness(4, 0, 0, 0)
-                    }
-                },
+                _groupButton,
+                _ungroupButton,
                 new CommandBarSeparator(),
                 CommandButton("\uE62F", "重置岛屿尺寸", "把岛屿预览尺寸恢复为 ClassIsland 实际尺寸", ResetIslandSize),
                 CommandButton("\uEEB5", "保存并应用", "保存图层并应用到主界面", Save)
@@ -280,6 +293,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _contentGrid.SizeChanged += (_, _) => ConstrainBodyHeight();
         Content = _contentGrid;
         UpdateToolBarSelection();
+        UpdateGroupButtons();
     }
 
     /// <summary>把 body（舞台 + 右侧栏）高度限制在当前可视区内，保证两侧严格等高且都在窗口内。</summary>
@@ -304,6 +318,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     {
         var panel = new StackPanel { Spacing = 2 };
         panel.Children.Add(ToolButton(WallpaperEditorTool.Move, "\uE113", "移动工具（V）：拖拽图层移动，拖动空白取消选中"));
+        panel.Children.Add(ToolButton(WallpaperEditorTool.Hand, "\uE941", "抓手工具（H）：按住拖动平移画布，查看画布任意区域"));
         panel.Children.Add(ToolButton(WallpaperEditorTool.Select, "\uE5BE", "选择工具（S）：点击只选中图层，不拖拽"));
         panel.Children.Add(ToolButton(WallpaperEditorTool.Zoom, "\uF4D0", "缩放工具（Z）：单击放大 / Alt+单击缩小 / 拖拽框选放大；Ctrl + / Ctrl - 也可缩放"));
         panel.Children.Add(ToolButton(WallpaperEditorTool.Shape, "\uE774", "形状工具（U）：拖拽绘制矩形；创建后可在右侧修改形状类型"));
@@ -358,7 +373,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         {
             var active = tool == _canvas.Tool;
             button.Background = active
-                ? ThemeBrush("AccentFillColorDefaultBrush") ?? new SolidColorBrush(Color.FromArgb(150, 0, 120, 212))
+                ? ThemeBrush("AccentFillColorDefaultBrush") ?? new SolidColorBrush(ThemePalette.AccentColorWithAlpha(150))
                 : Brushes.Transparent;
             button.Foreground = active
                 ? new SolidColorBrush(Colors.White)
@@ -813,6 +828,18 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _redoButton.IsEnabled = _redoStack.Count > 0;
     }
 
+    /// <summary>按当前选中状态同步「组合 / 取消组合」按钮：单个或无选中 → 都禁用；
+    /// 多选且未同组 → 仅「组合」；多选且同组 → 仅「取消组合」。</summary>
+    private void UpdateGroupButtons()
+    {
+        var selected = _canvas.SelectedLayers.Where(l => !_canvas.IsLocked(l.Id)).ToList();
+        var sameGroup = selected.Count >= 2 &&
+                        !string.IsNullOrEmpty(selected[0].GroupId) &&
+                        selected.All(l => l.GroupId == selected[0].GroupId);
+        _groupButton.IsEnabled = selected.Count >= 2 && !sameGroup;
+        _ungroupButton.IsEnabled = sameGroup;
+    }
+
     // ============ 添加图层 / 岛屿重置 ============
 
     private async void AddImageLayer()
@@ -954,12 +981,12 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private int _reorderSourceIndex;
     /// <summary>拖拽排序：目标插入索引。</summary>
     private int _reorderInsertIndex;
-    /// <summary>拖拽排序：插入位置指示线（舞台右上角图层面板内）。</summary>
+    /// <summary>拖拽排序：插入位置指示线（舞台右上角图层面板内，跟随主题强调色）。</summary>
     private readonly Border _reorderIndicator = new()
     {
         Height = 3,
         CornerRadius = new CornerRadius(1.5),
-        Background = new SolidColorBrush(Color.FromRgb(0, 120, 212)),
+        Background = new SolidColorBrush(ThemePalette.AccentColor()),
         HorizontalAlignment = HorizontalAlignment.Stretch,
         VerticalAlignment = VerticalAlignment.Top,
         IsVisible = false,
@@ -1003,9 +1030,10 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 LayerId = layer.Id,
                 IsIsland = false,
                 Title = layer.Name,
-                Subtitle = layer.Kind == WallpaperLayerKind.Image
-                    ? $"{DisplayKind(layer)}{SmtcModeSuffix(layer)} · {DisplayModeName(layer.DisplayMode)}"
-                    : $"{DisplayKind(layer)}{SmtcModeSuffix(layer)}",
+                Subtitle = (string.IsNullOrEmpty(layer.GroupId) ? string.Empty : "组 · ")
+                    + (layer.Kind == WallpaperLayerKind.Image
+                        ? $"{DisplayKind(layer)}{SmtcModeSuffix(layer)} · {DisplayModeName(layer.DisplayMode)}"
+                        : $"{DisplayKind(layer)}{SmtcModeSuffix(layer)}"),
                 IconGlyph = layer.Kind switch
                 {
                     WallpaperLayerKind.Shape => "\uE774",
@@ -1017,7 +1045,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 Selected = _canvas.SelectedLayers.Contains(layer),
                 Thumbnail = _canvas.GetThumbnail(layer.Id)
             };
-            // Ctrl + 点击 = 多选（切换选中）；普通点击 = 单选。
+            // Ctrl + 点击 = 多选（切换选中）；普通点击 = 单选（若属于组则选中整组）。
             row.WithHandlers(
                 ctrl =>
                 {
@@ -1027,7 +1055,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                     }
                     else
                     {
-                        _canvas.Select(captured.Id);
+                        _canvas.SelectWithGroup(captured.Id);
                     }
                 },
                 () => ToggleLayerVisibility(captured),
@@ -1633,7 +1661,11 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Primary
         };
-        var result = await dialog.ShowAsync();
+        // 显式传入本窗口的 TopLevel：多窗口/窗口分离时无参重载可能找不到根而崩溃。
+        var topLevel = TopLevel.GetTopLevel(this);
+        var result = topLevel != null
+            ? await dialog.ShowAsync(topLevel)
+            : ContentDialogResult.None;
         if (result == ContentDialogResult.Primary)
         {
             Save();
@@ -1838,16 +1870,16 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             BorderThickness = new Thickness(1);
             Padding = new Thickness(8, 6);
 
-            // 原生风格：透明底 + 悬停微高亮 + 选中强调色（不手搓深色卡片）。
+            // 原生风格：透明底 + 悬停微高亮 + 选中强调色（跟随主题，不手搓深色卡片）。
             void ApplyBackground(bool hover)
             {
                 Background = Selected
-                    ? new SolidColorBrush(Color.FromArgb(70, 0, 120, 212))
+                    ? new SolidColorBrush(ThemePalette.AccentColorWithAlpha(70))
                     : hover
                         ? ThemePalette.SubtleFill()
                         : Brushes.Transparent;
                 BorderBrush = Selected
-                    ? new SolidColorBrush(Color.FromArgb(180, 0, 120, 212))
+                    ? new SolidColorBrush(ThemePalette.AccentColorWithAlpha(180))
                     : Brushes.Transparent;
             }
 
