@@ -1,6 +1,9 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media;
+using Avalonia.Threading;
+using ClassIsland.Core.Abstractions.Services;
+using ClassIsland.Shared;
 using System.Globalization;
 
 namespace ClassIslandInjector;
@@ -17,6 +20,20 @@ public sealed class WallpaperLayerVisual : Control
     public WallpaperLayerVisual()
     {
         ClipToBounds = true;
+        // 「跟随主题色」的图层需要随 ClassIsland 主题色变化实时重绘；
+        // 订阅宿主主题更新事件（服务不可用时静默忽略，主题色回退系统蓝）。
+        try
+        {
+            var theme = IAppHost.TryGetService<IThemeService>();
+            if (theme != null)
+            {
+                theme.ThemeUpdated += (_, _) => Dispatcher.UIThread.Post(InvalidateVisual);
+            }
+        }
+        catch
+        {
+            // 主题服务不可用时忽略。
+        }
     }
 
     /// <summary>当前渲染的图层（形状/文本内容）。</summary>

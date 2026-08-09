@@ -103,7 +103,10 @@ internal sealed class WallpaperLayerCanvas : UserControl
     private double _islandHeight = 90;
     private double _zoom = 1;
     private WallpaperLayerZOrder _zOrder;
+    /// <summary>主选中图层 Id（最后一个点击/操作的选中项）。</summary>
     private string? _selectedId;
+    /// <summary>全部选中图层 Id（含主选中；Ctrl 多选时包含多个）。</summary>
+    private readonly List<string> _selectedIds = [];
     private readonly HashSet<string> _lockedIds = [];
     private bool _islandUnlocked;
     private DragState? _drag;
@@ -446,6 +449,10 @@ internal sealed class WallpaperLayerCanvas : UserControl
     public WallpaperLayerItem? SelectedLayer =>
         _selectedId == null ? null : _layers.FirstOrDefault(l => l.Id == _selectedId);
 
+    /// <summary>全部选中的图层（含主选中；顺序与 _layers 一致）。</summary>
+    public IReadOnlyList<WallpaperLayerItem> SelectedLayers =>
+        _layers.Where(l => _selectedIds.Contains(l.Id)).ToList();
+
     public bool IsLocked(string id) => _lockedIds.Contains(id);
 
     public void ToggleLock(string id)
@@ -458,14 +465,49 @@ internal sealed class WallpaperLayerCanvas : UserControl
         Refresh();
     }
 
+    /// <summary>单选：清空旧选择后选中指定图层（null 取消全部选中）。</summary>
     public void Select(string? id)
     {
-        if (_selectedId == id)
+        if (_selectedId == id && _selectedIds.Count == (id == null ? 0 : 1) &&
+            (id == null || _selectedIds.Contains(id)))
         {
             return;
         }
 
         _selectedId = id;
+        _selectedIds.Clear();
+        if (id != null)
+        {
+            _selectedIds.Add(id);
+        }
+
+        Refresh();
+        SelectionChanged?.Invoke();
+    }
+
+    /// <summary>Ctrl 多选：切换指定图层的选中状态（保留其它已选），主选中 = 最后点击项。</summary>
+    public void SelectWithToggle(string? id)
+    {
+        if (id == null)
+        {
+            Select(null);
+            return;
+        }
+
+        if (_selectedIds.Contains(id))
+        {
+            _selectedIds.Remove(id);
+            if (_selectedId == id)
+            {
+                _selectedId = _selectedIds.Count > 0 ? _selectedIds[^1] : null;
+            }
+        }
+        else
+        {
+            _selectedIds.Add(id);
+            _selectedId = id;
+        }
+
         Refresh();
         SelectionChanged?.Invoke();
     }
@@ -491,27 +533,30 @@ internal sealed class WallpaperLayerCanvas : UserControl
 
     /// <summary>
     /// 把选中图层对齐到岛屿对应参考点（等价于把锚点设为对应值并清零偏移），
-    /// 供浮动操作条与键盘操作调用；会压入撤销并触发刷新。
+    /// 供浮动操作条与键盘操作调用；多选时对全部选中生效（跳过锁定）；会压入撤销并触发刷新。
     /// </summary>
     public void AlignSelected(int? xIndex, int? yIndex)
     {
-        var layer = SelectedLayer;
-        if (layer == null || _lockedIds.Contains(layer.Id))
+        var layers = SelectedLayers.Where(l => !_lockedIds.Contains(l.Id)).ToList();
+        if (layers.Count == 0)
         {
             return;
         }
 
         EditStarted?.Invoke();
-        if (xIndex is { } xi)
+        foreach (var layer in layers)
         {
-            layer.AnchorX = xi switch { 0 => WallpaperLayerAnchorX.Left, 1 => WallpaperLayerAnchorX.Center, _ => WallpaperLayerAnchorX.Right };
-            layer.OffsetX = 0;
-        }
+            if (xIndex is { } xi)
+            {
+                layer.AnchorX = xi switch { 0 => WallpaperLayerAnchorX.Left, 1 => WallpaperLayerAnchorX.Center, _ => WallpaperLayerAnchorX.Right };
+                layer.OffsetX = 0;
+            }
 
-        if (yIndex is { } yi)
-        {
-            layer.AnchorY = yi switch { 0 => WallpaperLayerAnchorY.Top, 1 => WallpaperLayerAnchorY.Center, _ => WallpaperLayerAnchorY.Bottom };
-            layer.OffsetY = 0;
+            if (yIndex is { } yi)
+            {
+                layer.AnchorY = yi switch { 0 => WallpaperLayerAnchorY.Top, 1 => WallpaperLayerAnchorY.Center, _ => WallpaperLayerAnchorY.Bottom };
+                layer.OffsetY = 0;
+            }
         }
 
         Refresh();
@@ -871,6 +916,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         {
             _selectionOverlay.IsVisible = false;
             _selectionOverlay.SelectionRect = default;
+            _selectionOverlay.SecondaryRects.Clear();
             _floatToolbar.IsVisible = false;
             foreach (var handle in _resizeHandles)
             {
@@ -881,11 +927,25 @@ internal sealed class WallpaperLayerCanvas : UserControl
             return;
         }
 
-        var rect = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer));
-        var x = CanvasMargin + rect.X;
-        var y = CanvasMargin + rect.Y;
-        var w = rect.Width;
-        var h = rect.Height;
+        // 多选时：主选中显示完整虚线框 + 手柄；其它选中只画虚线框（不画手柄）。
+        var selected = SelectedLayers;
+        var primary = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer));
+        var x = CanvasMargin + primary.X;
+        var y = CanvasMargin + primary.Y;
+        var w = primary.Width;
+        var h = primary.Height;
+        _selectionOverlay.SecondaryRects.Clear();
+        foreach (var other in selected)
+        {
+            if (other == layer)
+            {
+                continue;
+            }
+
+            var r = WallpaperLayerLayout.ComputeRect(other, _islandWidth, _islandHeight, AspectOf(other));
+            _selectionOverlay.SecondaryRects.Add(new Rect(CanvasMargin + r.X, CanvasMargin + r.Y, r.Width, r.Height));
+        }
+
         _selectionOverlay.IsVisible = true;
         _selectionOverlay.SelectionRect = new Rect(x, y, w, h);
         _selectionOverlay.RotationStart = new Point(x + w / 2, y);
@@ -1013,7 +1073,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         switch (_tool)
         {
             case WallpaperEditorTool.Select:
-                SelectToolPress(pos);
+                SelectToolPress(pos, e);
                 e.Handled = true;
                 break;
             case WallpaperEditorTool.Zoom:
@@ -1203,29 +1263,49 @@ internal sealed class WallpaperLayerCanvas : UserControl
 
     // ============ 工具实现 ============
 
-    /// <summary>移动工具按下：命中图层则选中并开始拖拽移动，否则取消选中。</summary>
+    /// <summary>移动工具按下：命中图层则选中并开始拖拽移动（Ctrl 多选、可整组拖动），否则取消选中。</summary>
     private void MoveToolPress(Point pos, PointerPressedEventArgs e)
     {
         var layer = HitTestLayer(pos);
+        var ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
         if (layer == null)
         {
             Select(null);
             return;
         }
 
+        if (ctrl)
+        {
+            // Ctrl+点击：切换选中状态；若因此取消了选中则不进入拖拽。
+            SelectWithToggle(layer.Id);
+            if (!_selectedIds.Contains(layer.Id))
+            {
+                return;
+            }
+        }
+        else if (!_selectedIds.Contains(layer.Id))
+        {
+            // 点击不在选中集 → 单选；已在选中集（多选成员）→ 保持整组选中并整组拖动。
+            Select(layer.Id);
+        }
+
         if (_lockedIds.Contains(layer.Id))
         {
-            Select(layer.Id);
+            // 锁定图层只允许选中，不进入拖拽。
             return;
         }
 
-        Select(layer.Id);
-        // 铺满岛屿的图层被拖动时自动切换为自定义尺寸（锚点偏移才有意义）。
-        if (layer.SizeMode == WallpaperLayerSizeMode.FillIsland)
+        // 拖动整组：把参与移动的选中图层从「铺满岛屿」切为「自定义尺寸」，
+        // 否则锚点偏移被忽略导致拖动无效。
+        var moving = SelectedLayers.Where(l => !_lockedIds.Contains(l.Id)).ToList();
+        foreach (var sel in moving)
         {
-            layer.SizeMode = WallpaperLayerSizeMode.Custom;
-            layer.Width = _islandWidth;
-            layer.Height = _islandHeight;
+            if (sel.SizeMode == WallpaperLayerSizeMode.FillIsland)
+            {
+                sel.SizeMode = WallpaperLayerSizeMode.Custom;
+                sel.Width = _islandWidth;
+                sel.Height = _islandHeight;
+            }
         }
 
         _drag = new DragState
@@ -1242,11 +1322,18 @@ internal sealed class WallpaperLayerCanvas : UserControl
         e.Handled = true;
     }
 
-    /// <summary>选择工具按下：只选中图层，不进入拖拽移动。</summary>
-    private void SelectToolPress(Point pos)
+    /// <summary>选择工具按下：只选中图层（Ctrl 多选），不进入拖拽移动。</summary>
+    private void SelectToolPress(Point pos, PointerPressedEventArgs e)
     {
         var layer = HitTestLayer(pos);
-        Select(layer?.Id);
+        if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            SelectWithToggle(layer?.Id);
+        }
+        else
+        {
+            Select(layer?.Id);
+        }
     }
 
     /// <summary>形状工具按下：在起点创建图层并开始拖拽绘制。</summary>
@@ -1440,6 +1527,21 @@ internal sealed class WallpaperLayerCanvas : UserControl
         if (yIsland)
         {
             ApplyIslandSnapY(layer, rect);
+        }
+
+        // 整组移动：其它选中的图层按相同位移同步移动（不参与吸附，保持组内相对位置）。
+        foreach (var other in SelectedLayers)
+        {
+            if (other == layer || _lockedIds.Contains(other.Id))
+            {
+                continue;
+            }
+
+            var or = WallpaperLayerLayout.ComputeRect(other, _islandWidth, _islandHeight, AspectOf(other));
+            var moved = new Rect(or.X + delta.X, or.Y + delta.Y, or.Width, or.Height);
+            var (oox, ooy) = WallpaperLayerLayout.ToOffsets(other, moved, _islandWidth, _islandHeight);
+            other.OffsetX = oox;
+            other.OffsetY = ooy;
         }
 
         _guideOverlay.SetGuides(ToStageGuides(guides));
@@ -2001,19 +2103,19 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 e.Handled = true;
                 break;
             case Key.Left:
-                Nudge(layer, -1, 0, e.KeyModifiers.HasFlag(KeyModifiers.Shift));
+                Nudge(-1, 0, e.KeyModifiers.HasFlag(KeyModifiers.Shift));
                 e.Handled = true;
                 break;
             case Key.Right:
-                Nudge(layer, 1, 0, e.KeyModifiers.HasFlag(KeyModifiers.Shift));
+                Nudge(1, 0, e.KeyModifiers.HasFlag(KeyModifiers.Shift));
                 e.Handled = true;
                 break;
             case Key.Up:
-                Nudge(layer, 0, -1, e.KeyModifiers.HasFlag(KeyModifiers.Shift));
+                Nudge(0, -1, e.KeyModifiers.HasFlag(KeyModifiers.Shift));
                 e.Handled = true;
                 break;
             case Key.Down:
-                Nudge(layer, 0, 1, e.KeyModifiers.HasFlag(KeyModifiers.Shift));
+                Nudge(0, 1, e.KeyModifiers.HasFlag(KeyModifiers.Shift));
                 e.Handled = true;
                 break;
         }
@@ -2030,17 +2132,23 @@ internal sealed class WallpaperLayerCanvas : UserControl
         ZoomTo(center, _zoom * factor);
     }
 
-    private void Nudge(WallpaperLayerItem? layer, double dx, double dy, bool large)
+    /// <summary>方向键微移全部选中图层（跳过锁定；Shift = 大步）。</summary>
+    private void Nudge(double dx, double dy, bool large)
     {
-        if (layer == null || _lockedIds.Contains(layer.Id))
+        var layers = SelectedLayers.Where(l => !_lockedIds.Contains(l.Id)).ToList();
+        if (layers.Count == 0)
         {
             return;
         }
 
         EditStarted?.Invoke();
         var step = large ? 10 : 1;
-        layer.OffsetX += dx * step;
-        layer.OffsetY += dy * step;
+        foreach (var layer in layers)
+        {
+            layer.OffsetX += dx * step;
+            layer.OffsetY += dy * step;
+        }
+
         Refresh();
         Edited?.Invoke();
     }
@@ -2102,16 +2210,32 @@ internal sealed class WallpaperLayerCanvas : UserControl
         }
     }
 
-    /// <summary>选中图层的虚线框 + 旋转臂（PowerPoint 风格）。</summary>
+    /// <summary>选中图层的虚线框 + 旋转臂（PowerPoint 风格；多选时其它选中显示浅色虚线框）。</summary>
     private sealed class SelectionOverlay : Control
     {
         public Rect SelectionRect { get; set; }
+        public List<Rect> SecondaryRects { get; } = [];
         public Point RotationStart { get; set; }
         public Point RotationEnd { get; set; }
 
         public override void Render(DrawingContext context)
         {
             base.Render(context);
+            // 多选时其它选中的虚线框（浅色、无旋转臂）。
+            var secondaryPen = new Pen(new SolidColorBrush(Color.FromArgb(160, 0, 120, 212)), 1)
+            {
+                DashStyle = new DashStyle([4, 3], 0)
+            };
+            foreach (var sr in SecondaryRects)
+            {
+                if (sr.Width <= 0 || sr.Height <= 0)
+                {
+                    continue;
+                }
+
+                context.DrawRectangle(secondaryPen, new Rect(sr.X + 0.5, sr.Y + 0.5, sr.Width - 1, sr.Height - 1), 0);
+            }
+
             if (SelectionRect.Width <= 0 || SelectionRect.Height <= 0)
             {
                 return;
