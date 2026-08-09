@@ -42,6 +42,19 @@ internal sealed class WallpaperLayerCanvas : UserControl
     private readonly Border _stageHost = new() { ClipToBounds = true };
     private readonly Canvas _stage = new();
     private readonly Border _island;
+    private readonly TextBlock _islandTitle = new()
+    {
+        Text = "正在上课",
+        FontWeight = FontWeight.SemiBold,
+        HorizontalAlignment = HorizontalAlignment.Center
+    };
+    private readonly TextBlock _islandSubtitle = new()
+    {
+        Text = "数学  ·  08:00 – 08:45",
+        Opacity = 0.8,
+        FontSize = 12,
+        HorizontalAlignment = HorizontalAlignment.Center
+    };
     private readonly IslandOutlineOverlay _islandOutline = new() { IsHitTestVisible = false };
     private readonly SelectionOverlay _selectionOverlay = new() { IsHitTestVisible = false };
     private readonly GuideOverlay _guideOverlay = new() { IsHitTestVisible = false };
@@ -132,6 +145,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         _island = new Border
         {
             IsHitTestVisible = false,
+            Opacity = 0.72,
             Padding = new Thickness(18, 10),
             Child = new StackPanel
             {
@@ -140,8 +154,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 VerticalAlignment = VerticalAlignment.Center,
                 Children =
                 {
-                    new TextBlock { Text = "正在上课", FontWeight = FontWeight.SemiBold, HorizontalAlignment = HorizontalAlignment.Center },
-                    new TextBlock { Text = "数学  ·  08:00 – 08:45", Opacity = 0.8, FontSize = 12, HorizontalAlignment = HorizontalAlignment.Center }
+                    _islandTitle,
+                    _islandSubtitle
                 }
             }
         };
@@ -210,18 +224,14 @@ internal sealed class WallpaperLayerCanvas : UserControl
         // 选中图层上方的浮动操作条（参考 ClassIsland 编辑模式）：对齐 + 删除。
         // 置于根网格（不随舞台缩放/滚动）。背景按宿主主题深浅直接取稳定色值（不依赖可能解析错误的主题资源），
         // 图标前景按背景明暗自适应，避免深色主题下出现「浅色浮动条」。
-        var toolbarDark = ThemePalette.IsDarkTheme();
-        var toolbarBackground = toolbarDark
-            ? new SolidColorBrush(Color.FromArgb(245, 32, 32, 36))
-            : new SolidColorBrush(Color.FromArgb(248, 243, 243, 243));
-        var toolbarForeground = toolbarDark ? Color.FromRgb(255, 255, 255) : Color.FromRgb(28, 30, 34);
+        var toolbarBackground = ThemePalette.PanelBackground();
+        var toolbarForeground = ThemePalette.ForegroundColor();
         _floatToolbar = new Border
         {
             IsVisible = false,
             CornerRadius = new CornerRadius(6),
             Background = toolbarBackground,
-            BorderBrush = new SolidColorBrush(toolbarDark ? Color.FromArgb(130, 255, 255, 255) : Color.FromArgb(130, 0, 0, 0)),
-            BorderThickness = new Thickness(1),
+            BorderThickness = new Thickness(0),
             Padding = new Thickness(4),
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Top,
@@ -274,9 +284,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
             CornerRadius = new CornerRadius(6),
             Padding = new Thickness(10, 4),
             Background = ThemePalette.PanelBackground(),
-            BorderBrush = ThemeBrush("CardStrokeColorDefaultBrush") ?? new SolidColorBrush(
-                ThemePalette.IsDarkTheme() ? Color.FromArgb(80, 255, 255, 255) : Color.FromArgb(80, 0, 0, 0)),
-            BorderThickness = new Thickness(1),
+            BorderThickness = new Thickness(0),
             Child = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
@@ -734,10 +742,20 @@ internal sealed class WallpaperLayerCanvas : UserControl
         }
         else
         {
-            background = new SolidColorBrush(s.CustomBackgroundEnabled ? color : Color.FromArgb(0xAA, 40, 42, 48));
+            // 未启用自定义背景时，预览也应尊重宿主明暗主题；否则浅色主题会得到
+            // 深底黑字的低对比度岛屿。
+            color = s.CustomBackgroundEnabled
+                ? color
+                : ThemePalette.IsDarkTheme()
+                    ? Color.FromRgb(48, 51, 58)
+                    : Color.FromRgb(255, 255, 255);
+            background = new SolidColorBrush(color);
         }
 
         _island.Background = background;
+        var foreground = new SolidColorBrush(ThemePalette.ContrastForeground(color));
+        _islandTitle.Foreground = foreground;
+        _islandSubtitle.Foreground = foreground;
         _island.CornerRadius = new CornerRadius(Math.Clamp(s.CornerRadius, 0, 60));
         _island.BorderBrush = s.BorderEnabled ? new SolidColorBrush(TryParse(s.BorderColor, Colors.White)) : null;
         _island.BorderThickness = s.BorderEnabled ? new Thickness(Math.Clamp(s.BorderThickness, 0, 20)) : new Thickness(0);
@@ -2016,7 +2034,9 @@ internal sealed class AnchorGridPicker : Control
         var selectedRow = AnchorY switch { WallpaperLayerAnchorY.Top => 0, WallpaperLayerAnchorY.Center => 1, _ => 2 };
         var selectedCol = AnchorX switch { WallpaperLayerAnchorX.Left => 0, WallpaperLayerAnchorX.Center => 1, _ => 2 };
         var accent = new SolidColorBrush(Color.FromRgb(0, 120, 212));
-        var idle = new SolidColorBrush(Color.FromArgb(110, 255, 255, 255));
+        var idle = new SolidColorBrush(ThemePalette.IsDarkTheme()
+            ? Color.FromArgb(150, 255, 255, 255)
+            : Color.FromArgb(130, 0, 0, 0));
         for (var r = 0; r < 3; r++)
         {
             for (var c = 0; c < 3; c++)

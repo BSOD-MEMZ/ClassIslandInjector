@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media;
+using Avalonia.Styling;
 using ClassIsland.Core.Abstractions.Services;
 using ClassIsland.Shared;
 
@@ -8,29 +9,32 @@ namespace ClassIslandInjector;
 
 /// <summary>
 /// 编辑器/设置页共用的主题调色板。
-/// 深浅色判断优先用宿主的公开服务 <see cref="IThemeService.CurrentRealThemeMode"/>
-/// （0 = 浅色，1 = 深色），这是最可靠的信号；资源亮度检测仅作兜底。
+/// 深浅色判断优先使用 Avalonia 已实际应用到窗口的主题变体；宿主主题服务可能在
+/// 插件窗口创建时仍保留旧值，因此仅作为最后回退。
 /// 面板 / 浮层配色按深浅色直接给出稳定色值，不再依赖插件窗口里可能解析错误的主题资源。
+/// 编辑器不能把窗口、侧栏和浮层都画成同一种颜色；这里同时提供基础层和表面层，
+/// 以便在两个主题下都保留清晰的层级和边界。
 /// </summary>
 public static class ThemePalette
 {
-    /// <summary>判断当前主题是否为深色（优先宿主 IThemeService，失败回退资源亮度）。</summary>
+    /// <summary>判断当前主题是否为深色。</summary>
     public static bool IsDarkTheme()
     {
-        try
+        // RequestedThemeVariant 在“跟随系统”时会是 Default，不能据此决定明暗；
+        // ActualThemeVariant 则是 Avalonia 已解析的真实主题，插件窗口也会继承它。
+        var actualTheme = Application.Current?.ActualThemeVariant;
+        if (actualTheme == ThemeVariant.Dark)
         {
-            var theme = IAppHost.TryGetService<IThemeService>();
-            if (theme != null)
-            {
-                // 0 = 浅色，1 = 深色
-                return theme.CurrentRealThemeMode == 1;
-            }
-        }
-        catch
-        {
-            // 服务不可用时回退资源亮度检测。
+            return true;
         }
 
+        if (actualTheme == ThemeVariant.Light)
+        {
+            return false;
+        }
+
+        // 当宿主使用 Default（跟随系统）且 Avalonia 没有暴露最终变体时，优先从已
+        // 应用的主题资源取样；这比 ThemeService 的可能滞后缓存更可靠。
         foreach (var key in new[]
                  {
                      "CommandBarOverflowPresenterBackground",
@@ -45,6 +49,20 @@ public static class ThemePalette
             }
         }
 
+        try
+        {
+            var theme = IAppHost.TryGetService<IThemeService>();
+            if (theme != null)
+            {
+                // 0 = 浅色，1 = 深色
+                return theme.CurrentRealThemeMode == 1;
+            }
+        }
+        catch
+        {
+            // 服务不可用时使用保守的深色回退。
+        }
+
         return true;
     }
 
@@ -55,10 +73,36 @@ public static class ThemePalette
     /// <summary>查找主题画刷。</summary>
     public static IBrush? ThemeBrush(string key) => FindResource(key) as IBrush;
 
-    /// <summary>手搓面板/浮层的回退背景：深色 = 接近 FAUI 的 #202020，浅色 = 接近白。</summary>
-    public static IBrush PanelBackground() =>
-        IsDarkTheme()
-            ? new SolidColorBrush(Color.FromArgb(245, 32, 32, 36))
-            : new SolidColorBrush(Color.FromArgb(248, 243, 243, 243));
+    /// <summary>编辑器窗口的基础背景。</summary>
+    public static IBrush WindowBackground() => new SolidColorBrush(IsDarkTheme()
+        ? Color.FromRgb(24, 26, 30)
+        : Color.FromRgb(244, 246, 248));
+
+    /// <summary>编辑器侧栏、缩放浮层等抬升表面的背景。</summary>
+    public static IBrush PanelBackground() => new SolidColorBrush(IsDarkTheme()
+        ? Color.FromRgb(37, 40, 46)
+        : Color.FromRgb(255, 255, 255));
+
+    /// <summary>编辑器表面的描边，避免深色主题下整窗混成一片灰色。</summary>
+    public static IBrush SurfaceBorder() => new SolidColorBrush(IsDarkTheme()
+        ? Color.FromArgb(100, 255, 255, 255)
+        : Color.FromArgb(36, 0, 0, 0));
+
+    /// <summary>列表和小控件的轻微悬停/占位填充。</summary>
+    public static IBrush SubtleFill() => new SolidColorBrush(IsDarkTheme()
+        ? Color.FromArgb(28, 255, 255, 255)
+        : Color.FromArgb(14, 0, 0, 0));
+
+    /// <summary>在手工绘制的表面上使用的主文字颜色。</summary>
+    public static Color ForegroundColor() => IsDarkTheme()
+        ? Color.FromRgb(245, 245, 245)
+        : Color.FromRgb(30, 32, 36);
+
+    /// <summary>根据背景亮度取得可读文字颜色。</summary>
+    public static Color ContrastForeground(Color background)
+    {
+        var luminance = (0.299 * background.R + 0.587 * background.G + 0.114 * background.B) / 255;
+        return luminance < 0.55 ? Colors.White : Color.FromRgb(30, 32, 36);
+    }
 }
 

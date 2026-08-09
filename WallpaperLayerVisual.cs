@@ -97,7 +97,7 @@ public sealed class WallpaperLayerVisual : Control
         var text = string.IsNullOrEmpty(layer.Text) ? " " : layer.Text;
         var size = Math.Max(4, layer.TextFontSize);
         var brush = new SolidColorBrush(ParseColor(layer.TextColor, Colors.White));
-        var typeface = new Typeface(FontFamily.Default, FontStyle.Normal,
+        var typeface = new Typeface(ParseFontFamily(layer.TextFontFamily), FontStyle.Normal,
             layer.TextBold ? FontWeight.Bold : FontWeight.Normal);
         var alignment = layer.TextAlign switch
         {
@@ -194,6 +194,24 @@ public sealed class WallpaperLayerVisual : Control
         catch (FormatException)
         {
             return fallback;
+        }
+    }
+
+    /// <summary>解析用户选择的系统字体，缺失或卸载后平稳回退到默认字体。</summary>
+    private static FontFamily ParseFontFamily(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return FontFamily.Default;
+        }
+
+        try
+        {
+            return FontFamily.Parse(text);
+        }
+        catch (ArgumentException)
+        {
+            return FontFamily.Default;
         }
     }
 }

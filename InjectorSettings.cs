@@ -323,6 +323,9 @@ public sealed class WallpaperLayerItem
     /// <summary>字号（像素）。</summary>
     public double TextFontSize { get; set; } = 16;
 
+    /// <summary>文字字体名称；空值表示跟随 ClassIsland 默认字体。</summary>
+    public string TextFontFamily { get; set; } = string.Empty;
+
     /// <summary>是否加粗。</summary>
     public bool TextBold { get; set; }
 
@@ -356,6 +359,7 @@ public sealed class WallpaperLayerItem
         Text = Text,
         TextColor = TextColor,
         TextFontSize = TextFontSize,
+        TextFontFamily = TextFontFamily,
         TextBold = TextBold,
         TextAlign = TextAlign
     };

@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Templates;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
@@ -72,11 +73,13 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     // 文本图层检查器
     private readonly TextBox _textBox = new() { MaxWidth = 200, Watermark = "文本内容" };
     private readonly EditorSpin _textFontSizeSpin = new(6, 200, 1, "0");
+    private readonly ComboBox _textFontFamilyBox = new() { MinWidth = 140, MaxDropDownHeight = 360 };
     private readonly ColorPicker _textColorPicker = ColorPicker();
     private readonly ToggleSwitch _textBoldToggle = new() { OnContent = "开", OffContent = "关" };
     private readonly ComboBox _textAlignBox = new() { MinWidth = 140 };
     private Control _textItem = null!;
     private Control _textFontSizeItem = null!;
+    private Control _textFontFamilyItem = null!;
     private Control _textColorItem = null!;
     private Control _textBoldItem = null!;
     private Control _textAlignItem = null!;
@@ -109,8 +112,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         MinHeight = 640;
         SystemDecorations = SystemDecorations.Full;
         // 插件窗口里 Mica 背景不可靠（会导致整窗半透明看不清），
-        // 直接给一个跟随主题的实色背景；内部面板保持透明以露出它。
-        Background = ThemePalette.PanelBackground();
+        // 用主题感知的实色基底；侧栏和画布再使用独立表面，避免深色主题整窗一片灰。
+        Background = ThemePalette.WindowBackground();
 
         _layers = InjectorRuntime.Settings.WallpaperLayers.Select(l => l.Clone()).ToList();
         var islandSize = InjectorRuntime.GetCurrentIslandSize();
@@ -170,7 +173,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             PrimaryCommands =
             {
                 CommandButton("\uE9B4", "添加图片图层", "选择一张图片作为新的底图图层", AddImageLayer),
-                CommandButton("\uEBCA", "添加 SMTC 图层", "把当前播放的专辑封面作为新的底图图层（无播放时显示占位封面）", AddSmtcLayer),
                 new CommandBarSeparator(),
                 _undoButton,
                 _redoButton,
@@ -197,6 +199,10 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         var inspector = BuildInspector();
         var rightColumn = new ScrollViewer
         {
+            Background = ThemePalette.PanelBackground(),
+            BorderBrush = ThemePalette.SurfaceBorder(),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(12),
             Content = new StackPanel
             {
                 Classes = { "settings-container" },
@@ -205,25 +211,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 {
                     layersTitle,
                     new ScrollViewer { MaxHeight = 260, Content = layerListHost },
-                    new StackPanel
-                    {
-                        Orientation = Orientation.Horizontal,
-                        Spacing = 6,
-                        Children =
-                        {
-                            ActionButton("\uE9B4", "添加图片图层", AddImageLayer),
-                            ActionButton("\uEBCA", "添加 SMTC 图层", AddSmtcLayer),
-                            ActionButton("\uE774", "添加形状", AddShapeLayer),
-                            ActionButton("\uF1BD", "添加文本", AddTextLayer)
-                        }
-                    },
-                    new TextBlock
-                    {
-                        Text = "图层位置由「锚点 + 偏移」表达：例如锚点设为「右」、水平偏移 -16，即表示图片右边缘位于岛屿右边缘左侧 16px；主界面长度变化时底图会按锚点自适应。拖拽图层行左侧手柄可调整图层顺序（越靠上越靠前）。",
-                        TextWrapping = TextWrapping.Wrap,
-                        Opacity = 0.7,
-                        FontSize = 12
-                    },
                     new Separator { Margin = new Thickness(0, 8, 0, 8) },
                     inspector
                 }
@@ -231,17 +218,17 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         };
 
         // 左侧工具栏（Photoshop 式）+ 舞台 + 右侧设置区之间加垂直分割手柄，可左右拖动调整宽度。
-        // 面板一律不设背景（透明），由 MyWindow 的 Mica 原生背景提供主题外观。
         var toolbar = new Border
         {
             Padding = new Thickness(6),
             VerticalAlignment = VerticalAlignment.Top,
+            Background = ThemePalette.PanelBackground(),
             Child = BuildToolBar()
         };
         var stageHost = new Border
         {
-            CornerRadius = new CornerRadius(8),
             ClipToBounds = true,
+            Background = ThemePalette.PanelBackground(),
             Child = _canvas
         };
         var columnSplitter = new GridSplitter
@@ -263,23 +250,14 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         Grid.SetColumn(columnSplitter, 2);
         Grid.SetColumn(rightColumn, 3);
 
-        // 状态栏（透明，跟随原生窗口背景）
-        var statusBar = new Border
-        {
-            Padding = new Thickness(12, 6),
-            CornerRadius = new CornerRadius(6),
-            Child = _statusText
-        };
-
         _contentGrid = new Grid
         {
-            Margin = new Thickness(16),
-            RowDefinitions = new RowDefinitions("Auto,*,Auto"),
-            RowSpacing = 10,
-            Children = { commandBar, body, statusBar }
+            Margin = new Thickness(12, 4, 12, 12),
+            RowDefinitions = new RowDefinitions("Auto,*"),
+            RowSpacing = 6,
+            Children = { commandBar, body }
         };
         Grid.SetRow(body, 1);
-        Grid.SetRow(statusBar, 2);
         Content = _contentGrid;
         UpdateToolBarSelection();
     }
@@ -295,6 +273,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         panel.Children.Add(ToolButton(WallpaperEditorTool.Zoom, "\uF4D0", "缩放工具（Z）：单击放大 / Alt+单击缩小 / 拖拽框选放大"));
         panel.Children.Add(ToolButton(WallpaperEditorTool.Shape, "\uE774", "形状工具（U）：点击选择形状类型并进入绘制"));
         panel.Children.Add(ToolButton(WallpaperEditorTool.Text, "\uF1BD", "文本工具（T）：点击插入文本框图层"));
+        panel.Children.Add(new Separator { Margin = new Thickness(2, 5) });
+        panel.Children.Add(ToolActionButton("\uEBCA", "添加 SMTC 图层", "把当前播放的专辑封面作为新的底图图层（无播放时显示占位封面）", AddSmtcLayer));
         return panel;
     }
 
@@ -321,6 +301,23 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             }
         };
         _toolButtons[tool] = button;
+        return button;
+    }
+
+    /// <summary>工具栏中的一次性命令按钮，不改变当前编辑工具。</summary>
+    private static Button ToolActionButton(string glyph, string label, string tip, Action action)
+    {
+        var button = new Button
+        {
+            Content = new IconText { Glyph = glyph, Text = string.Empty },
+            Padding = new Thickness(9, 7),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Foreground = new SolidColorBrush(ThemePalette.ForegroundColor())
+        };
+        ToolTip.SetTip(button, $"{label}：{tip}");
+        button.Click += (_, _) => action();
         return button;
     }
 
@@ -360,7 +357,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 : Brushes.Transparent;
             button.Foreground = active
                 ? new SolidColorBrush(Colors.White)
-                : null;
+                : new SolidColorBrush(ThemePalette.ForegroundColor());
         }
     }
 
@@ -374,6 +371,22 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _shapeTypeBox.SelectedItem = ShapeTypeChoices[0];
         _textAlignBox.ItemsSource = TextAlignChoices;
         _textAlignBox.SelectedItem = TextAlignChoices[1];
+        var fonts = FontManager.Current.SystemFonts
+            .Append(FontFamily.Default)
+            .DistinctBy(font => font.Name)
+            .OrderBy(font => font.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToArray();
+        _textFontFamilyBox.ItemsSource = fonts;
+        _textFontFamilyBox.ItemTemplate = new FuncDataTemplate<FontFamily>((font, _) => new TextBlock
+        {
+            Text = font.Name,
+            FontFamily = font,
+            Width = 220,
+            Height = 24,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis
+        });
+        _textFontFamilyBox.SelectedItem = FontFamily.Default;
         _fillIslandToggle.IsChecked = true;
 
         _nameBox.TextChanged += (_, _) => ApplyToSelected(l => l.Name = _nameBox.Text ?? "底图图层");
@@ -419,6 +432,13 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty)
             {
                 ApplyToSelected(l => { if (l.Kind == WallpaperLayerKind.Text) l.TextFontSize = _textFontSizeSpin.DoubleValue; });
+            }
+        };
+        _textFontFamilyBox.SelectionChanged += (_, _) =>
+        {
+            if (!_updatingInspector && _textFontFamilyBox.SelectedItem is FontFamily font)
+            {
+                ApplyToSelected(l => { if (l.Kind == WallpaperLayerKind.Text) l.TextFontFamily = font.Name; });
             }
         };
         _textColorPicker.PropertyChanged += (_, e) =>
@@ -513,11 +533,13 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         // 文本图层专属（仅选中文本图层时显示）
         _textItem = SettingsRow("文本内容", _textBox);
         _textFontSizeItem = SettingsRow("字号", _textFontSizeSpin);
+        _textFontFamilyItem = SettingsRow("字体", _textFontFamilyBox);
         _textColorItem = SettingsRow("文字颜色", _textColorPicker);
         _textBoldItem = SettingsRow("加粗", _textBoldToggle);
         _textAlignItem = SettingsRow("水平对齐", _textAlignBox);
         inspector.Children.Add(_textItem);
         inspector.Children.Add(_textFontSizeItem);
+        inspector.Children.Add(_textFontFamilyItem);
         inspector.Children.Add(_textColorItem);
         inspector.Children.Add(_textBoldItem);
         inspector.Children.Add(_textAlignItem);
@@ -1315,6 +1337,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 _shapeStrokeWidthItem.IsVisible = false;
                 _textItem.IsVisible = false;
                 _textFontSizeItem.IsVisible = false;
+                _textFontFamilyItem.IsVisible = false;
                 _textColorItem.IsVisible = false;
                 _textBoldItem.IsVisible = false;
                 _textAlignItem.IsVisible = false;
@@ -1338,6 +1361,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             _shapeStrokeWidthItem.IsVisible = isShape;
             _textItem.IsVisible = isText;
             _textFontSizeItem.IsVisible = isText;
+            _textFontFamilyItem.IsVisible = isText;
             _textColorItem.IsVisible = isText;
             _textBoldItem.IsVisible = isText;
             _textAlignItem.IsVisible = isText;
@@ -1359,6 +1383,9 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             _shapeStrokeSpin.DoubleValue = layer.StrokeThickness;
             _textBox.Text = layer.Text;
             _textFontSizeSpin.DoubleValue = layer.TextFontSize;
+            _textFontFamilyBox.SelectedItem = ((IEnumerable<FontFamily>)_textFontFamilyBox.ItemsSource!)
+                .FirstOrDefault(font => string.Equals(font.Name, layer.TextFontFamily, StringComparison.CurrentCultureIgnoreCase))
+                ?? FontFamily.Default;
             _textColorPicker.Color = ReadColor(layer.TextColor, Colors.White);
             _textBoldToggle.IsChecked = layer.TextBold;
             _textAlignBox.SelectedItem = TextAlignChoices.FirstOrDefault(c => c.Value == layer.TextAlign) ?? TextAlignChoices[1];
@@ -1673,7 +1700,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 Background = Selected
                     ? new SolidColorBrush(Color.FromArgb(70, 0, 120, 212))
                     : hover
-                        ? new SolidColorBrush(Color.FromArgb(24, 255, 255, 255))
+                        ? ThemePalette.SubtleFill()
                         : Brushes.Transparent;
                 BorderBrush = Selected
                     ? new SolidColorBrush(Color.FromArgb(180, 0, 120, 212))
@@ -1703,7 +1730,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                     Width = 40,
                     Height = 26,
                     CornerRadius = new CornerRadius(4),
-                    Background = new SolidColorBrush(Color.FromArgb(30, 255, 255, 255)),
+                    Background = ThemePalette.SubtleFill(),
                     Child = new IconText
                     {
                         Glyph = IconGlyph,
