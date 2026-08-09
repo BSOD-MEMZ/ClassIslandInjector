@@ -211,6 +211,10 @@ public sealed class InjectorSettings
     private string _fakeWeatherAlertDetail = "";
     private int _fakeWeatherRainRemainingMinutes;
     private int _startupOpenTarget;
+    // 调试
+    private bool _reduceVisualBurden;
+    private bool _disableVersionCheck;
+    private bool _disableDegradationCheck;
     private bool _shadowEnabled;
     private string _shadowColor = "#99000000";
     private double _shadowBlur = 16;
@@ -342,6 +346,15 @@ public sealed class InjectorSettings
     public string FakeWeatherAlertDetail { get => _fakeWeatherAlertDetail; set => Set(ref _fakeWeatherAlertDetail, value.Trim()); }
     public int FakeWeatherRainRemainingMinutes { get => _fakeWeatherRainRemainingMinutes; set => Set(ref _fakeWeatherRainRemainingMinutes, Math.Clamp(value, -180, 180)); }
     public int StartupOpenTarget { get => _startupOpenTarget; set => Set(ref _startupOpenTarget, Math.Clamp(value, 0, 3)); }
+
+    /// <summary>降低视觉负担：隐藏设置项的说明文字，只保留名称。</summary>
+    public bool ReduceVisualBurden { get => _reduceVisualBurden; set => Set(ref _reduceVisualBurden, value); }
+
+    /// <summary>关闭插件版本检查与更新提醒。</summary>
+    public bool DisableVersionCheck { get => _disableVersionCheck; set => Set(ref _disableVersionCheck, value); }
+
+    /// <summary>关闭宿主点位失效检查与降级提示。</summary>
+    public bool DisableDegradationCheck { get => _disableDegradationCheck; set => Set(ref _disableDegradationCheck, value); }
     public bool ShadowEnabled { get => _shadowEnabled; set => Set(ref _shadowEnabled, value); }
     public string ShadowColor { get => _shadowColor; set => Set(ref _shadowColor, value.Trim()); }
     public double ShadowBlur { get => _shadowBlur; set => Set(ref _shadowBlur, Math.Clamp(value, 0, 200)); }
@@ -505,6 +518,9 @@ public sealed class InjectorSettings
         FakeWeatherAlertDetail = source.FakeWeatherAlertDetail;
         FakeWeatherRainRemainingMinutes = source.FakeWeatherRainRemainingMinutes;
         StartupOpenTarget = source.StartupOpenTarget;
+        ReduceVisualBurden = source.ReduceVisualBurden;
+        DisableVersionCheck = source.DisableVersionCheck;
+        DisableDegradationCheck = source.DisableDegradationCheck;
         ShadowEnabled = source.ShadowEnabled;
         ShadowColor = source.ShadowColor;
         ShadowBlur = source.ShadowBlur;

@@ -76,7 +76,7 @@
     "Settings": {
       "value": "Settings",
       "feature": "宿主设置对象",
-      "target": "settings"
+      "target": "app"
     },
     "IsIslandSeperated": {
       "value": "IsIslandSeperated",

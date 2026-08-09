@@ -232,7 +232,7 @@ public sealed class ContractCatalog
         catalog.AssemblyNames["AvaloniaXamlLoader"] = new("Avalonia.Markup.Xaml.Loader", "运行时 XAML 加载器程序集");
 
         // ---- 反射成员名 ----
-        catalog.MemberNames["Settings"] = new("Settings", "宿主设置对象", "settings");
+        catalog.MemberNames["Settings"] = new("Settings", "宿主设置对象", "app");
         catalog.MemberNames["IsIslandSeperated"] = new("IsIslandSeperated", "分体主界面开关（注意宿主拼写）", "settings");
         catalog.MemberNames["RadiusX"] = new("RadiusX", "原生圆角 X", "settings");
         catalog.MemberNames["RadiusY"] = new("RadiusY", "原生圆角 Y", "settings");

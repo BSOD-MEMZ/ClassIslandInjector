@@ -37,6 +37,11 @@ internal static class InjectorRuntime
         {
             GetInjector().Attach();
             UpdateSmtcWatcher();
+            // 主窗口就绪后执行宿主点位健康检查；用户关闭该检查时跳过。
+            if (!Settings.DisableDegradationCheck)
+            {
+                ContractCatalogService.RunHealthCheck();
+            }
         });
     }
 

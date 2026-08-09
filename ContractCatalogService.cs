@@ -260,6 +260,8 @@ internal static class ContractCatalogService
 
             // 反射成员
             var settingsType = ResolveTargetType("settings", mainWindow, null, null);
+            var appType = AppBase.Current?.GetType();
+            var mainWindowType = mainWindow.GetType();
             foreach (var (key, entry) in Current.MemberNames)
             {
                 var targetType = ResolveTargetType(entry.Target, mainWindow, settingsType, descendants);
@@ -269,7 +271,7 @@ internal static class ContractCatalogService
                     continue;
                 }
 
-                if (!HasMember(targetType, entry.Value) && !entry.Optional)
+                if (!HasMemberAny(entry.Value, targetType, settingsType, appType, mainWindowType) && !entry.Optional)
                 {
                     list.Add(new ContractDegradation("反射成员", key, entry.Value, entry.Feature ?? key));
                 }
@@ -298,6 +300,28 @@ internal static class ContractCatalogService
         return false;
     }
 
+    /// <summary>
+    /// 在目标类型上查找成员；找不到时回退到宿主设置对象 / App / 主窗口类型，
+    /// 兼容旧版对照表把 Settings 的 Target 误标为 settings 的情况（Settings 属性在 App 上）。
+    /// </summary>
+    private static bool HasMemberAny(string memberName, Type? primary, Type? settingsType, Type? appType, Type? mainWindowType)
+    {
+        if (primary != null && HasMember(primary, memberName))
+        {
+            return true;
+        }
+
+        foreach (var fallback in new[] { settingsType, appType, mainWindowType })
+        {
+            if (fallback != null && !ReferenceEquals(fallback, primary) && HasMember(fallback, memberName))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>把对照表的 Target 定位转换为宿主类型；无法解析时返回 null。</summary>
     private static Type? ResolveTargetType(string? target, Window mainWindow, Type? settingsType, Control[]? descendants)
     {
@@ -305,6 +329,8 @@ internal static class ContractCatalogService
         {
             case "settings":
                 return settingsType ??= GetSettingsType();
+            case "app":
+                return AppBase.Current?.GetType();
             case "mainWindow":
                 return mainWindow.GetType();
             case "mainWindowLine":

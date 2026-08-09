@@ -62,6 +62,15 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly TextBox _fakeWeatherAlertDetail = new() { MinWidth = 260, Watermark = "如：预计未来 6 小时……（可留空）" };
     private readonly Spin _fakeWeatherRainRemainingMinutes = Spinner(-180, 180, 1, "0");
     private readonly ComboBox _startupOpenTarget = Combo(StartupOpenTargets);
+    // 调试
+    private readonly ToggleSwitch _reduceVisualBurden = Toggle();
+    private readonly ToggleSwitch _disableVersionCheck = Toggle();
+    private readonly ToggleSwitch _disableDegradationCheck = Toggle();
+    /// <summary>「降低视觉负担」需要隐藏说明的全部设置项/卡片及其原始说明。</summary>
+    private readonly List<SettingsExpander> _allExpanders = [];
+    private readonly List<SettingsExpanderItem> _allItems = [];
+    private readonly Dictionary<SettingsExpander, string?> _savedExpanderDescriptions = [];
+    private readonly Dictionary<SettingsExpanderItem, string?> _savedItemDescriptions = [];
     private readonly ComboBox _contractTableList = new()
     {
         MinWidth = 220,
@@ -348,6 +357,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         Content = BuildContent();
         WireVisualEditor();
         WireLivePreview();
+        // 调试开关即时生效（须在 LoadFromSettings 之前挂接，加载持久化值时也会触发）。
+        _reduceVisualBurden.PropertyChanged += (_, _) => ApplyVisualBurdenReduction();
+        _disableVersionCheck.PropertyChanged += (_, _) => UpdatePluginUpdateInfoBar(_contractTableList.SelectedItem as ContractIndexEntry);
+        _disableDegradationCheck.PropertyChanged += (_, _) => RefreshHealthInfoBar();
         LoadFromSettings();
         // 对照表被应用/切换后刷新本页状态（顶部降级提示、当前对照表、下拉选中）。
         ContractCatalogService.CatalogChanged += (_, _) => Dispatcher.UIThread.Post(RefreshContractUi);
@@ -672,10 +685,16 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         UpdateContractCurrent();
         panel.Children.Add(Setting("\uE761", "当前状态", "ClassIsland 宿主版本与当前生效的对照表。", _contractCurrent));
         panel.Children.Add(Setting("\uE761", "可用对照表", "刷新后连接到 xxtsoft，列出所有可用对照表。", ContractTableFooter()));
+        panel.Children.Add(Setting("\uE905", "查看 xxtsoft 服务状态", "打开插件网站，检查服务是否在线。", LinkButton("打开 xxtsoft.top", "https://xxtsoft.top")));
         panel.Children.Add(_contractStatus);
 
-        AddSection(panel, "\uE9E4", "关于");
+        AddSection(panel, "\uE2C8", "调试");
         panel.Children.Add(Setting("\uE2C8", "启动时自动打开", "调试用：ClassIsland 启动后自动打开指定位置。", _startupOpenTarget));
+        panel.Children.Add(Setting("\uE817", "降低视觉负担", "隐藏设置项的说明文字，只保留名称，减少视觉干扰。", _reduceVisualBurden));
+        panel.Children.Add(Setting("\uEF25", "关闭版本检查和提醒", "不再检查插件版本，也不提示去 GitHub 更新。", _disableVersionCheck));
+        panel.Children.Add(Setting("\uEF4F", "关闭宿主定位点失效检查", "不再检测宿主点位失效，也不显示降级提示。", _disableDegradationCheck));
+
+        AddSection(panel, "\uE9E4", "关于");
         var manifest = Plugin.Manifest;
         panel.Children.Add(new SettingsExpander
         {
@@ -886,6 +905,39 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             : $"ClassIsland {InjectorRuntime.HostVersion} · 当前对照表：{current.Name}（{current.Id}）· {current.Author}";
     }
 
+    /// <summary>
+    /// 降低视觉负担：隐藏全部设置项/卡片的说明文字，只保留名称；关闭时恢复原始说明。
+    /// </summary>
+    private void ApplyVisualBurdenReduction()
+    {
+        var reduced = _reduceVisualBurden.IsChecked == true;
+        foreach (var expander in _allExpanders)
+        {
+            if (reduced)
+            {
+                _savedExpanderDescriptions.TryAdd(expander, expander.Description);
+                expander.Description = null;
+            }
+            else if (_savedExpanderDescriptions.Remove(expander, out var saved))
+            {
+                expander.Description = saved;
+            }
+        }
+
+        foreach (var item in _allItems)
+        {
+            if (reduced)
+            {
+                _savedItemDescriptions.TryAdd(item, item.Description);
+                item.Description = null;
+            }
+            else if (_savedItemDescriptions.Remove(item, out var saved))
+            {
+                item.Description = saved;
+            }
+        }
+    }
+
     /// <summary>按健康检查结果刷新顶部「宿主点位失效」InfoBar。</summary>
     private void RefreshHealthInfoBar()
     {
@@ -894,6 +946,15 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             return;
         }
 
+        // 用户关闭了宿主点位失效检查：隐藏提示且不重新检测。
+        if (_disableDegradationCheck.IsChecked == true)
+        {
+            _degradationInfoBar.IsOpen = false;
+            return;
+        }
+
+        // 每次刷新时重跑健康检查，反映最新对照表与宿主状态。
+        ContractCatalogService.RunHealthCheck();
         var degradations = ContractCatalogService.Degradations;
         if (degradations.Count == 0)
         {
@@ -917,6 +978,13 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     {
         if (_pluginUpdateInfoBar == null)
         {
+            return;
+        }
+
+        // 用户关闭了版本检查和提醒。
+        if (_disableVersionCheck.IsChecked == true)
+        {
+            _pluginUpdateInfoBar.IsOpen = false;
             return;
         }
 
@@ -1163,6 +1231,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                      _fakeWeatherWindDirection, _fakeWeatherWindScale, _fakeWeatherAqi, _fakeWeatherAlertIcon,
                      _fakeWeatherAlertType, _fakeWeatherAlertLevel, _fakeWeatherAlertTitle, _fakeWeatherAlertDetail,
                      _fakeWeatherRainRemainingMinutes, _startupOpenTarget,
+                     _reduceVisualBurden, _disableVersionCheck, _disableDegradationCheck,
                      _gradient, _gradientEndColor, _gradientDirection, _backgroundTextureType, _backgroundTextureColor, _backgroundTextureSize,
                      _backgroundTextureSpectrumSensitivity, _backgroundTextureSpectrumBars, _backgroundTextureSpectrumMirrored,
                      _backgroundTextureSpectrumAutoWidth,
@@ -1491,6 +1560,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _fakeWeatherAlertDetail.Text = settings.FakeWeatherAlertDetail;
         _fakeWeatherRainRemainingMinutes.DoubleValue = settings.FakeWeatherRainRemainingMinutes;
         Select(_startupOpenTarget, StartupOpenTargets, settings.StartupOpenTarget);
+        _reduceVisualBurden.IsChecked = settings.ReduceVisualBurden;
+        _disableVersionCheck.IsChecked = settings.DisableVersionCheck;
+        _disableDegradationCheck.IsChecked = settings.DisableDegradationCheck;
         _albumColorPollingInterval.DoubleValue = settings.AlbumColorPollingIntervalSeconds;
         _albumColorTransition.DoubleValue = settings.AlbumColorTransitionSeconds;
         _gradient.IsChecked = settings.GradientEnabled;
@@ -1639,6 +1711,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.FakeWeatherAlertDetail = _fakeWeatherAlertDetail.Text ?? string.Empty;
             settings.FakeWeatherRainRemainingMinutes = (int)Math.Round(_fakeWeatherRainRemainingMinutes.DoubleValue);
             settings.StartupOpenTarget = Selected(_startupOpenTarget, 0);
+            settings.ReduceVisualBurden = _reduceVisualBurden.IsChecked == true;
+            settings.DisableVersionCheck = _disableVersionCheck.IsChecked == true;
+            settings.DisableDegradationCheck = _disableDegradationCheck.IsChecked == true;
             settings.AlbumColorPollingIntervalSeconds = _albumColorPollingInterval.DoubleValue;
             settings.AlbumColorTransitionSeconds = _albumColorTransition.DoubleValue;
             settings.GradientEnabled = _gradient.IsChecked == true;
@@ -1746,20 +1821,25 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _status.Text = "已保存并应用。样式表有更改时会自动热重载。";
     }
 
-    private static SettingsExpander Setting(string glyph, string header, string description, Control footer) => new()
+    private SettingsExpander Setting(string glyph, string header, string description, Control footer)
     {
-        IconSource = new FluentIconSource(glyph),
-        Header = header,
-        Description = description,
-        Footer = footer
-    };
+        var expander = new SettingsExpander
+        {
+            IconSource = new FluentIconSource(glyph),
+            Header = header,
+            Description = description,
+            Footer = footer
+        };
+        _allExpanders.Add(expander);
+        return expander;
+    }
 
     private static void AddSection(Panel panel, string glyph, string title)
     {
         panel.Children.Add(new IconText { Glyph = glyph, Text = title, Margin = new Thickness(0, 16, 0, 4) });
     }
 
-    private static SettingsExpander Group(string glyph, string header, string description, params SettingsExpanderItem[] items)
+    private SettingsExpander Group(string glyph, string header, string description, params SettingsExpanderItem[] items)
     {
         var group = new SettingsExpander
         {
@@ -1768,6 +1848,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Description = description,
             IsExpanded = false
         };
+        _allExpanders.Add(group);
         foreach (var item in items)
         {
             group.Items.Add(item);
@@ -1776,7 +1857,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         return group;
     }
 
-    private static SettingsExpander SwitchableGroup(string glyph, string header, string description, ToggleSwitch toggle, params SettingsExpanderItem[] items)
+    private SettingsExpander SwitchableGroup(string glyph, string header, string description, ToggleSwitch toggle, params SettingsExpanderItem[] items)
     {
         var group = Group(glyph, header, description, items);
         group.Footer = toggle;
@@ -1788,7 +1869,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         return group;
     }
 
-    private static SettingsExpanderItem Item(string header, string description, Control footer, ToggleSwitch? dependency = null)
+    private SettingsExpanderItem Item(string header, string description, Control footer, ToggleSwitch? dependency = null)
     {
         var item = new SettingsExpanderItem
         {
@@ -1796,6 +1877,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Description = description,
             Footer = footer
         };
+        _allItems.Add(item);
         if (dependency != null)
         {
             ControlledBy(item, dependency);
