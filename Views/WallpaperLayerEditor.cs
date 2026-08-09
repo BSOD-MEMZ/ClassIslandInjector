@@ -347,14 +347,23 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             .OrderBy(font => font.Name, StringComparer.CurrentCultureIgnoreCase)
             .ToArray();
         _textFontFamilyBox.ItemsSource = fonts;
-        _textFontFamilyBox.ItemTemplate = new FuncDataTemplate<FontFamily>((font, _) => new TextBlock
+        _textFontFamilyBox.ItemTemplate = new FuncDataTemplate<FontFamily>((font, _) =>
         {
-            Text = font.Name,
-            FontFamily = font,
-            Width = 220,
-            Height = 24,
-            VerticalAlignment = VerticalAlignment.Center,
-            TextTrimming = TextTrimming.CharacterEllipsis
+            // 虚拟化回收 ComboBox 项时模板可能短暂收到 null，不能直接读取 Name。
+            if (font == null)
+            {
+                return new TextBlock { Height = 24 };
+            }
+
+            return new TextBlock
+            {
+                Text = font.Name,
+                FontFamily = font,
+                Width = 220,
+                Height = 24,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
         });
         _textFontFamilyBox.SelectedItem = FontFamily.Default;
         _fillIslandToggle.IsChecked = true;

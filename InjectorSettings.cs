@@ -308,8 +308,14 @@ public sealed class WallpaperLayerItem
     /// <summary>矢量形状填充色（仅 Kind 为 Shape 时生效；可为透明）。</summary>
     public string FillColor { get; set; } = "#66FFFFFF";
 
+    /// <summary>填充色是否跟随当前 ClassIsland 主题色。</summary>
+    public bool FillUsesThemeColor { get; set; }
+
     /// <summary>矢量形状描边色。</summary>
     public string StrokeColor { get; set; } = "#FFFFFFFF";
+
+    /// <summary>描边色是否跟随当前 ClassIsland 主题色。</summary>
+    public bool StrokeUsesThemeColor { get; set; }
 
     /// <summary>矢量形状描边粗细（像素）。</summary>
     public double StrokeThickness { get; set; } = 2;
@@ -319,6 +325,9 @@ public sealed class WallpaperLayerItem
 
     /// <summary>文字颜色。</summary>
     public string TextColor { get; set; } = "#FFFFFFFF";
+
+    /// <summary>文字颜色是否跟随当前 ClassIsland 主题色。</summary>
+    public bool TextUsesThemeColor { get; set; }
 
     /// <summary>字号（像素）。</summary>
     public double TextFontSize { get; set; } = 16;
@@ -354,10 +363,13 @@ public sealed class WallpaperLayerItem
         Kind = Kind,
         ShapeType = ShapeType,
         FillColor = FillColor,
+        FillUsesThemeColor = FillUsesThemeColor,
         StrokeColor = StrokeColor,
+        StrokeUsesThemeColor = StrokeUsesThemeColor,
         StrokeThickness = StrokeThickness,
         Text = Text,
         TextColor = TextColor,
+        TextUsesThemeColor = TextUsesThemeColor,
         TextFontSize = TextFontSize,
         TextFontFamily = TextFontFamily,
         TextBold = TextBold,

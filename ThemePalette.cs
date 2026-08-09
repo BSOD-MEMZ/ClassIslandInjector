@@ -73,6 +73,20 @@ public static class ThemePalette
     /// <summary>查找主题画刷。</summary>
     public static IBrush? ThemeBrush(string key) => FindResource(key) as IBrush;
 
+    /// <summary>读取当前 ClassIsland 的主题强调色，资源不可用时回退到系统蓝。</summary>
+    public static Color AccentColor()
+    {
+        foreach (var key in new[] { "AccentFillColorDefaultBrush", "SystemAccentColor" })
+        {
+            if (ThemeBrush(key) is ISolidColorBrush brush)
+            {
+                return brush.Color;
+            }
+        }
+
+        return Color.FromRgb(0, 120, 212);
+    }
+
     /// <summary>编辑器窗口的基础背景。</summary>
     public static IBrush WindowBackground() => new SolidColorBrush(IsDarkTheme()
         ? Color.FromRgb(24, 26, 30)

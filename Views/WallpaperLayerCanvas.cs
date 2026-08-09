@@ -1093,6 +1093,10 @@ internal sealed class WallpaperLayerCanvas : UserControl
             if (wasPan || wasPinching)
             {
                 _drag = null;
+                // 大倍率平移时 Skia 可能暂时裁掉画布外的图层；手势结束后重新布局并
+                // 使舞台失效，确保移入视口的内容立即补绘。
+                Refresh();
+                _stage.InvalidateVisual();
                 e.Handled = true;
                 return;
             }
@@ -1134,6 +1138,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
         if (_drag is { Kind: DragKind.Pan } pan && ReferenceEquals(pan.Pointer, e.Pointer))
         {
             _drag = null;
+            Refresh();
+            _stage.InvalidateVisual();
         }
 
         if (_touchPoints.Count < 2)
@@ -1301,6 +1307,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         };
         ApplyRectOffsets(layer, new Rect(pos.X - 90, pos.Y - 24, 180, 48));
         _layers.Add(layer);
+        SyncImageControls();
         Select(layer.Id);
         EditStarted?.Invoke();
         Refresh();
@@ -1326,6 +1333,9 @@ internal sealed class WallpaperLayerCanvas : UserControl
         };
         ApplyRectOffsets(layer, rect);
         _layers.Add(layer);
+        // 新建的矢量图层没有位图加载流程，必须立即补入舞台视觉树；否则编辑器只
+        // 会显示选中框，保存并由运行时重建后才会出现实际形状。
+        SyncImageControls();
         return layer;
     }
 

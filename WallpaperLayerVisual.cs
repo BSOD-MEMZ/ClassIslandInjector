@@ -53,8 +53,8 @@ public sealed class WallpaperLayerVisual : Control
     {
         var w = Bounds.Width;
         var h = Bounds.Height;
-        var fill = ParseColor(layer.FillColor, Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF));
-        var stroke = ParseColor(layer.StrokeColor, Colors.White);
+        var fill = ResolveColor(layer.FillColor, Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF), layer.FillUsesThemeColor);
+        var stroke = ResolveColor(layer.StrokeColor, Colors.White, layer.StrokeUsesThemeColor);
         var thickness = Math.Clamp(layer.StrokeThickness, 0, 200);
         var fillBrush = fill.A > 0 ? new SolidColorBrush(fill) : null;
         var pen = thickness > 0 && stroke.A > 0
@@ -96,7 +96,7 @@ public sealed class WallpaperLayerVisual : Control
     {
         var text = string.IsNullOrEmpty(layer.Text) ? " " : layer.Text;
         var size = Math.Max(4, layer.TextFontSize);
-        var brush = new SolidColorBrush(ParseColor(layer.TextColor, Colors.White));
+        var brush = new SolidColorBrush(ResolveColor(layer.TextColor, Colors.White, layer.TextUsesThemeColor));
         var typeface = new Typeface(ParseFontFamily(layer.TextFontFamily), FontStyle.Normal,
             layer.TextBold ? FontWeight.Bold : FontWeight.Normal);
         var alignment = layer.TextAlign switch
@@ -195,6 +195,19 @@ public sealed class WallpaperLayerVisual : Control
         {
             return fallback;
         }
+    }
+
+    /// <summary>按图层设置取固定颜色或当前主题色，同时保留配置颜色的透明度。</summary>
+    private static Color ResolveColor(string text, Color fallback, bool useThemeColor)
+    {
+        var color = ParseColor(text, fallback);
+        if (!useThemeColor)
+        {
+            return color;
+        }
+
+        var accent = ThemePalette.AccentColor();
+        return Color.FromArgb(color.A, accent.R, accent.G, accent.B);
     }
 
     /// <summary>解析用户选择的系统字体，缺失或卸载后平稳回退到默认字体。</summary>
