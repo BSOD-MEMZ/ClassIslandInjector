@@ -1,3 +1,4 @@
+using Avalonia;
 using Avalonia.Threading;
 using ClassIsland.Core;
 using ClassIsland.Core.Abstractions.Services;
@@ -114,6 +115,19 @@ internal static class InjectorRuntime
 
     /// <summary>当前 ClassIsland 宿主版本号（供对照表匹配与展示）。</summary>
     public static string HostVersion => ContractCatalogService.GetHostVersion();
+
+    /// <summary>
+    /// 当前主界面岛屿尺寸（供底图图层编辑器初始化预览画布；未附着或不可用时返回 null）。
+    /// </summary>
+    public static Size? GetCurrentIslandSize()
+    {
+        if (_injector == null)
+        {
+            return null;
+        }
+
+        return _injector.GetIslandSize();
+    }
 
     public static void ReloadStyleSheet()
     {
@@ -236,7 +250,9 @@ internal static class InjectorRuntime
         (Settings.CustomBackgroundEnabled && Settings.DynamicBackgroundColorEnabled) ||
         (Settings.BorderEnabled && Settings.DynamicBorderColorEnabled) ||
         (Settings.ShadowEnabled && Settings.DynamicShadowColorEnabled) ||
-        (Settings.WallpaperEnabled && Settings.WallpaperSource == WallpaperSource.SmtcAlbum));
+        (Settings.WallpaperEnabled && Settings.WallpaperSource == WallpaperSource.SmtcAlbum) ||
+        (Settings.WallpaperEnabled && Settings.WallpaperDesignerEnabled &&
+         Settings.WallpaperLayers.Any(l => l.Visible && l.Source == WallpaperSource.SmtcAlbum)));
 
     /// <summary>
     /// 根据当前设置启动/停止事件驱动的 SMTC 监听器。

@@ -59,7 +59,9 @@ internal sealed class IslandVisualEditor : UserControl
         _stage = new Canvas
         {
             ClipToBounds = true,
-            Background = new SolidColorBrush(Color.FromRgb(29, 31, 35))
+            Background = ThemePalette.IsDarkTheme()
+                ? new SolidColorBrush(Color.FromRgb(29, 31, 35))
+                : new SolidColorBrush(Color.FromRgb(232, 234, 237))
         };
         _stage.PointerPressed += StageOnPointerPressed;
         _stage.PointerMoved += StageOnPointerMoved;
@@ -93,8 +95,8 @@ internal sealed class IslandVisualEditor : UserControl
         {
             Text = "固定显示大小已不再受支持：插件无法控制 ClassIsland 的主界面宽高",
             IsVisible = false,
-            Background = new SolidColorBrush(Color.FromArgb(220, 18, 20, 24)),
-            Foreground = Brushes.White,
+            Background = ThemePalette.PanelBackground(),
+            Foreground = ThemePalette.IsDarkTheme() ? Brushes.White : new SolidColorBrush(Color.FromRgb(28, 30, 34)),
             Padding = new Thickness(12, 6),
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Top,
@@ -148,7 +150,7 @@ internal sealed class IslandVisualEditor : UserControl
             Margin = new Thickness(0, 0, 8, 8),
             Padding = new Thickness(10, 4),
             CornerRadius = new CornerRadius(6),
-            Background = new SolidColorBrush(Color.FromArgb(150, 18, 20, 24)),
+            Background = ThemePalette.PanelBackground(),
             Child = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
@@ -479,7 +481,7 @@ internal sealed class IslandVisualEditor : UserControl
     }
 }
 
-internal sealed class IslandVisualEditorWindow : Window
+internal sealed class IslandVisualEditorWindow : MyWindow
 {
     private bool _updatingInspector;
     private readonly Button _undoButton;
@@ -533,6 +535,9 @@ internal sealed class IslandVisualEditorWindow : Window
         Height = 720;
         MinWidth = 820;
         MinHeight = 560;
+        // 插件窗口里 Mica 背景不可靠（会导致整窗半透明看不清），
+        // 直接给一个跟随主题的实色背景；内部面板保持透明以露出它。
+        Background = ThemePalette.PanelBackground();
 
         ConfigureInspectorEvents();
         _undoButton = IconButton("\uE195", "撤销", () => UndoRequested?.Invoke(this, EventArgs.Empty));

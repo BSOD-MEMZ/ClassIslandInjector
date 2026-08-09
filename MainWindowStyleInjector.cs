@@ -158,6 +158,38 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private int _wallpaperSlideshowIndex;
     private DateTime _wallpaperTransitionStart = DateTime.MinValue;
     private bool _wallpaperTransitionActive;
+    /// <summary>底图宿主当前渲染模式（简单模式 = 双缓冲交叉淡化，图层模式 = 锚点画布）。</summary>
+    private WallpaperHostMode _wallpaperHostMode = WallpaperHostMode.None;
+    /// <summary>图层式底图的画布（宿主子项，图层图片按锚点相对定位）。</summary>
+    private Canvas? _wallpaperCanvas;
+    /// <summary>当前挂载的图层视图（按设置顺序，后面的在上层）。</summary>
+    private readonly List<WallpaperLayerView> _wallpaperLayerViews = [];
+
+    /// <summary>底图宿主的渲染模式。</summary>
+    private enum WallpaperHostMode
+    {
+        /// <summary>无宿主。</summary>
+        None,
+        /// <summary>旧版简单模式（双缓冲交叉淡化）。</summary>
+        Simple,
+        /// <summary>图层式底图（锚点画布）。</summary>
+        Layers
+    }
+
+    /// <summary>图层式底图的一个图层视图：渲染控件（位图 Image 或 形状/文本 WallpaperLayerVisual）+ 来源/幻灯片状态。</summary>
+    private sealed class WallpaperLayerView
+    {
+        public required WallpaperLayerItem Settings { get; set; }
+        public required Control Control { get; init; }
+        public Image? ImageControl => Control as Image;
+        public Bitmap? Bitmap { get; set; }
+        public MemoryStream? Stream { get; set; }
+        public WallpaperSource LoadedSource { get; set; } = WallpaperSource.None;
+        public string LoadedPath { get; set; } = string.Empty;
+        public readonly List<string> SlideshowFiles = [];
+        public int SlideshowIndex;
+        public DateTime NextAdvance = DateTime.MinValue;
+    }
 
     // 宿主反射元数据缓存：MainWindowLine 等宿主类型固定，避免每 50ms 轮询重复反射。
     private static readonly ConcurrentDictionary<Type, FieldInfo?> EffectPlayerFieldCache = new();
@@ -711,7 +743,30 @@ internal sealed class MainWindowStyleInjector : IDisposable
             }
         }
 
-        if (_settings.WallpaperEnabled && _settings.WallpaperSource == WallpaperSource.SmtcAlbum)
+        if (_settings.WallpaperEnabled && _settings.WallpaperDesignerEnabled)
+        {
+            // 图层模式：把 SMTC 封面推送给所有来源为 SMTC 专辑封面的图层。
+            var smtcLayers = _wallpaperLayerViews.Where(v => v.Settings.Source == WallpaperSource.SmtcAlbum).ToArray();
+            if (smtcLayers.Length > 0)
+            {
+                if (isPlaying && thumbnailBytes is { Length: > 0 })
+                {
+                    foreach (var view in smtcLayers)
+                    {
+                        LoadLayerImage(view, thumbnailBytes);
+                    }
+                }
+                else
+                {
+                    // 无真实封面（暂停/停止/无缩略图）时显示占位专辑封面，保持图层可见。
+                    foreach (var view in smtcLayers)
+                    {
+                        LoadLayerPlaceholder(view);
+                    }
+                }
+            }
+        }
+        else if (_settings.WallpaperEnabled && _settings.WallpaperSource == WallpaperSource.SmtcAlbum)
         {
             if (isPlaying && thumbnailBytes is { Length: > 0 })
             {
@@ -1427,50 +1482,118 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
-        var enabled = _settings.Enabled && _settings.WallpaperEnabled && _settings.WallpaperSource != WallpaperSource.None;
+        var enabled = _settings.Enabled && _settings.WallpaperEnabled;
+        var designerActive = enabled && IsWallpaperDesignerActive();
         if (!enabled)
         {
             RemoveWallpaper();
             return;
         }
 
+        if (designerActive)
+        {
+            EnsureWallpaperHost();
+            if (_wallpaperHost == null)
+            {
+                return;
+            }
+
+            SyncWallpaperLayerViews();
+            PositionWallpaperZOrder();
+            ApplyWallpaperBlur();
+            UpdateWallpaperTimer();
+            ReloadWallpaperLayerImages();
+            LayoutWallpaperLayers();
+            return;
+        }
+
+        // ---- 旧版简单模式（单图 / 幻灯片 / SMTC 封面，交叉淡化）----
+        DisposeWallpaperLayerViews();
+        if (_settings.WallpaperSource == WallpaperSource.None)
+        {
+            RemoveWallpaper();
+            return;
+        }
+
         EnsureWallpaperHost();
+        PositionWallpaperZOrder();
         ApplyWallpaperBlur();
         UpdateWallpaperTimer();
         ReloadWallpaperImageIfNeeded();
         UpdateWallpaperPresentation();
     }
 
+    /// <summary>当前是否运行图层式底图。</summary>
+    private bool IsWallpaperDesignerActive() =>
+        _settings.Enabled && _settings.WallpaperEnabled && _settings.WallpaperDesignerEnabled;
+
     private void EnsureWallpaperHost()
     {
-        if (_wallpaperHost != null)
-        {
-            return;
-        }
-
         var islandGrid = _mainWindow?.FindControl<Grid>(HostContract.GridRoot);
         if (islandGrid == null)
         {
             return;
         }
 
+        var mode = _settings.WallpaperDesignerEnabled ? WallpaperHostMode.Layers : WallpaperHostMode.Simple;
+        if (_wallpaperHost != null)
+        {
+            if (_wallpaperHostMode == mode)
+            {
+                return;
+            }
+
+            // 模式切换（简单 <-> 图层）：重建宿主子内容并清空旧视图。
+            _wallpaperLayers.Clear();
+            DisposeWallpaperLayerViews();
+            _wallpaperCanvas = null;
+            _wallpaperHostMode = mode;
+            _wallpaperHost.Child = BuildWallpaperHostChild(mode);
+            UpdateWallpaperBounds();
+            return;
+        }
+
         _wallpaperLayers.Clear();
-        _wallpaperLayers.Add(new Border { IsHitTestVisible = false, VerticalAlignment = VerticalAlignment.Stretch, HorizontalAlignment = HorizontalAlignment.Stretch });
-        _wallpaperLayers.Add(new Border { IsHitTestVisible = false, VerticalAlignment = VerticalAlignment.Stretch, HorizontalAlignment = HorizontalAlignment.Stretch });
         _wallpaperHost = new Border
         {
             IsHitTestVisible = false,
             ClipToBounds = true,
             VerticalAlignment = VerticalAlignment.Stretch,
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            Child = new Grid { IsHitTestVisible = false, Children = { _wallpaperLayers[0], _wallpaperLayers[1] } }
+            Child = BuildWallpaperHostChild(mode)
         };
-        _wallpaperHost.SizeChanged += (_, _) => UpdateWallpaperClip();
+        _wallpaperHost.SizeChanged += (_, _) =>
+        {
+            UpdateWallpaperClip();
+            LayoutWallpaperLayers();
+        };
         islandGrid.SizeChanged += (_, _) => UpdateWallpaperBounds();
         islandGrid.Children.Insert(0, _wallpaperHost);
+        _wallpaperHostMode = mode;
         ApplyWallpaperBlur();
         UpdateWallpaperClip();
         UpdateWallpaperBounds();
+    }
+
+    /// <summary>按当前模式构建宿主子内容（简单模式为双缓冲交叉淡化层，图层模式为锚点画布）。</summary>
+    private Control BuildWallpaperHostChild(WallpaperHostMode mode)
+    {
+        if (mode == WallpaperHostMode.Layers)
+        {
+            _wallpaperCanvas = new Canvas
+            {
+                IsHitTestVisible = false,
+                ClipToBounds = true,
+                VerticalAlignment = VerticalAlignment.Stretch,
+                HorizontalAlignment = HorizontalAlignment.Stretch
+            };
+            return _wallpaperCanvas;
+        }
+
+        _wallpaperLayers.Clear();
+        _wallpaperLayers.Add(new Border { IsHitTestVisible = false, VerticalAlignment = VerticalAlignment.Stretch, HorizontalAlignment = HorizontalAlignment.Stretch });
+        _wallpaperLayers.Add(new Border { IsHitTestVisible = false, VerticalAlignment = VerticalAlignment.Stretch, HorizontalAlignment = HorizontalAlignment.Stretch });
+        return new Grid { IsHitTestVisible = false, Children = { _wallpaperLayers[0], _wallpaperLayers[1] } };
     }
 
     /// <summary>
@@ -1513,6 +1636,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         UpdateWallpaperClip();
+        LayoutWallpaperLayers();
     }
 
     /// <summary>
@@ -1670,12 +1794,382 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         _wallpaperHost = null;
+        _wallpaperHostMode = WallpaperHostMode.None;
+        _wallpaperCanvas = null;
         _wallpaperLayers.Clear();
+        DisposeWallpaperLayerViews();
         _wallpaperSlideshow.Clear();
         _wallpaperSlideshowIndex = 0;
         _wallpaperLoadedSource = WallpaperSource.None;
         _wallpaperLoadedPath = string.Empty;
         DisposeWallpaperBitmap();
+    }
+
+    // ============ 图层式底图（Photoshop 风格编辑器产物）============
+
+    /// <summary>
+    /// 同步图层视图与设置图层列表一致：为每个可见且有来源的图层建立 Image 视图，
+    /// 移除已删除图层的视图（含释放位图），并保持渲染顺序（列表顺序即 z 序）。
+    /// </summary>
+    private void SyncWallpaperLayerViews()
+    {
+        if (_wallpaperCanvas == null)
+        {
+            return;
+        }
+
+        // 位图图层需要来源；形状 / 文本图层（Kind != Image）始终参与渲染。
+        var wanted = _settings.WallpaperLayers
+            .Where(l => l.Visible && (l.Kind != WallpaperLayerKind.Image || l.Source != WallpaperSource.None))
+            .ToList();
+        var wantedIds = wanted.Select(l => l.Id).ToHashSet();
+        foreach (var stale in _wallpaperLayerViews.Where(v => !wantedIds.Contains(v.Settings.Id)).ToArray())
+        {
+            _wallpaperCanvas.Children.Remove(stale.Control);
+            DisposeLayerView(stale);
+            _wallpaperLayerViews.Remove(stale);
+        }
+
+        var existing = _wallpaperLayerViews.ToDictionary(v => v.Settings.Id);
+        foreach (var layer in wanted)
+        {
+            if (existing.TryGetValue(layer.Id, out var view))
+            {
+                // 防御：图层 Kind 变化（位图 ↔ 形状/文本）时重建对应控件。
+                var kindMismatch = (layer.Kind == WallpaperLayerKind.Image) != (view.Control is Image);
+                if (kindMismatch)
+                {
+                    _wallpaperCanvas.Children.Remove(view.Control);
+                    DisposeLayerView(view);
+                    _wallpaperLayerViews.Remove(view);
+                }
+                else
+                {
+                    view.Settings = layer;
+                    if (view.Control is WallpaperLayerVisual visual)
+                    {
+                        visual.Layer = layer;
+                    }
+
+                    continue;
+                }
+            }
+
+            Control control = layer.Kind == WallpaperLayerKind.Image
+                ? new Image
+                {
+                    IsHitTestVisible = false,
+                    Stretch = Stretch.Fill,
+                    RenderTransformOrigin = RelativePoint.Center
+                }
+                : new WallpaperLayerVisual
+                {
+                    IsHitTestVisible = false,
+                    RenderTransformOrigin = RelativePoint.Center,
+                    Layer = layer
+                };
+            _wallpaperLayerViews.Add(new WallpaperLayerView { Settings = layer, Control = control });
+            _wallpaperCanvas.Children.Add(control);
+        }
+
+        for (var i = 0; i < _wallpaperLayerViews.Count; i++)
+        {
+            _wallpaperLayerViews[i].Control.ZIndex = i;
+        }
+    }
+
+    /// <summary>
+    /// 按当前岛屿尺寸与各图层设置重排图层矩形（锚点相对定位 + 尺寸模式 + 旋转）。
+    /// 岛屿尺寸变化（宿主 SizeChanged）与图片加载完成时调用。
+    /// </summary>
+    private void LayoutWallpaperLayers()
+    {
+        if (_wallpaperHost == null || _wallpaperCanvas == null)
+        {
+            return;
+        }
+
+        var w = _wallpaperHost.Bounds.Width;
+        var h = _wallpaperHost.Bounds.Height;
+        if (w <= 0 || h <= 0)
+        {
+            return;
+        }
+
+        foreach (var view in _wallpaperLayerViews)
+        {
+            var layer = view.Settings;
+            var control = view.Control;
+            var aspect = view.Bitmap is { PixelSize.Width: > 0, PixelSize.Height: > 0 }
+                ? (double)view.Bitmap.PixelSize.Width / view.Bitmap.PixelSize.Height
+                : (double?)null;
+            var rect = WallpaperLayerLayout.ComputeRect(layer, w, h, aspect);
+            control.Width = rect.Width;
+            control.Height = rect.Height;
+            Canvas.SetLeft(control, rect.X);
+            Canvas.SetTop(control, rect.Y);
+            control.RenderTransform = new RotateTransform(layer.Rotation);
+            control.Opacity = layer.Opacity;
+            control.IsVisible = layer.Visible;
+            if (control is Image image)
+            {
+                image.Stretch = WallpaperLayerLayout.ToStretch(layer.DisplayMode);
+            }
+            else if (control is WallpaperLayerVisual visual)
+            {
+                visual.Layer = layer;
+            }
+        }
+    }
+
+    /// <summary>按来源重新加载各图层图片（本地图片 / 幻灯片；SMTC 封面由事件推送，无封面时用占位图）。</summary>
+    private void ReloadWallpaperLayerImages()
+    {
+        foreach (var view in _wallpaperLayerViews)
+        {
+            // 形状 / 文本图层无需加载位图。
+            if (view.Settings.Kind != WallpaperLayerKind.Image)
+            {
+                continue;
+            }
+
+            if (view.Settings.Source == WallpaperSource.SmtcAlbum)
+            {
+                if (view.LoadedSource == view.Settings.Source && view.LoadedPath == view.Settings.Path)
+                {
+                    continue;
+                }
+
+                view.LoadedSource = view.Settings.Source;
+                view.LoadedPath = view.Settings.Path;
+                LoadLayerPlaceholder(view);
+                continue;
+            }
+
+            if (view.LoadedSource == view.Settings.Source && view.LoadedPath == view.Settings.Path)
+            {
+                continue;
+            }
+
+            view.LoadedSource = view.Settings.Source;
+            view.LoadedPath = view.Settings.Path;
+            switch (view.Settings.Source)
+            {
+                case WallpaperSource.LocalImage:
+                    LoadLayerImage(view, view.Settings.Path);
+                    break;
+                case WallpaperSource.FolderSlideshow:
+                    BuildLayerSlideshow(view);
+                    if (view.SlideshowFiles.Count > 0)
+                    {
+                        view.SlideshowIndex = 0;
+                        LoadLayerImage(view, view.SlideshowFiles[0]);
+                    }
+                    else
+                    {
+                        ClearLayerImage(view);
+                    }
+                    break;
+                default:
+                    ClearLayerImage(view);
+                    break;
+            }
+        }
+    }
+
+    private void LoadLayerImage(WallpaperLayerView view, string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            ClearLayerImage(view);
+            return;
+        }
+
+        try
+        {
+            var stream = new MemoryStream(File.ReadAllBytes(path));
+            stream.Position = 0;
+            var bitmap = new Bitmap(stream);
+            SetLayerImage(view, bitmap, stream);
+        }
+        catch
+        {
+            ClearLayerImage(view);
+        }
+    }
+
+    private void LoadLayerImage(WallpaperLayerView view, byte[] bytes)
+    {
+        if (bytes.Length == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var stream = new MemoryStream(bytes);
+            stream.Position = 0;
+            var bitmap = new Bitmap(stream);
+            SetLayerImage(view, bitmap, stream);
+        }
+        catch
+        {
+            ClearLayerImage(view);
+        }
+    }
+
+    /// <summary>SMTC 图层的占位封面路径（插件 Assets/album.png）。</summary>
+    private static string? SmtcPlaceholderPath() =>
+        Path.GetDirectoryName(typeof(MainWindowStyleInjector).Assembly.Location) is { } dir
+            ? Path.Combine(dir, "Assets", "album.png")
+            : null;
+
+    /// <summary>为 SMTC 图层加载占位专辑封面（无真实封面时显示）。</summary>
+    private void LoadLayerPlaceholder(WallpaperLayerView view)
+    {
+        var path = SmtcPlaceholderPath();
+        if (path != null && File.Exists(path))
+        {
+            LoadLayerImage(view, path);
+        }
+        else
+        {
+            ClearLayerImage(view);
+        }
+    }
+
+    private void SetLayerImage(WallpaperLayerView view, Bitmap bitmap, MemoryStream stream)
+    {
+        DisposeLayerBitmap(view);
+        view.Bitmap = bitmap;
+        view.Stream = stream;
+        view.ImageControl!.Source = bitmap;
+        LayoutWallpaperLayers();
+    }
+
+    private void ClearLayerImage(WallpaperLayerView view)
+    {
+        DisposeLayerBitmap(view);
+        view.ImageControl!.Source = null;
+        LayoutWallpaperLayers();
+    }
+
+    private void BuildLayerSlideshow(WallpaperLayerView view)
+    {
+        view.SlideshowFiles.Clear();
+        var directory = view.Settings.Path;
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+        {
+            return;
+        }
+
+        var extensions = new[] { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp" };
+        view.SlideshowFiles.AddRange(Directory.EnumerateFiles(directory)
+            .Where(f => extensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
+            .OrderBy(f => f, StringComparer.OrdinalIgnoreCase));
+    }
+
+    private void AdvanceLayerSlideshow(WallpaperLayerView view)
+    {
+        if (view.SlideshowFiles.Count == 0)
+        {
+            return;
+        }
+
+        view.SlideshowIndex = (view.SlideshowIndex + 1) % view.SlideshowFiles.Count;
+        LoadLayerImage(view, view.SlideshowFiles[view.SlideshowIndex]);
+    }
+
+    private void DisposeLayerBitmap(WallpaperLayerView view)
+    {
+        view.Bitmap?.Dispose();
+        view.Bitmap = null;
+        view.Stream?.Dispose();
+        view.Stream = null;
+    }
+
+    private void DisposeLayerView(WallpaperLayerView view)
+    {
+        DisposeLayerBitmap(view);
+        if (view.ImageControl is { } image)
+        {
+            image.Source = null;
+        }
+    }
+
+    private void DisposeWallpaperLayerViews()
+    {
+        foreach (var view in _wallpaperLayerViews)
+        {
+            DisposeLayerView(view);
+        }
+
+        _wallpaperLayerViews.Clear();
+    }
+
+    /// <summary>按设置把底图宿主插入岛屿 GridRoot 的对应层级（底色后 / 底色上组件下 / 组件上）。</summary>
+    private void PositionWallpaperZOrder()
+    {
+        if (_wallpaperHost == null)
+        {
+            return;
+        }
+
+        var islandGrid = _mainWindow?.FindControl<Grid>(HostContract.GridRoot) ?? _wallpaperHost.Parent as Grid;
+        if (islandGrid == null)
+        {
+            return;
+        }
+
+        var targetIndex = _settings.WallpaperZOrder switch
+        {
+            WallpaperLayerZOrder.BehindBackground => 0,
+            WallpaperLayerZOrder.AboveBackground => FindTextureInsertIndex(islandGrid),
+            WallpaperLayerZOrder.AboveComponents => islandGrid.Children.Count,
+            _ => 0
+        };
+        var currentIndex = islandGrid.Children.IndexOf(_wallpaperHost);
+        if (currentIndex < 0)
+        {
+            islandGrid.Children.Insert(Math.Clamp(targetIndex, 0, islandGrid.Children.Count), _wallpaperHost);
+            return;
+        }
+
+        if (currentIndex == targetIndex)
+        {
+            return;
+        }
+
+        islandGrid.Children.Remove(_wallpaperHost);
+        islandGrid.Children.Insert(Math.Clamp(targetIndex, 0, islandGrid.Children.Count), _wallpaperHost);
+    }
+
+    /// <summary>当前主界面岛屿的可见尺寸（供图层编辑器初始化预览画布；不可用返回 null）。</summary>
+    public Size? GetIslandSize()
+    {
+        if (_wallpaperHost is { Bounds.Width: > 0, Bounds.Height: > 0 })
+        {
+            return _wallpaperHost.Bounds.Size;
+        }
+
+        if (_mainWindow == null)
+        {
+            return null;
+        }
+
+        var borders = _mainWindow.GetVisualDescendants().OfType<Border>()
+            .Where(x => x.Name == HostContract.BackgroundBorder && x.IsVisible && x.Bounds.Width > 0 && x.Bounds.Height > 0)
+            .ToArray();
+        if (borders.Length == 0)
+        {
+            return null;
+        }
+
+        var minX = borders.Min(b => b.Bounds.X);
+        var minY = borders.Min(b => b.Bounds.Y);
+        var maxX = borders.Max(b => b.Bounds.X + b.Bounds.Width);
+        var maxY = borders.Max(b => b.Bounds.Y + b.Bounds.Height);
+        return new Size(maxX - minX, maxY - minY);
     }
 
     // ============ 背景填充纹理 ============
@@ -1950,8 +2444,31 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     private void UpdateWallpaperTimer()
     {
-        if (!_settings.Enabled || !_settings.WallpaperEnabled ||
-            _settings.WallpaperSource != WallpaperSource.FolderSlideshow)
+        if (!_settings.Enabled || !_settings.WallpaperEnabled)
+        {
+            _wallpaperTimer.Stop();
+            return;
+        }
+
+        if (_settings.WallpaperDesignerEnabled)
+        {
+            // 图层模式：取所有幻灯片图层间隔的最小值为心跳频率，各图层按自身间隔推进。
+            var intervals = _wallpaperLayerViews
+                .Where(v => v.Settings.Source == WallpaperSource.FolderSlideshow && v.SlideshowFiles.Count > 1)
+                .Select(v => Math.Clamp(v.Settings.SlideshowIntervalSeconds, 2, 3600))
+                .ToArray();
+            if (intervals.Length == 0)
+            {
+                _wallpaperTimer.Stop();
+                return;
+            }
+
+            _wallpaperTimer.Interval = TimeSpan.FromSeconds(intervals.Min());
+            _wallpaperTimer.Start();
+            return;
+        }
+
+        if (_settings.WallpaperSource != WallpaperSource.FolderSlideshow)
         {
             _wallpaperTimer.Stop();
             return;
@@ -1964,8 +2481,39 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     private void OnWallpaperTimerTick(object? sender, EventArgs e)
     {
-        if (!_settings.Enabled || !_settings.WallpaperEnabled ||
-            _settings.WallpaperSource != WallpaperSource.FolderSlideshow)
+        if (!_settings.Enabled || !_settings.WallpaperEnabled)
+        {
+            return;
+        }
+
+        if (_settings.WallpaperDesignerEnabled)
+        {
+            var now = DateTime.UtcNow;
+            foreach (var view in _wallpaperLayerViews)
+            {
+                if (view.Settings.Source != WallpaperSource.FolderSlideshow || view.SlideshowFiles.Count <= 1)
+                {
+                    continue;
+                }
+
+                var interval = Math.Clamp(view.Settings.SlideshowIntervalSeconds, 2, 3600);
+                if (view.NextAdvance == DateTime.MinValue)
+                {
+                    view.NextAdvance = now.AddSeconds(interval);
+                    continue;
+                }
+
+                if (now >= view.NextAdvance)
+                {
+                    view.NextAdvance = now.AddSeconds(interval);
+                    AdvanceLayerSlideshow(view);
+                }
+            }
+
+            return;
+        }
+
+        if (_settings.WallpaperSource != WallpaperSource.FolderSlideshow)
         {
             return;
         }

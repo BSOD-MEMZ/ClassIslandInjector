@@ -115,6 +115,12 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly Spin _wallpaperOffsetY = Spinner(-0.5, 0.5, 0.01);
     private readonly Spin _wallpaperSlideshowInterval = Spinner(2, 3600, 1, "0");
     private readonly Spin _wallpaperBlur = Spinner(0, 60, 1);
+    private readonly ComboBox _wallpaperZOrder = Combo(WallpaperLayerZOrders);
+    private readonly ToggleSwitch _wallpaperCheckerFollowTheme = Toggle();
+    private readonly ColorPicker _wallpaperCheckerColor1 = ColorPicker();
+    private readonly ColorPicker _wallpaperCheckerColor2 = ColorPicker();
+    /// <summary>图层式底图状态提示（启用图层模式时显示「恢复简单模式」）。</summary>
+    private InfoBar? _wallpaperModeInfoBar;
 
     private readonly ComboBox _visibilityAnimation = Combo(VisibilityAnimations);
     private readonly Spin _visibilityDuration = Spinner(0.1, 10, 0.05);
@@ -352,6 +358,13 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         new(BackgroundTexture.Spectrum, "动态频谱"),
     ];
 
+    private static readonly Choice<WallpaperLayerZOrder>[] WallpaperLayerZOrders =
+    [
+        new(WallpaperLayerZOrder.BehindBackground, "底色之后（默认，当前行为）"),
+        new(WallpaperLayerZOrder.AboveBackground, "底色之上、组件之下"),
+        new(WallpaperLayerZOrder.AboveComponents, "组件之上（最顶层）"),
+    ];
+
     public InjectorSettingsPage()
     {
         Content = BuildContent();
@@ -473,8 +486,22 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         VisibleWhen(spectrumAutoWidthItem, _backgroundTextureType, BackgroundTexture.Spectrum);
         var wallpaperPathItem = Item("图片 / 文件夹", "底图文件或幻灯片文件夹的路径。", WallpaperPathFooter());
         var wallpaperSlideshowItem = Item("幻灯片间隔", "文件夹幻灯片切换间隔（秒）。", _wallpaperSlideshowInterval);
+        _wallpaperModeInfoBar = new InfoBar
+        {
+            Severity = InfoBarSeverity.Informational,
+            Title = "图层式底图",
+            Message = string.Empty,
+            IsOpen = false,
+            IsClosable = false,
+            ActionButton = Button("恢复简单模式", DisableWallpaperDesigner)
+        };
+        RefreshWallpaperModeInfo();
+        panel.Children.Add(_wallpaperModeInfoBar);
         var wallpaperGroup = SwitchableGroup("\uF42D", "背景图片", "为 ClassIsland 主界面添加背景图片", _wallpaperEnabled,
-            Item("图片来源", "选择底图的来源。", _wallpaperSource),
+            Item("完全自定义", "打开 Photoshop 风格的图层编辑器：八向调整、旋转、智能对齐标尺、锚点相对定位，并可测试主界面长度变化时的自适应效果。", Button("打开编辑器", OpenWallpaperLayerEditor)),
+            Item("棋盘格配色", "底图编辑器舞台的背景棋盘格：开启「跟随主题」自动按深浅色选择（深色主题用深棋盘格，浅色用白/浅灰 fff/ccc）；关闭后可自定义两种颜色。", CheckerboardFooter()),
+            Item("底图所在层级", "选择底图相对主界面自身的层级；默认位于底色之后（等同旧版行为）。", _wallpaperZOrder),
+            Item("图片来源", "选择底图的来源（图层模式启用时被忽略）。", _wallpaperSource),
             wallpaperPathItem,
             Item("图片不透明度", "底图的整体透明度。", _wallpaperOpacity),
             Item("显示方式", "图片在岛屿内的显示方式。", _wallpaperDisplayMode),
@@ -1240,6 +1267,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                      _border, _borderColor, _borderThickness,
                      _wallpaperEnabled, _wallpaperSource, _wallpaperPath, _wallpaperOpacity, _wallpaperDisplayMode,
                      _wallpaperScale, _wallpaperOffsetX, _wallpaperOffsetY, _wallpaperSlideshowInterval, _wallpaperBlur,
+                     _wallpaperZOrder, _wallpaperCheckerFollowTheme, _wallpaperCheckerColor1, _wallpaperCheckerColor2,
                      _visibilityAnimation, _visibilityAnimationEnabled, _visibilityDuration,
                      _emphasisAnimation, _emphasisAnimationEnabled, _emphasisAmount, _emphasisDuration,
                      _notificationTransition, _notificationTransitionEnabled, _notificationTransitionDuration,
@@ -1595,6 +1623,11 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _wallpaperOffsetY.DoubleValue = settings.WallpaperOffsetY;
         _wallpaperSlideshowInterval.DoubleValue = settings.WallpaperSlideshowIntervalSeconds;
         _wallpaperBlur.DoubleValue = settings.WallpaperBlurRadius;
+        Select(_wallpaperZOrder, WallpaperLayerZOrders, settings.WallpaperZOrder);
+        _wallpaperCheckerFollowTheme.IsChecked = settings.WallpaperCheckerFollowTheme;
+        _wallpaperCheckerColor1.Color = ReadColor(settings.WallpaperCheckerColor1, Color.FromRgb(45, 47, 52));
+        _wallpaperCheckerColor2.Color = ReadColor(settings.WallpaperCheckerColor2, Color.FromRgb(38, 40, 45));
+        RefreshWallpaperModeInfo();
         Select(_visibilityAnimation, VisibilityAnimations, settings.VisibilityAnimation);
         _visibilityAnimationEnabled.IsChecked = settings.VisibilityAnimation != VisibilityAnimation.None;
         _visibilityDuration.DoubleValue = settings.VisibilityDurationSeconds;
@@ -1747,6 +1780,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.WallpaperOffsetY = _wallpaperOffsetY.DoubleValue;
             settings.WallpaperSlideshowIntervalSeconds = _wallpaperSlideshowInterval.DoubleValue;
             settings.WallpaperBlurRadius = _wallpaperBlur.DoubleValue;
+            settings.WallpaperZOrder = Selected(_wallpaperZOrder, WallpaperLayerZOrder.BehindBackground);
+            settings.WallpaperCheckerFollowTheme = _wallpaperCheckerFollowTheme.IsChecked == true;
+            settings.WallpaperCheckerColor1 = _wallpaperCheckerColor1.Color.ToString();
+            settings.WallpaperCheckerColor2 = _wallpaperCheckerColor2.Color.ToString();
             settings.VisibilityAnimation = _visibilityAnimationEnabled.IsChecked == true
                 ? Selected(_visibilityAnimation, VisibilityAnimation.None)
                 : VisibilityAnimation.None;
@@ -2075,6 +2112,25 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         };
     }
 
+    /// <summary>棋盘格配色项脚注：跟随主题开关 + 自定义两色（关闭跟随主题时启用）。</summary>
+    private Control CheckerboardFooter()
+    {
+        var panel = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 4,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        void Sync() => _wallpaperCheckerColor1.IsEnabled =
+            _wallpaperCheckerColor2.IsEnabled = _wallpaperCheckerFollowTheme.IsChecked != true;
+        _wallpaperCheckerFollowTheme.PropertyChanged += (_, _) => Sync();
+        Sync();
+        panel.Children.Add(_wallpaperCheckerFollowTheme);
+        panel.Children.Add(_wallpaperCheckerColor1);
+        panel.Children.Add(_wallpaperCheckerColor2);
+        return panel;
+    }
+
     private async Task PickWallpaperPathAsync()
     {
         var topLevel = TopLevel.GetTopLevel(this);
@@ -2113,6 +2169,53 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         {
             _wallpaperPath.Text = files[0].TryGetLocalPath() ?? string.Empty;
         }
+    }
+
+    /// <summary>
+    /// 打开 Photoshop 风格底图图层编辑器。编辑器关闭后刷新本页，
+    /// 使「图层模式 / 层级」等状态与持久化设置保持一致。
+    /// </summary>
+    private void OpenWallpaperLayerEditor()
+    {
+        SaveAndApply();
+        var window = new WallpaperLayerEditorWindow();
+        window.Closed += (_, _) => Dispatcher.UIThread.Post(LoadFromSettings);
+        window.Show();
+        _status.Text = "已打开底图图层编辑器：添加图片图层后可用八向手柄调整、旋转，拖动时会出现智能对齐标尺；解锁岛屿后可拖动边缘测试长度自适应。";
+    }
+
+    /// <summary>回退到旧版简单模式底图（清空图层并关闭图层式底图）。</summary>
+    private void DisableWallpaperDesigner()
+    {
+        var settings = InjectorRuntime.Settings;
+        settings.BeginUpdate();
+        settings.WallpaperDesignerEnabled = false;
+        settings.WallpaperLayers = [];
+        settings.EndUpdate();
+        InjectorRuntime.SaveAndApply();
+        LoadFromSettings();
+        _status.Text = "已恢复简单模式底图设置。";
+    }
+
+    /// <summary>刷新「图层式底图」状态提示（启用时显示图层数并提示可回退）。</summary>
+    private void RefreshWallpaperModeInfo()
+    {
+        if (_wallpaperModeInfoBar == null)
+        {
+            return;
+        }
+
+        var settings = InjectorRuntime.Settings;
+        if (!settings.WallpaperDesignerEnabled)
+        {
+            _wallpaperModeInfoBar.IsOpen = false;
+            return;
+        }
+
+        var count = settings.WallpaperLayers.Count(l => l.Visible && (l.Source != WallpaperSource.None || l.Kind != WallpaperLayerKind.Image));
+        _wallpaperModeInfoBar.Message =
+            $"当前使用 Photoshop 风格图层编辑器配置（{count} 个可用图片图层）。下方「图片来源」等旧版简单模式设置已被忽略；如需回退请点击「恢复简单模式」。";
+        _wallpaperModeInfoBar.IsOpen = true;
     }
 
     private static StackPanel Actions(string firstText, Action firstAction, string secondText, Action secondAction) => new()

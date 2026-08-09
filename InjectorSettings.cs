@@ -161,6 +161,206 @@ public enum WallpaperDisplayMode
     Tile
 }
 
+/// <summary>
+/// 底图图层的水平锚点：图片的对应参考边/中心对齐岛屿的水平锚点后再偏移。
+/// </summary>
+public enum WallpaperLayerAnchorX
+{
+    Left,
+    Center,
+    Right
+}
+
+/// <summary>
+/// 底图图层的垂直锚点：图片的对应参考边/中心对齐岛屿的垂直锚点后再偏移。
+/// </summary>
+public enum WallpaperLayerAnchorY
+{
+    Top,
+    Center,
+    Bottom
+}
+
+/// <summary>
+/// 底图图层的尺寸模式。
+/// </summary>
+public enum WallpaperLayerSizeMode
+{
+    /// <summary>铺满整个岛屿（随岛屿尺寸变化；等同旧版简单模式行为，为默认）。</summary>
+    FillIsland,
+    /// <summary>自定义像素尺寸 + 锚点相对定位 + 旋转。</summary>
+    Custom
+}
+
+/// <summary>
+/// SMTC 专辑封面图层的处理模式。
+/// </summary>
+public enum WallpaperLayerSmtcMode
+{
+    /// <summary>当作普通图片图层处理：可自由位移、缩放、旋转、锚点定位（编辑器默认）。</summary>
+    AsImage,
+    /// <summary>默认处理：铺满整个岛屿，仅可调整透明度与显示方式（等同旧版简单模式行为）。</summary>
+    Default
+}
+
+/// <summary>
+/// 底图图层的内容类型。
+/// </summary>
+public enum WallpaperLayerKind
+{
+    /// <summary>位图：本地图片 / 文件夹幻灯片 / SMTC 专辑封面。</summary>
+    Image,
+    /// <summary>矢量形状（矩形 / 椭圆 / 直线 / 三角形）。</summary>
+    Shape,
+    /// <summary>文本框。</summary>
+    Text
+}
+
+/// <summary>
+/// 矢量形状类型。
+/// </summary>
+public enum WallpaperShapeType
+{
+    Rectangle,
+    Ellipse,
+    Line,
+    Triangle
+}
+
+/// <summary>
+/// 文本框水平对齐方式。
+/// </summary>
+public enum WallpaperTextAlign
+{
+    Left,
+    Center,
+    Right
+}
+
+/// <summary>
+/// 底图整体所在层级（相对 ClassIsland 主界面自身的图层）。
+/// </summary>
+public enum WallpaperLayerZOrder
+{
+    /// <summary>最底层：位于底色填充之后（默认，等同旧版行为）。</summary>
+    BehindBackground,
+    /// <summary>底色之上、组件之下（与底纹纹理同层）。</summary>
+    AboveBackground,
+    /// <summary>组件之上：覆盖整个主界面内容（仅视觉，不拦截点击）。</summary>
+    AboveComponents
+}
+
+/// <summary>
+/// 底图图层：Photoshop 风格图层式底图的一个图层。
+/// 采用「锚点 + 像素偏移」的相对定位，使底图在 ClassIsland 主界面长度变化时自适应。
+/// </summary>
+public sealed class WallpaperLayerItem
+{
+    /// <summary>图层唯一标识（编辑器/运行时按此对应图层视图）。</summary>
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+
+    public string Name { get; set; } = "底图图层";
+
+    public bool Visible { get; set; } = true;
+
+    public double Opacity { get; set; } = 1;
+
+    public WallpaperSource Source { get; set; } = WallpaperSource.LocalImage;
+
+    /// <summary>SMTC 专辑封面图层的处理模式（仅 Source 为 SmtcAlbum 时生效）。</summary>
+    public WallpaperLayerSmtcMode SmtcMode { get; set; } = WallpaperLayerSmtcMode.Default;
+
+    /// <summary>本地图片路径或幻灯片文件夹路径。</summary>
+    public string Path { get; set; } = string.Empty;
+
+    public WallpaperDisplayMode DisplayMode { get; set; } = WallpaperDisplayMode.Fill;
+
+    public WallpaperLayerSizeMode SizeMode { get; set; } = WallpaperLayerSizeMode.FillIsland;
+
+    /// <summary>自定义模式下图片的显示宽度（像素）；0 表示按图片宽高比自动推导。</summary>
+    public double Width { get; set; }
+
+    /// <summary>自定义模式下图片的显示高度（像素）；0 表示按图片宽高比自动推导。</summary>
+    public double Height { get; set; }
+
+    public WallpaperLayerAnchorX AnchorX { get; set; } = WallpaperLayerAnchorX.Center;
+
+    public WallpaperLayerAnchorY AnchorY { get; set; } = WallpaperLayerAnchorY.Center;
+
+    /// <summary>相对水平锚点的像素偏移（正向右）。</summary>
+    public double OffsetX { get; set; }
+
+    /// <summary>相对垂直锚点的像素偏移（正向下）。</summary>
+    public double OffsetY { get; set; }
+
+    /// <summary>绕图片中心旋转的角度（度）。</summary>
+    public double Rotation { get; set; }
+
+    /// <summary>文件夹幻灯片切换间隔（秒）。</summary>
+    public double SlideshowIntervalSeconds { get; set; } = 30;
+
+    /// <summary>图层内容类型（位图 / 矢量形状 / 文本框）。</summary>
+    public WallpaperLayerKind Kind { get; set; } = WallpaperLayerKind.Image;
+
+    /// <summary>矢量形状类型（仅 Kind 为 Shape 时生效）。</summary>
+    public WallpaperShapeType ShapeType { get; set; } = WallpaperShapeType.Rectangle;
+
+    /// <summary>矢量形状填充色（仅 Kind 为 Shape 时生效；可为透明）。</summary>
+    public string FillColor { get; set; } = "#66FFFFFF";
+
+    /// <summary>矢量形状描边色。</summary>
+    public string StrokeColor { get; set; } = "#FFFFFFFF";
+
+    /// <summary>矢量形状描边粗细（像素）。</summary>
+    public double StrokeThickness { get; set; } = 2;
+
+    /// <summary>文本框内容（仅 Kind 为 Text 时生效）。</summary>
+    public string Text { get; set; } = "文本";
+
+    /// <summary>文字颜色。</summary>
+    public string TextColor { get; set; } = "#FFFFFFFF";
+
+    /// <summary>字号（像素）。</summary>
+    public double TextFontSize { get; set; } = 16;
+
+    /// <summary>是否加粗。</summary>
+    public bool TextBold { get; set; }
+
+    /// <summary>水平对齐方式。</summary>
+    public WallpaperTextAlign TextAlign { get; set; } = WallpaperTextAlign.Center;
+
+    public WallpaperLayerItem Clone() => new()
+    {
+        Id = Id,
+        Name = Name,
+        Visible = Visible,
+        Opacity = Opacity,
+        Source = Source,
+        SmtcMode = SmtcMode,
+        Path = Path,
+        DisplayMode = DisplayMode,
+        SizeMode = SizeMode,
+        Width = Width,
+        Height = Height,
+        AnchorX = AnchorX,
+        AnchorY = AnchorY,
+        OffsetX = OffsetX,
+        OffsetY = OffsetY,
+        Rotation = Rotation,
+        SlideshowIntervalSeconds = SlideshowIntervalSeconds,
+        Kind = Kind,
+        ShapeType = ShapeType,
+        FillColor = FillColor,
+        StrokeColor = StrokeColor,
+        StrokeThickness = StrokeThickness,
+        Text = Text,
+        TextColor = TextColor,
+        TextFontSize = TextFontSize,
+        TextBold = TextBold,
+        TextAlign = TextAlign
+    };
+}
+
 public sealed class InjectorSettings
 {
     private bool _enabled = true;
@@ -264,6 +464,12 @@ public sealed class InjectorSettings
     private double _wallpaperOffsetY;
     private double _wallpaperSlideshowIntervalSeconds = 30;
     private double _wallpaperBlurRadius;
+    private List<WallpaperLayerItem> _wallpaperLayers = [];
+    private WallpaperLayerZOrder _wallpaperZOrder = WallpaperLayerZOrder.BehindBackground;
+    private bool _wallpaperDesignerEnabled;
+    private bool _wallpaperCheckerFollowTheme = true;
+    private string _wallpaperCheckerColor1 = "#2D2F34";
+    private string _wallpaperCheckerColor2 = "#26282D";
     private PrepareOnClassStyle _prepareOnClassStyle = PrepareOnClassStyle.None;
     private string _countdownArrowColor = "#BFF8FAFC";
     private int _countdownArrowCount = 5;
@@ -404,6 +610,18 @@ public sealed class InjectorSettings
     public double WallpaperOffsetY { get => _wallpaperOffsetY; set => Set(ref _wallpaperOffsetY, Math.Clamp(value, -0.5, 0.5)); }
     public double WallpaperSlideshowIntervalSeconds { get => _wallpaperSlideshowIntervalSeconds; set => Set(ref _wallpaperSlideshowIntervalSeconds, Math.Clamp(value, 2, 3600)); }
     public double WallpaperBlurRadius { get => _wallpaperBlurRadius; set => Set(ref _wallpaperBlurRadius, Math.Clamp(value, 0, 60)); }
+    /// <summary>图层式底图的图层列表（编辑器写入；非空且启用时优先于旧版简单底图）。</summary>
+    public List<WallpaperLayerItem> WallpaperLayers { get => _wallpaperLayers; set => Set(ref _wallpaperLayers, value ?? []); }
+    /// <summary>底图整体所在层级（相对主界面自身的图层）。</summary>
+    public WallpaperLayerZOrder WallpaperZOrder { get => _wallpaperZOrder; set => Set(ref _wallpaperZOrder, value); }
+    /// <summary>是否启用 Photoshop 风格图层式底图（由图层编辑器写入）。</summary>
+    public bool WallpaperDesignerEnabled { get => _wallpaperDesignerEnabled; set => Set(ref _wallpaperDesignerEnabled, value); }
+    /// <summary>底图编辑器舞台棋盘格是否跟随主题深浅色（关闭时用自定义两色）。</summary>
+    public bool WallpaperCheckerFollowTheme { get => _wallpaperCheckerFollowTheme; set => Set(ref _wallpaperCheckerFollowTheme, value); }
+    /// <summary>棋盘格颜色 1（关闭「跟随主题」时使用）。</summary>
+    public string WallpaperCheckerColor1 { get => _wallpaperCheckerColor1; set => Set(ref _wallpaperCheckerColor1, value.Trim()); }
+    /// <summary>棋盘格颜色 2（关闭「跟随主题」时使用）。</summary>
+    public string WallpaperCheckerColor2 { get => _wallpaperCheckerColor2; set => Set(ref _wallpaperCheckerColor2, value.Trim()); }
     public PrepareOnClassStyle PrepareOnClassStyle { get => _prepareOnClassStyle; set => Set(ref _prepareOnClassStyle, value); }
     public string CountdownArrowColor { get => _countdownArrowColor; set => Set(ref _countdownArrowColor, value.Trim()); }
     public int CountdownArrowCount { get => _countdownArrowCount; set => Set(ref _countdownArrowCount, Math.Clamp(value, 1, 24)); }
@@ -570,6 +788,12 @@ public sealed class InjectorSettings
         WallpaperOffsetY = source.WallpaperOffsetY;
         WallpaperSlideshowIntervalSeconds = source.WallpaperSlideshowIntervalSeconds;
         WallpaperBlurRadius = source.WallpaperBlurRadius;
+        WallpaperDesignerEnabled = source.WallpaperDesignerEnabled;
+        WallpaperZOrder = source.WallpaperZOrder;
+        WallpaperLayers = source.WallpaperLayers.Select(l => l.Clone()).ToList();
+        WallpaperCheckerFollowTheme = source.WallpaperCheckerFollowTheme;
+        WallpaperCheckerColor1 = source.WallpaperCheckerColor1;
+        WallpaperCheckerColor2 = source.WallpaperCheckerColor2;
         PrepareOnClassStyle = source.PrepareOnClassStyle;
         CountdownArrowColor = source.CountdownArrowColor;
         CountdownArrowCount = source.CountdownArrowCount;

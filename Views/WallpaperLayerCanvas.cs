@@ -1,0 +1,2031 @@
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.Layout;
+using Avalonia.Media;
+using Avalonia.Media.Imaging;
+using Avalonia.Threading;
+using ClassIsland.Core.Controls;
+using System.Globalization;
+
+namespace ClassIslandInjector.Views;
+
+/// <summary>
+/// 底图编辑器的工具（Photoshop 式左侧工具栏）。
+/// </summary>
+internal enum WallpaperEditorTool
+{
+    /// <summary>移动工具（默认）：拖拽图层移动。</summary>
+    Move,
+    /// <summary>选择工具：点击只选中图层，不拖拽。</summary>
+    Select,
+    /// <summary>缩放工具：单击放大 / Alt+单击缩小 / 拖拽框选放大。</summary>
+    Zoom,
+    /// <summary>形状工具：拖拽绘制矢量形状图层。</summary>
+    Shape,
+    /// <summary>文本工具：点击插入文本框图层。</summary>
+    Text
+}
+
+/// <summary>
+/// 底图图层编辑器的画布：渲染岛屿 + 图片/形状/文本图层，提供移动 / 八向缩放 / 旋转、
+/// 智能对齐标尺（吸附）、岛屿解锁拖动测试自适应。
+/// 所有矩形运算都在「岛屿坐标系」（原点 = 岛屿左上角）进行，锚点定位公式与运行时一致。
+/// </summary>
+internal sealed class WallpaperLayerCanvas : UserControl
+{
+    private const double CanvasMargin = 180;
+    private const double SnapThreshold = 7;
+    private const double MinLayerSize = 8;
+
+    private readonly ScrollViewer _scrollViewer = new();
+    private readonly Border _stageHost = new() { ClipToBounds = true };
+    private readonly Canvas _stage = new();
+    private readonly Border _island;
+    private readonly IslandOutlineOverlay _islandOutline = new() { IsHitTestVisible = false };
+    private readonly SelectionOverlay _selectionOverlay = new() { IsHitTestVisible = false };
+    private readonly GuideOverlay _guideOverlay = new() { IsHitTestVisible = false };
+    private readonly Dictionary<string, Image> _layerImages = [];
+    private readonly Dictionary<string, WallpaperLayerVisual> _layerVisuals = [];
+    private readonly Dictionary<string, Bitmap> _bitmaps = [];
+    private readonly Dictionary<string, MemoryStream> _streams = [];
+    private readonly Dictionary<string, string> _loadedSignatures = [];
+    /// <summary>缩放工具拖拽框选 / 形状工具预览用的半透明选框。</summary>
+    private readonly Border _marqueeRect = new()
+    {
+        IsVisible = false,
+        IsHitTestVisible = false,
+        BorderBrush = new SolidColorBrush(Color.FromArgb(200, 0, 120, 212)),
+        BorderThickness = new Thickness(1),
+        Background = new SolidColorBrush(Color.FromArgb(26, 0, 120, 212)),
+        ZIndex = 200
+    };
+    private readonly List<Border> _resizeHandles = [];
+    private readonly Dictionary<Border, (int Dx, int Dy)> _handleDirs = [];
+    private readonly Border _rotationHandle;
+    private readonly List<Border> _islandHandles = [];
+    private readonly Dictionary<Border, (int Dx, int Dy)> _islandHandleDirs = [];
+    /// <summary>选中图层上方的浮动操作条（对齐 / 删除）。</summary>
+    private readonly Border _floatToolbar;
+    /// <summary>缩放滑动条（舞台右下角）。</summary>
+    private readonly Slider _zoomSlider = new()
+    {
+        Minimum = 0.4,
+        Maximum = 2.5,
+        Value = 1,
+        Width = 130,
+        VerticalAlignment = VerticalAlignment.Center
+    };
+    private readonly TextBlock _zoomText = new()
+    {
+        Text = "100%",
+        MinWidth = 40,
+        TextAlignment = TextAlignment.Right,
+        VerticalAlignment = VerticalAlignment.Center,
+        Opacity = 0.8
+    };
+
+    private List<WallpaperLayerItem> _layers = [];
+    private double _islandWidth = 400;
+    private double _islandHeight = 90;
+    private double _zoom = 1;
+    private WallpaperLayerZOrder _zOrder;
+    private string? _selectedId;
+    private readonly HashSet<string> _lockedIds = [];
+    private bool _islandUnlocked;
+    private DragState? _drag;
+    /// <summary>浮动工具条是否已显示（用于首次显示后按真实尺寸重定位）。</summary>
+    private bool _floatToolbarShown;
+    /// <summary>当前工具（Photoshop 式左侧工具栏）。</summary>
+    private WallpaperEditorTool _tool = WallpaperEditorTool.Move;
+    /// <summary>形状工具当前形状类型。</summary>
+    private WallpaperShapeType _shapeToolType = WallpaperShapeType.Rectangle;
+
+    public event Action? EditStarted;
+    public event Action? Edited;
+    public event Action? SelectionChanged;
+    public event Action? IslandChanged;
+    public event Action? ImagesChanged;
+    public event Action<WallpaperLayerItem>? DeleteRequested;
+    /// <summary>工具切换（供窗口左侧工具栏同步选中态）。</summary>
+    public event Action<WallpaperEditorTool>? ToolChanged;
+
+    public WallpaperLayerCanvas()
+    {
+        Focusable = true;
+        ClipToBounds = true;
+        _stage.Background = BuildCheckerBrush();
+        UpdateToolCursor();
+        _stage.Width = _islandWidth + CanvasMargin * 2;
+        _stage.Height = _islandHeight + CanvasMargin * 2;
+        _stage.RenderTransformOrigin = new RelativePoint(0, 0, RelativeUnit.Relative);
+        _stage.RenderTransform = new ScaleTransform(_zoom, _zoom);
+        _stage.SizeChanged += (_, _) =>
+        {
+            _islandOutline.Width = _stage.Width;
+            _islandOutline.Height = _stage.Height;
+            _guideOverlay.Width = _stage.Width;
+            _guideOverlay.Height = _stage.Height;
+            _guideOverlay.InvalidateVisual();
+        };
+
+        _island = new Border
+        {
+            IsHitTestVisible = false,
+            Padding = new Thickness(18, 10),
+            Child = new StackPanel
+            {
+                Spacing = 4,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Children =
+                {
+                    new TextBlock { Text = "正在上课", FontWeight = FontWeight.SemiBold, HorizontalAlignment = HorizontalAlignment.Center },
+                    new TextBlock { Text = "数学  ·  08:00 – 08:45", Opacity = 0.8, FontSize = 12, HorizontalAlignment = HorizontalAlignment.Center }
+                }
+            }
+        };
+
+        // 八向缩放手柄
+        foreach (var (name, dir, cursor) in new[]
+                 {
+                     ("nw", (Dx: -1, Dy: -1), StandardCursorType.TopLeftCorner),
+                     ("n", (Dx: 0, Dy: -1), StandardCursorType.TopSide),
+                     ("ne", (Dx: 1, Dy: -1), StandardCursorType.TopRightCorner),
+                     ("e", (Dx: 1, Dy: 0), StandardCursorType.RightSide),
+                     ("se", (Dx: 1, Dy: 1), StandardCursorType.BottomRightCorner),
+                     ("s", (Dx: 0, Dy: 1), StandardCursorType.BottomSide),
+                     ("sw", (Dx: -1, Dy: 1), StandardCursorType.BottomLeftCorner),
+                     ("w", (Dx: -1, Dy: 0), StandardCursorType.LeftSide)
+                 })
+        {
+            var handle = Handle(9, new SolidColorBrush(Color.FromRgb(0, 120, 212)), cursor);
+            handle.Name = name;
+            handle.PointerPressed += (s, e) => ResizeHandleOnPointerPressed(handle, e);
+            handle.PointerMoved += (s, e) => ResizeHandleOnPointerMoved(handle, e);
+            handle.PointerReleased += (s, e) => ResizeHandleOnPointerReleased(handle, e);
+            _resizeHandles.Add(handle);
+            _handleDirs[handle] = dir;
+            _stage.Children.Add(handle);
+        }
+
+        // 旋转手柄（选中图层上方的紫色圆点）
+        _rotationHandle = Handle(11, new SolidColorBrush(Color.FromRgb(121, 80, 242)), StandardCursorType.Hand);
+        _rotationHandle.PointerPressed += RotationHandleOnPointerPressed;
+        _rotationHandle.PointerMoved += RotationHandleOnPointerMoved;
+        _rotationHandle.PointerReleased += RotationHandleOnPointerReleased;
+        _stage.Children.Add(_rotationHandle);
+
+        // 岛屿缩放手柄（解锁后出现：右 / 下 / 右下角）
+        foreach (var (dir, cursor) in new[]
+                 {
+                     ((Dx: 1, Dy: 0), StandardCursorType.RightSide),
+                     ((Dx: 0, Dy: 1), StandardCursorType.BottomSide),
+                     ((Dx: 1, Dy: 1), StandardCursorType.BottomRightCorner)
+                 })
+        {
+            var handle = Handle(11, new SolidColorBrush(Color.FromRgb(0, 170, 120)), cursor);
+            handle.PointerPressed += (s, e) => IslandHandleOnPointerPressed(handle, e);
+            handle.PointerMoved += (s, e) => IslandHandleOnPointerMoved(handle, e);
+            handle.PointerReleased += (s, e) => IslandHandleOnPointerReleased(handle, e);
+            _islandHandles.Add(handle);
+            _islandHandleDirs[handle] = dir;
+            _stage.Children.Add(handle);
+        }
+
+        _stage.Children.Add(_island);
+        _stage.Children.Add(_islandOutline);
+        _stage.Children.Add(_selectionOverlay);
+        _stage.Children.Add(_guideOverlay);
+        _stage.Children.Add(_marqueeRect);
+        _island.ZIndex = 20;
+        _islandOutline.ZIndex = 40;
+        _selectionOverlay.ZIndex = 100;
+        _guideOverlay.ZIndex = 110;
+        foreach (var h in _resizeHandles.Concat(_islandHandles).Append(_rotationHandle))
+        {
+            h.ZIndex = 120;
+        }
+
+        // 选中图层上方的浮动操作条（参考 ClassIsland 编辑模式）：对齐 + 删除。
+        // 置于根网格（不随舞台缩放/滚动）。背景按宿主主题深浅直接取稳定色值（不依赖可能解析错误的主题资源），
+        // 图标前景按背景明暗自适应，避免深色主题下出现「浅色浮动条」。
+        var toolbarDark = ThemePalette.IsDarkTheme();
+        var toolbarBackground = toolbarDark
+            ? new SolidColorBrush(Color.FromArgb(245, 32, 32, 36))
+            : new SolidColorBrush(Color.FromArgb(248, 243, 243, 243));
+        var toolbarForeground = toolbarDark ? Color.FromRgb(255, 255, 255) : Color.FromRgb(28, 30, 34);
+        _floatToolbar = new Border
+        {
+            IsVisible = false,
+            CornerRadius = new CornerRadius(6),
+            Background = toolbarBackground,
+            BorderBrush = new SolidColorBrush(toolbarDark ? Color.FromArgb(130, 255, 255, 255) : Color.FromArgb(130, 0, 0, 0)),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(4),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            IsHitTestVisible = true,
+            ZIndex = 500,
+            BoxShadow = new BoxShadows(new BoxShadow { Blur = 10, Color = Color.FromArgb(90, 0, 0, 0) }),
+            Child = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 2,
+                Children =
+                {
+                    FloatButton("\uE03B", "左对齐", () => AlignSelected(0, null), toolbarForeground),
+                    FloatButton("\uE033", "水平居中", () => AlignSelected(1, null), toolbarForeground),
+                    FloatButton("\uE03D", "右对齐", () => AlignSelected(2, null), toolbarForeground),
+                    ToolbarSeparator(toolbarForeground),
+                    FloatButton("\uE057", "顶对齐", () => AlignSelected(null, 0), toolbarForeground),
+                    FloatButton("\uE035", "垂直居中", () => AlignSelected(null, 1), toolbarForeground),
+                    FloatButton("\uE031", "底对齐", () => AlignSelected(null, 2), toolbarForeground),
+                    ToolbarSeparator(toolbarForeground),
+                    FloatButton("\uE61D", "删除图层", () =>
+                    {
+                        var layer = SelectedLayer;
+                        if (layer != null)
+                        {
+                            DeleteRequested?.Invoke(layer);
+                        }
+                    }, toolbarForeground, isDanger: true)
+                }
+            }
+        };
+
+        _stage.PointerPressed += StageOnPointerPressed;
+        _stage.PointerMoved += StageOnPointerMoved;
+        _stage.PointerReleased += StageOnPointerReleased;
+        KeyDown += CanvasOnKeyDown;
+
+        _stageHost.Child = _stage;
+        _scrollViewer.Content = _stageHost;
+        _zoomSlider.ValueChanged += (_, _) =>
+        {
+            Zoom = _zoomSlider.Value;
+            _zoomText.Text = $"{_zoomSlider.Value:P0}";
+        };
+        var zoomPanel = new Border
+        {
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Margin = new Thickness(0, 0, 10, 10),
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(10, 4),
+            Background = ThemePalette.PanelBackground(),
+            BorderBrush = ThemeBrush("CardStrokeColorDefaultBrush") ?? new SolidColorBrush(
+                ThemePalette.IsDarkTheme() ? Color.FromArgb(80, 255, 255, 255) : Color.FromArgb(80, 0, 0, 0)),
+            BorderThickness = new Thickness(1),
+            Child = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 6,
+                Children =
+                {
+                    new TextBlock { Text = "缩放", Opacity = 0.8, VerticalAlignment = VerticalAlignment.Center },
+                    _zoomSlider,
+                    _zoomText
+                }
+            }
+        };
+        Content = new Grid { Children = { _scrollViewer, zoomPanel, _floatToolbar } };
+        UpdateStageSize();
+    }
+
+    /// <summary>浮动操作条按钮（透明底 + 悬停微高亮；危险操作用印度红）。前景色跟随工具条背景明暗。</summary>
+    private static Button FloatButton(string glyph, string tooltip, Action action, Color foreground, bool isDanger = false)
+    {
+        var button = new Button
+        {
+            Content = new IconText { Glyph = glyph, Text = string.Empty },
+            Padding = new Thickness(6, 3),
+            MinWidth = 26,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Foreground = new SolidColorBrush(isDanger ? Color.FromRgb(205, 92, 92) : foreground)
+        };
+        var hover = Color.FromArgb(36, foreground.R, foreground.G, foreground.B);
+        button.PointerEntered += (_, _) => button.Background = new SolidColorBrush(hover);
+        button.PointerExited += (_, _) => button.Background = Brushes.Transparent;
+        ToolTip.SetTip(button, tooltip);
+        button.Click += (_, _) => action();
+        return button;
+    }
+
+    /// <summary>浮动操作条内的竖向分隔线（优先原生分割线颜色，回退与前景同色系）。</summary>
+    private static Avalonia.Controls.Shapes.Line ToolbarSeparator(Color foreground) => new()
+    {
+        StartPoint = new Point(0, 0),
+        EndPoint = new Point(0, 24),
+        Stroke = ThemeBrush("DividerStrokeColorDefaultBrush")
+            ?? new SolidColorBrush(Color.FromArgb(110, foreground.R, foreground.G, foreground.B)),
+        StrokeThickness = 1,
+        VerticalAlignment = VerticalAlignment.Center,
+        Margin = new Thickness(4, 0)
+    };
+
+    /// <summary>查找主题资源。</summary>
+    private static object? FindThemeResource(string key) =>
+        Application.Current?.TryFindResource(key, out var value) == true ? value : null;
+
+    /// <summary>查找主题画刷。</summary>
+    private static IBrush? ThemeBrush(string key) => FindThemeResource(key) as IBrush;
+
+    // ============ 公共接口 ============
+
+    public List<WallpaperLayerItem> Layers
+    {
+        get => _layers;
+        set
+        {
+            _layers = value;
+            RefreshImages();
+        }
+    }
+
+    public double Zoom
+    {
+        get => _zoom;
+        set
+        {
+            var v = Math.Clamp(value, 0.4, 2.5);
+            if (Math.Abs(_zoom - v) < 0.0001)
+            {
+                return;
+            }
+
+            _zoom = v;
+            _stage.RenderTransform = new ScaleTransform(_zoom, _zoom);
+            UpdateStageSize();
+            _zoomSlider.Value = v;
+            _zoomText.Text = $"{v:P0}";
+        }
+    }
+
+    /// <summary>当前工具（左侧工具栏切换；移动工具为默认）。</summary>
+    public WallpaperEditorTool Tool
+    {
+        get => _tool;
+        set => SwitchTool(value);
+    }
+
+    /// <summary>形状工具当前形状类型。</summary>
+    public WallpaperShapeType ShapeToolType
+    {
+        get => _shapeToolType;
+        set => _shapeToolType = value;
+    }
+
+    private void SwitchTool(WallpaperEditorTool tool)
+    {
+        if (_tool == tool)
+        {
+            return;
+        }
+
+        _tool = tool;
+        _drag = null;
+        _guideOverlay.Clear();
+        _marqueeRect.IsVisible = false;
+        UpdateToolCursor();
+        ToolChanged?.Invoke(tool);
+    }
+
+    private void UpdateToolCursor()
+    {
+        Cursor = _tool switch
+        {
+            WallpaperEditorTool.Move => new Cursor(StandardCursorType.SizeAll),
+            WallpaperEditorTool.Zoom => new Cursor(StandardCursorType.Cross),
+            WallpaperEditorTool.Shape => new Cursor(StandardCursorType.Cross),
+            WallpaperEditorTool.Text => new Cursor(StandardCursorType.Ibeam),
+            _ => new Cursor(StandardCursorType.Arrow)
+        };
+    }
+
+    public WallpaperLayerZOrder ZOrder
+    {
+        get => _zOrder;
+        set
+        {
+            _zOrder = value;
+            Refresh();
+        }
+    }
+
+    public double IslandWidth => _islandWidth;
+    public double IslandHeight => _islandHeight;
+
+    public bool IslandUnlocked
+    {
+        get => _islandUnlocked;
+        set
+        {
+            _islandUnlocked = value;
+            UpdateIslandHandles();
+        }
+    }
+
+    public WallpaperLayerItem? SelectedLayer =>
+        _selectedId == null ? null : _layers.FirstOrDefault(l => l.Id == _selectedId);
+
+    public bool IsLocked(string id) => _lockedIds.Contains(id);
+
+    public void ToggleLock(string id)
+    {
+        if (!_lockedIds.Add(id))
+        {
+            _lockedIds.Remove(id);
+        }
+
+        Refresh();
+    }
+
+    public void Select(string? id)
+    {
+        if (_selectedId == id)
+        {
+            return;
+        }
+
+        _selectedId = id;
+        Refresh();
+        SelectionChanged?.Invoke();
+    }
+
+    public void SetIslandSize(double width, double height)
+    {
+        _islandWidth = Math.Clamp(width, 120, 1600);
+        _islandHeight = Math.Clamp(height, 40, 500);
+        UpdateStageSize();
+        Refresh();
+    }
+
+    public void Refresh()
+    {
+        UpdateStageSize();
+        RefreshIslandAppearance();
+        LayoutImages();
+        UpdateSelectionOverlay();
+        UpdateIslandHandles();
+    }
+
+    public Bitmap? GetThumbnail(string id) => _bitmaps.TryGetValue(id, out var bm) ? bm : null;
+
+    /// <summary>
+    /// 把选中图层对齐到岛屿对应参考点（等价于把锚点设为对应值并清零偏移），
+    /// 供浮动操作条与键盘操作调用；会压入撤销并触发刷新。
+    /// </summary>
+    public void AlignSelected(int? xIndex, int? yIndex)
+    {
+        var layer = SelectedLayer;
+        if (layer == null || _lockedIds.Contains(layer.Id))
+        {
+            return;
+        }
+
+        EditStarted?.Invoke();
+        if (xIndex is { } xi)
+        {
+            layer.AnchorX = xi switch { 0 => WallpaperLayerAnchorX.Left, 1 => WallpaperLayerAnchorX.Center, _ => WallpaperLayerAnchorX.Right };
+            layer.OffsetX = 0;
+        }
+
+        if (yIndex is { } yi)
+        {
+            layer.AnchorY = yi switch { 0 => WallpaperLayerAnchorY.Top, 1 => WallpaperLayerAnchorY.Center, _ => WallpaperLayerAnchorY.Bottom };
+            layer.OffsetY = 0;
+        }
+
+        Refresh();
+        Edited?.Invoke();
+    }
+
+    // ============ 图片加载 ============
+
+    private void RefreshImages()
+    {
+        var ids = _layers.Select(l => l.Id).ToHashSet();
+        foreach (var staleId in _bitmaps.Keys.Where(id => !ids.Contains(id)).ToArray())
+        {
+            _bitmaps[staleId].Dispose();
+            _bitmaps.Remove(staleId);
+            if (_streams.TryGetValue(staleId, out var s))
+            {
+                s.Dispose();
+                _streams.Remove(staleId);
+            }
+
+            _loadedSignatures.Remove(staleId);
+        }
+
+        foreach (var layer in _layers)
+        {
+            var signature = SignatureOf(layer);
+            if (_loadedSignatures.TryGetValue(layer.Id, out var loaded) && loaded == signature)
+            {
+                continue;
+            }
+
+            _loadedSignatures[layer.Id] = signature;
+            LoadBitmapFor(layer);
+        }
+
+        SyncImageControls();
+        Refresh();
+        ImagesChanged?.Invoke();
+    }
+
+    private static string SignatureOf(WallpaperLayerItem layer) => $"{layer.Source}|{layer.Path}";
+
+    private void LoadBitmapFor(WallpaperLayerItem layer)
+    {
+        if (_bitmaps.TryGetValue(layer.Id, out var old))
+        {
+            old.Dispose();
+            _bitmaps.Remove(layer.Id);
+        }
+
+        if (_streams.TryGetValue(layer.Id, out var oldStream))
+        {
+            oldStream.Dispose();
+            _streams.Remove(layer.Id);
+        }
+
+        var path = ResolveLayerPath(layer);
+        if (string.IsNullOrEmpty(path) || !File.Exists(path))
+        {
+            return;
+        }
+
+        try
+        {
+            var stream = new MemoryStream(File.ReadAllBytes(path));
+            stream.Position = 0;
+            var bitmap = new Bitmap(stream);
+            _bitmaps[layer.Id] = bitmap;
+            _streams[layer.Id] = stream;
+        }
+        catch
+        {
+            // 图片损坏时忽略，画布显示空图层。
+        }
+    }
+
+    private static string? ResolveLayerPath(WallpaperLayerItem layer)
+    {
+        if (layer.Source == WallpaperSource.LocalImage)
+        {
+            return layer.Path;
+        }
+
+        if (layer.Source == WallpaperSource.FolderSlideshow)
+        {
+            if (string.IsNullOrWhiteSpace(layer.Path) || !Directory.Exists(layer.Path))
+            {
+                return null;
+            }
+
+            var extensions = new[] { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp" };
+            return Directory.EnumerateFiles(layer.Path)
+                .Where(f => extensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
+                .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault();
+        }
+
+        if (layer.Source == WallpaperSource.SmtcAlbum)
+        {
+            // 编辑器内用占位专辑封面预览；运行时由 SMTC 事件推送真实封面。
+            var dir = Path.GetDirectoryName(typeof(WallpaperLayerCanvas).Assembly.Location);
+            return dir == null ? null : Path.Combine(dir, "Assets", "album.png");
+        }
+
+        return null;
+    }
+
+    private double? AspectOf(WallpaperLayerItem layer) =>
+        _bitmaps.TryGetValue(layer.Id, out var bm) && bm.PixelSize.Width > 0 && bm.PixelSize.Height > 0
+            ? (double)bm.PixelSize.Width / bm.PixelSize.Height
+            : null;
+
+    private void SyncImageControls()
+    {
+        var wantedIds = _layers.Select(l => l.Id).ToHashSet();
+        foreach (var staleId in _layerImages.Keys.Where(id => !wantedIds.Contains(id)).ToArray())
+        {
+            _stage.Children.Remove(_layerImages[staleId]);
+            _layerImages.Remove(staleId);
+        }
+
+        foreach (var staleId in _layerVisuals.Keys.Where(id => !wantedIds.Contains(id)).ToArray())
+        {
+            _stage.Children.Remove(_layerVisuals[staleId]);
+            _layerVisuals.Remove(staleId);
+        }
+
+        foreach (var layer in _layers)
+        {
+            if (layer.Kind == WallpaperLayerKind.Image)
+            {
+                if (!_layerImages.TryGetValue(layer.Id, out var image))
+                {
+                    image = new Image
+                    {
+                        IsHitTestVisible = false,
+                        RenderTransformOrigin = RelativePoint.Center
+                    };
+                    _layerImages[layer.Id] = image;
+                    _stage.Children.Add(image);
+                }
+
+                image.Source = _bitmaps.TryGetValue(layer.Id, out var bm) ? bm : null;
+            }
+            else if (!_layerVisuals.TryGetValue(layer.Id, out var visual))
+            {
+                visual = new WallpaperLayerVisual
+                {
+                    IsHitTestVisible = false,
+                    RenderTransformOrigin = RelativePoint.Center
+                };
+                _layerVisuals[layer.Id] = visual;
+                _stage.Children.Add(visual);
+            }
+        }
+    }
+
+    private void LayoutImages()
+    {
+        // 图层 z 序跟随列表顺序（后面的在上层），使拖拽排序在预览中即时生效。
+        var imageBase = _zOrder == WallpaperLayerZOrder.BehindBackground ? 10 : 30;
+        for (var i = 0; i < _layers.Count; i++)
+        {
+            var layer = _layers[i];
+            var rect = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer));
+            if (layer.Kind == WallpaperLayerKind.Image)
+            {
+                if (!_layerImages.TryGetValue(layer.Id, out var image))
+                {
+                    continue;
+                }
+
+                image.Width = rect.Width;
+                image.Height = rect.Height;
+                Canvas.SetLeft(image, CanvasMargin + rect.X);
+                Canvas.SetTop(image, CanvasMargin + rect.Y);
+                image.RenderTransform = new RotateTransform(layer.Rotation);
+                image.Opacity = layer.Visible ? layer.Opacity : 0;
+                image.IsVisible = layer.Visible;
+                image.Stretch = WallpaperLayerLayout.ToStretch(layer.DisplayMode);
+                image.ZIndex = imageBase + i;
+            }
+            else if (_layerVisuals.TryGetValue(layer.Id, out var visual))
+            {
+                visual.Width = rect.Width;
+                visual.Height = rect.Height;
+                Canvas.SetLeft(visual, CanvasMargin + rect.X);
+                Canvas.SetTop(visual, CanvasMargin + rect.Y);
+                visual.RenderTransform = new RotateTransform(layer.Rotation);
+                visual.Opacity = layer.Visible ? layer.Opacity : 0;
+                visual.IsVisible = layer.Visible;
+                visual.ZIndex = imageBase + i;
+                visual.Layer = layer;
+            }
+        }
+
+        _island.ZIndex = _zOrder == WallpaperLayerZOrder.BehindBackground ? 20 : 5;
+    }
+
+    // ============ 渲染辅助 ============
+
+    private void UpdateStageSize()
+    {
+        _stage.Width = _islandWidth + CanvasMargin * 2;
+        _stage.Height = _islandHeight + CanvasMargin * 2;
+        _stageHost.Width = _stage.Width * _zoom;
+        _stageHost.Height = _stage.Height * _zoom;
+        _islandOutline.Width = _stage.Width;
+        _islandOutline.Height = _stage.Height;
+        _guideOverlay.Width = _stage.Width;
+        _guideOverlay.Height = _stage.Height;
+    }
+
+    private void RefreshIslandAppearance()
+    {
+        // 岛屿占位内容：铺满岛屿尺寸并置于舞台中央，避免固定贴在舞台左上角。
+        Canvas.SetLeft(_island, CanvasMargin);
+        Canvas.SetTop(_island, CanvasMargin);
+        _island.Width = _islandWidth;
+        _island.Height = _islandHeight;
+
+        var s = InjectorRuntime.Settings;
+        var color = TryParse(s.BackgroundColor, Color.FromArgb(0xCC, 0x20, 0x20, 0x20));
+        IBrush? background;
+        if (s.CustomBackgroundEnabled && s.GradientEnabled)
+        {
+            var end = TryParse(s.GradientEndColor, Color.FromArgb(0xCC, 0x40, 0x40, 0xA0));
+            var (p1, p2) = GradientGeometry.Points(s.GradientDirection);
+            background = new LinearGradientBrush
+            {
+                StartPoint = p1,
+                EndPoint = p2,
+                GradientStops = [new GradientStop(color, 0), new GradientStop(end, 1)]
+            };
+        }
+        else
+        {
+            background = new SolidColorBrush(s.CustomBackgroundEnabled ? color : Color.FromArgb(0xAA, 40, 42, 48));
+        }
+
+        _island.Background = background;
+        _island.CornerRadius = new CornerRadius(Math.Clamp(s.CornerRadius, 0, 60));
+        _island.BorderBrush = s.BorderEnabled ? new SolidColorBrush(TryParse(s.BorderColor, Colors.White)) : null;
+        _island.BorderThickness = s.BorderEnabled ? new Thickness(Math.Clamp(s.BorderThickness, 0, 20)) : new Thickness(0);
+        _island.Effect = s.ShadowEnabled
+            ? new DropShadowEffect
+            {
+                Color = TryParse(s.ShadowColor, Colors.Black),
+                BlurRadius = Math.Min(s.ShadowBlur, 60),
+                OffsetX = s.ShadowOffsetX,
+                OffsetY = s.ShadowOffsetY,
+                Opacity = s.ShadowOpacity
+            }
+            : null;
+        _islandOutline.IslandBounds = new Rect(CanvasMargin, CanvasMargin, _islandWidth, _islandHeight);
+        _islandOutline.InvalidateVisual();
+    }
+
+    private static Color TryParse(string text, Color fallback)
+    {
+        try
+        {
+            return Color.Parse(text);
+        }
+        catch (FormatException)
+        {
+            return fallback;
+        }
+    }
+
+    /// <summary>
+    /// 构建舞台棋盘格：跟随主题时按深浅色自动选择（深 = 深棋盘格，浅 = 白/浅灰 fff/ccc）；
+    /// 关闭跟随主题时使用用户自定义的两色。
+    /// </summary>
+    private IBrush BuildCheckerBrush()
+    {
+        const double size = 12;
+        var s = InjectorRuntime.Settings;
+        Color c1;
+        Color c2;
+        if (s.WallpaperCheckerFollowTheme)
+        {
+            if (ThemePalette.IsDarkTheme())
+            {
+                c1 = Color.FromRgb(45, 47, 52);
+                c2 = Color.FromRgb(38, 40, 45);
+            }
+            else
+            {
+                c1 = Color.FromRgb(255, 255, 255);
+                c2 = Color.FromRgb(204, 204, 204);
+            }
+        }
+        else
+        {
+            c1 = TryParse(s.WallpaperCheckerColor1, Color.FromRgb(45, 47, 52));
+            c2 = TryParse(s.WallpaperCheckerColor2, Color.FromRgb(38, 40, 45));
+        }
+
+        var group = new DrawingGroup();
+        group.Children.Add(new GeometryDrawing
+        {
+            Brush = new SolidColorBrush(c1),
+            Geometry = new RectangleGeometry(new Rect(0, 0, size, size))
+        });
+        group.Children.Add(new GeometryDrawing
+        {
+            Brush = new SolidColorBrush(c2),
+            Geometry = new RectangleGeometry(new Rect(0, 0, size / 2, size / 2))
+        });
+        group.Children.Add(new GeometryDrawing
+        {
+            Brush = new SolidColorBrush(c2),
+            Geometry = new RectangleGeometry(new Rect(size / 2, size / 2, size / 2, size / 2))
+        });
+        return new DrawingBrush
+        {
+            Drawing = group,
+            TileMode = TileMode.Tile,
+            DestinationRect = new RelativeRect(0, 0, size, size, RelativeUnit.Absolute)
+        };
+    }
+
+    /// <summary>重建舞台棋盘格（设置变化后调用）。</summary>
+    public void ApplyCheckerboardColors() => _stage.Background = BuildCheckerBrush();
+
+    private static Border Handle(double size, IBrush background, StandardCursorType cursor) => new()
+    {
+        Width = size,
+        Height = size,
+        CornerRadius = new CornerRadius(size / 2),
+        Background = background,
+        BorderBrush = Brushes.White,
+        BorderThickness = new Thickness(1),
+        BoxShadow = new BoxShadows(new BoxShadow { Blur = 5, Color = Color.FromArgb(115, 0, 0, 0) }),
+        Cursor = new Cursor(cursor),
+        IsVisible = false
+    };
+
+    // ============ 交互：选中框与手柄定位 ============
+
+    private void UpdateSelectionOverlay()
+    {
+        var layer = SelectedLayer;
+        if (layer == null)
+        {
+            _selectionOverlay.IsVisible = false;
+            _selectionOverlay.SelectionRect = default;
+            _floatToolbar.IsVisible = false;
+            foreach (var handle in _resizeHandles)
+            {
+                handle.IsVisible = false;
+            }
+
+            _rotationHandle.IsVisible = false;
+            return;
+        }
+
+        var rect = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer));
+        var x = CanvasMargin + rect.X;
+        var y = CanvasMargin + rect.Y;
+        var w = rect.Width;
+        var h = rect.Height;
+        _selectionOverlay.IsVisible = true;
+        _selectionOverlay.SelectionRect = new Rect(x, y, w, h);
+        _selectionOverlay.RotationStart = new Point(x + w / 2, y);
+        _selectionOverlay.RotationEnd = new Point(x + w / 2, y - 34);
+        _selectionOverlay.InvalidateVisual();
+
+        var locked = _lockedIds.Contains(layer.Id);
+        foreach (var handle in _resizeHandles)
+        {
+            var dir = _handleDirs[handle];
+            Canvas.SetLeft(handle, x + w * (dir.Dx + 1) / 2 - handle.Width / 2);
+            Canvas.SetTop(handle, y + h * (dir.Dy + 1) / 2 - handle.Height / 2);
+            handle.IsVisible = !locked;
+        }
+
+        Canvas.SetLeft(_rotationHandle, x + w / 2 - _rotationHandle.Width / 2);
+        Canvas.SetTop(_rotationHandle, y - 40);
+        _rotationHandle.IsVisible = !locked;
+
+        // 浮动操作条：显示在选中图层上方（避开旋转手柄，位于其上约 50px 处）。
+        // 舞台可能被缩放/滚动，先把选中框顶部中心换算到本控件坐标，再用 Margin 定位。
+        var showToolbar = !locked;
+        _floatToolbar.IsVisible = showToolbar;
+        if (showToolbar)
+        {
+            var tw = _floatToolbar.Bounds.Width > 0 ? _floatToolbar.Bounds.Width : 250;
+            var th = _floatToolbar.Bounds.Height > 0 ? _floatToolbar.Bounds.Height : 32;
+            var anchor = _stage.TranslatePoint(new Point(x + w / 2, y), this) ?? new Point(x, y);
+            var left = Math.Clamp(anchor.X - tw / 2, 2, Math.Max(2, Bounds.Width - tw - 2));
+            var top = Math.Max(2, anchor.Y - th - 50);
+            _floatToolbar.Margin = new Thickness(left, top, 0, 0);
+            if (!_floatToolbarShown)
+            {
+                // 首次显示时 Bounds 尚未测量，下一帧按真实尺寸重定位。
+                _floatToolbarShown = true;
+                Dispatcher.UIThread.Post(Refresh);
+            }
+        }
+        else
+        {
+            _floatToolbarShown = false;
+        }
+    }
+
+    private void UpdateIslandHandles()
+    {
+        var x = CanvasMargin;
+        var y = CanvasMargin;
+        var w = _islandWidth;
+        var h = _islandHeight;
+        foreach (var handle in _islandHandles)
+        {
+            var dir = _islandHandleDirs[handle];
+            Canvas.SetLeft(handle, x + w * (dir.Dx + 1) / 2 - handle.Width / 2);
+            Canvas.SetTop(handle, y + h * (dir.Dy + 1) / 2 - handle.Height / 2);
+            handle.IsVisible = _islandUnlocked;
+        }
+    }
+
+    // ============ 命中测试 ============
+
+    private WallpaperLayerItem? HitTestLayer(Point stagePos)
+    {
+        var islandPos = new Point(stagePos.X - CanvasMargin, stagePos.Y - CanvasMargin);
+        for (var i = _layers.Count - 1; i >= 0; i--)
+        {
+            var layer = _layers[i];
+            if (!layer.Visible)
+            {
+                continue;
+            }
+
+            var rect = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer));
+            if (rect.Contains(islandPos))
+            {
+                return layer;
+            }
+        }
+
+        return null;
+    }
+
+    private bool IsInsideIsland(Point stagePos) =>
+        stagePos.X >= CanvasMargin && stagePos.Y >= CanvasMargin &&
+        stagePos.X <= CanvasMargin + _islandWidth && stagePos.Y <= CanvasMargin + _islandHeight;
+
+    // ============ 画布手势（按工具分发）============
+
+    private void StageOnPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        var point = e.GetCurrentPoint(_stage);
+        if (!point.Properties.IsLeftButtonPressed)
+        {
+            return;
+        }
+
+        Focus();
+        var pos = point.Position;
+        switch (_tool)
+        {
+            case WallpaperEditorTool.Select:
+                SelectToolPress(pos);
+                e.Handled = true;
+                break;
+            case WallpaperEditorTool.Zoom:
+                _drag = new DragState
+                {
+                    Kind = DragKind.ZoomMarquee,
+                    StartPointer = pos,
+                    ZoomOut = point.Properties.IsRightButtonPressed || e.KeyModifiers.HasFlag(KeyModifiers.Alt)
+                };
+                _marqueeRect.IsVisible = true;
+                PositionMarquee(new Rect(pos.X, pos.Y, 0, 0));
+                e.Pointer.Capture(_stage);
+                e.Handled = true;
+                break;
+            case WallpaperEditorTool.Shape:
+                BeginShapeDraw(pos, e);
+                break;
+            case WallpaperEditorTool.Text:
+                PlaceText(pos);
+                e.Handled = true;
+                break;
+            default:
+                MoveToolPress(pos, e);
+                break;
+        }
+    }
+
+    private void StageOnPointerMoved(object? sender, PointerEventArgs e)
+    {
+        switch (_drag?.Kind)
+        {
+            case DragKind.ZoomMarquee:
+                PositionMarquee(NormalizeRect(_drag.StartPointer, e.GetPosition(_stage)));
+                e.Handled = true;
+                break;
+            case DragKind.ShapeDraw:
+                UpdateShapeDraw(_drag, e.GetPosition(_stage));
+                e.Handled = true;
+                break;
+            case DragKind.Move:
+                UpdateMove(_drag, e.GetPosition(_stage));
+                e.Handled = true;
+                break;
+        }
+    }
+
+    private void StageOnPointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        switch (_drag?.Kind)
+        {
+            case DragKind.ZoomMarquee:
+                FinishZoomMarquee(_drag, e.GetPosition(_stage));
+                _drag = null;
+                e.Pointer.Capture(null);
+                e.Handled = true;
+                break;
+            case DragKind.ShapeDraw:
+                FinishShapeDraw(_drag);
+                _drag = null;
+                e.Pointer.Capture(null);
+                e.Handled = true;
+                break;
+            case DragKind.Move:
+                _drag = null;
+                e.Pointer.Capture(null);
+                _guideOverlay.Clear();
+                Edited?.Invoke();
+                e.Handled = true;
+                break;
+        }
+    }
+
+    // ============ 工具实现 ============
+
+    /// <summary>移动工具按下：命中图层则选中并开始拖拽移动，否则取消选中。</summary>
+    private void MoveToolPress(Point pos, PointerPressedEventArgs e)
+    {
+        var layer = HitTestLayer(pos);
+        if (layer == null)
+        {
+            Select(null);
+            return;
+        }
+
+        if (_lockedIds.Contains(layer.Id))
+        {
+            Select(layer.Id);
+            return;
+        }
+
+        Select(layer.Id);
+        // 铺满岛屿的图层被拖动时自动切换为自定义尺寸（锚点偏移才有意义）。
+        if (layer.SizeMode == WallpaperLayerSizeMode.FillIsland)
+        {
+            layer.SizeMode = WallpaperLayerSizeMode.Custom;
+            layer.Width = _islandWidth;
+            layer.Height = _islandHeight;
+        }
+
+        _drag = new DragState
+        {
+            Layer = layer,
+            Kind = DragKind.Move,
+            StartPointer = pos,
+            StartRect = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer)),
+            StartIslandW = _islandWidth,
+            StartIslandH = _islandHeight
+        };
+        EditStarted?.Invoke();
+        e.Pointer.Capture(_stage);
+        e.Handled = true;
+    }
+
+    /// <summary>选择工具按下：只选中图层，不进入拖拽移动。</summary>
+    private void SelectToolPress(Point pos)
+    {
+        var layer = HitTestLayer(pos);
+        Select(layer?.Id);
+    }
+
+    /// <summary>形状工具按下：在起点创建图层并开始拖拽绘制。</summary>
+    private void BeginShapeDraw(Point pos, PointerPressedEventArgs e)
+    {
+        var layer = CreateShapeLayer(new Rect(pos.X, pos.Y, 0, 0));
+        Select(layer.Id);
+        _drag = new DragState { Kind = DragKind.ShapeDraw, Layer = layer, StartPointer = pos };
+        EditStarted?.Invoke();
+        e.Pointer.Capture(_stage);
+        e.Handled = true;
+    }
+
+    /// <summary>形状工具拖拽：按起点到指针的矩形实时更新图层尺寸与位置。</summary>
+    private void UpdateShapeDraw(DragState drag, Point pointer)
+    {
+        var layer = drag.Layer!;
+        var rect = NormalizeRect(drag.StartPointer, pointer);
+        layer.Width = Math.Max(1, rect.Width);
+        layer.Height = Math.Max(1, rect.Height);
+        ApplyRectOffsets(layer, rect);
+        Refresh();
+    }
+
+    /// <summary>形状工具释放：过小则生成默认尺寸，随后切回移动工具。</summary>
+    private void FinishShapeDraw(DragState drag)
+    {
+        var layer = drag.Layer!;
+        if (layer.Width < MinLayerSize || layer.Height < MinLayerSize)
+        {
+            var rect = new Rect(drag.StartPointer.X - 60, drag.StartPointer.Y - 40, 120, 80);
+            layer.Width = 120;
+            layer.Height = 80;
+            ApplyRectOffsets(layer, rect);
+        }
+
+        Refresh();
+        SwitchTool(WallpaperEditorTool.Move);
+        Edited?.Invoke();
+    }
+
+    /// <summary>文本工具：在点击处创建文本框图层，随后切回移动工具。</summary>
+    private void PlaceText(Point pos)
+    {
+        var layer = new WallpaperLayerItem
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            Name = $"文本图层 {_layers.Count + 1}",
+            Kind = WallpaperLayerKind.Text,
+            Source = WallpaperSource.None,
+            SizeMode = WallpaperLayerSizeMode.Custom,
+            Text = "双击修改文本",
+            TextFontSize = 16,
+            AnchorX = WallpaperLayerAnchorX.Center,
+            AnchorY = WallpaperLayerAnchorY.Center,
+            Width = 180,
+            Height = 48
+        };
+        ApplyRectOffsets(layer, new Rect(pos.X - 90, pos.Y - 24, 180, 48));
+        _layers.Add(layer);
+        Select(layer.Id);
+        EditStarted?.Invoke();
+        Refresh();
+        SwitchTool(WallpaperEditorTool.Move);
+        Edited?.Invoke();
+    }
+
+    /// <summary>创建一个形状图层（锚点居中，矩形由 Width/Height + 偏移表达）。</summary>
+    private WallpaperLayerItem CreateShapeLayer(Rect rect)
+    {
+        var layer = new WallpaperLayerItem
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            Name = $"形状图层 {_layers.Count + 1}",
+            Kind = WallpaperLayerKind.Shape,
+            ShapeType = _shapeToolType,
+            Source = WallpaperSource.None,
+            SizeMode = WallpaperLayerSizeMode.Custom,
+            AnchorX = WallpaperLayerAnchorX.Center,
+            AnchorY = WallpaperLayerAnchorY.Center,
+            Width = Math.Max(1, rect.Width),
+            Height = Math.Max(1, rect.Height)
+        };
+        ApplyRectOffsets(layer, rect);
+        _layers.Add(layer);
+        return layer;
+    }
+
+    /// <summary>把矩形位置写回图层偏移（保持当前锚点不变）。</summary>
+    private void ApplyRectOffsets(WallpaperLayerItem layer, Rect rect)
+    {
+        var (ox, oy) = WallpaperLayerLayout.ToOffsets(layer, rect, _islandWidth, _islandHeight);
+        layer.OffsetX = ox;
+        layer.OffsetY = oy;
+    }
+
+    /// <summary>缩放工具释放：小矩形 = 单击（缩放/Alt 缩小），大矩形 = 框选放大到视图。</summary>
+    private void FinishZoomMarquee(DragState drag, Point pointer)
+    {
+        _marqueeRect.IsVisible = false;
+        var rect = NormalizeRect(drag.StartPointer, pointer);
+        if (rect.Width < 8 && rect.Height < 8)
+        {
+            ZoomTo(drag.StartPointer, drag.ZoomOut ? _zoom / 1.25 : _zoom * 1.25);
+        }
+        else
+        {
+            ZoomToRect(rect);
+        }
+    }
+
+    /// <summary>把逻辑坐标点保持在同一屏幕位置进行缩放（保持光标下的内容不跑）。</summary>
+    private void ZoomTo(Point logicalPos, double newZoom)
+    {
+        newZoom = Math.Clamp(newZoom, 0.4, 2.5);
+        var oldZoom = _zoom;
+        if (Math.Abs(newZoom - oldZoom) < 0.001)
+        {
+            return;
+        }
+
+        var offset = _scrollViewer.Offset;
+        var ox = offset.X + logicalPos.X * (oldZoom - newZoom);
+        var oy = offset.Y + logicalPos.Y * (oldZoom - newZoom);
+        Zoom = newZoom;
+        _scrollViewer.Offset = new Vector(Math.Max(0, ox), Math.Max(0, oy));
+    }
+
+    /// <summary>把逻辑坐标矩形放大到铺满视图。</summary>
+    private void ZoomToRect(Rect logicalRect)
+    {
+        if (logicalRect.Width < 8 || logicalRect.Height < 8)
+        {
+            return;
+        }
+
+        var viewport = _scrollViewer.Viewport;
+        var scale = Math.Min(viewport.Width / logicalRect.Width, viewport.Height / logicalRect.Height);
+        var newZoom = Math.Clamp(_zoom * scale, 0.4, 2.5);
+        var center = new Point(logicalRect.X + logicalRect.Width / 2, logicalRect.Y + logicalRect.Height / 2);
+        Zoom = newZoom;
+        _scrollViewer.Offset = new Vector(
+            Math.Max(0, center.X * newZoom - viewport.Width / 2),
+            Math.Max(0, center.Y * newZoom - viewport.Height / 2));
+    }
+
+    /// <summary>把普通两点矩形归一化为左上 + 宽高的矩形。</summary>
+    private static Rect NormalizeRect(Point a, Point b) => new(
+        Math.Min(a.X, b.X), Math.Min(a.Y, b.Y), Math.Abs(b.X - a.X), Math.Abs(b.Y - a.Y));
+
+    private void PositionMarquee(Rect rect)
+    {
+        Canvas.SetLeft(_marqueeRect, rect.X);
+        Canvas.SetTop(_marqueeRect, rect.Y);
+        _marqueeRect.Width = rect.Width;
+        _marqueeRect.Height = rect.Height;
+    }
+
+    // ============ 移动 ============
+
+    private void UpdateMove(DragState drag, Point pointer)
+    {
+        var delta = pointer - drag.StartPointer;
+        var rect = new Rect(drag.StartRect.X + delta.X, drag.StartRect.Y + delta.Y,
+            drag.StartRect.Width, drag.StartRect.Height);
+        var others = OtherLayerRects(drag.Layer!);
+        rect = SnapRect(rect, others,
+            true, true, true, true, true, true,
+            out var guides, out var xIsland, out var yIsland);
+        var layer = drag.Layer!;
+        var (ox, oy) = WallpaperLayerLayout.ToOffsets(layer, rect, _islandWidth, _islandHeight);
+        layer.OffsetX = ox;
+        layer.OffsetY = oy;
+        if (xIsland)
+        {
+            ApplyIslandSnapX(layer, rect);
+        }
+
+        if (yIsland)
+        {
+            ApplyIslandSnapY(layer, rect);
+        }
+
+        _guideOverlay.SetGuides(ToStageGuides(guides));
+        Refresh();
+    }
+
+    // ============ 八向缩放 ============
+
+    private void ResizeHandleOnPointerPressed(Border handle, PointerPressedEventArgs e)
+    {
+        if (!e.GetCurrentPoint(handle).Properties.IsLeftButtonPressed)
+        {
+            return;
+        }
+
+        var layer = SelectedLayer;
+        if (layer == null || _lockedIds.Contains(layer.Id))
+        {
+            return;
+        }
+
+        // 铺满岛屿的图层被拖动时自动切换为自定义尺寸（以当前岛屿大小为初始尺寸）。
+        if (layer.SizeMode == WallpaperLayerSizeMode.FillIsland)
+        {
+            layer.SizeMode = WallpaperLayerSizeMode.Custom;
+            layer.Width = _islandWidth;
+            layer.Height = _islandHeight;
+        }
+
+        _drag = new DragState
+        {
+            Layer = layer,
+            Kind = DragKind.Resize,
+            HandleDir = _handleDirs[handle],
+            StartPointer = e.GetPosition(_stage),
+            StartRect = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer)),
+            StartIslandW = _islandWidth,
+            StartIslandH = _islandHeight
+        };
+        EditStarted?.Invoke();
+        e.Pointer.Capture(handle);
+        e.Handled = true;
+    }
+
+    private void ResizeHandleOnPointerMoved(Border handle, PointerEventArgs e)
+    {
+        if (_drag is not { Kind: DragKind.Resize })
+        {
+            return;
+        }
+
+        var keepAspect = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
+        UpdateResize(_drag, e.GetPosition(_stage), keepAspect);
+        e.Handled = true;
+    }
+
+    private void ResizeHandleOnPointerReleased(Border handle, PointerReleasedEventArgs e)
+    {
+        if (_drag is not { Kind: DragKind.Resize })
+        {
+            return;
+        }
+
+        _drag = null;
+        e.Pointer.Capture(null);
+        _guideOverlay.Clear();
+        Edited?.Invoke();
+        e.Handled = true;
+    }
+
+    private void UpdateResize(DragState drag, Point pointer, bool keepAspect)
+    {
+        var delta = pointer - drag.StartPointer;
+        var r = drag.StartRect;
+        var (dx, dy) = drag.HandleDir;
+        var x = r.X;
+        var y = r.Y;
+        var w = r.Width;
+        var h = r.Height;
+        if (dx < 0)
+        {
+            x += delta.X;
+            w -= delta.X;
+        }
+        else if (dx > 0)
+        {
+            w += delta.X;
+        }
+
+        if (dy < 0)
+        {
+            y += delta.Y;
+            h -= delta.Y;
+        }
+        else if (dy > 0)
+        {
+            h += delta.Y;
+        }
+
+        if (keepAspect && (dx != 0 || dy != 0) && r.Width > 0 && r.Height > 0)
+        {
+            var aspect = r.Width / r.Height;
+            if (dx != 0 && dy != 0)
+            {
+                if (Math.Abs(delta.X) >= Math.Abs(delta.Y))
+                {
+                    h = w / aspect;
+                }
+                else
+                {
+                    w = h * aspect;
+                }
+
+                if (dy < 0)
+                {
+                    y = r.Bottom - h;
+                }
+            }
+            else if (dx != 0)
+            {
+                h = w / aspect;
+            }
+            else
+            {
+                w = h * aspect;
+                if (dx < 0)
+                {
+                    x = r.Right - w;
+                }
+            }
+        }
+
+        w = Math.Max(MinLayerSize, w);
+        h = Math.Max(MinLayerSize, h);
+        if (dx < 0)
+        {
+            x = Math.Min(x, r.Right - MinLayerSize);
+        }
+
+        if (dy < 0)
+        {
+            y = Math.Min(y, r.Bottom - MinLayerSize);
+        }
+
+        var rect = new Rect(x, y, w, h);
+        var others = OtherLayerRects(drag.Layer!);
+        // 只吸附被拖动的边 + 中心
+        rect = SnapRect(rect, others,
+            dx < 0, dx > 0, true, dy < 0, dy > 0, true,
+            out var guides, out var xIsland, out var yIsland);
+        var layer = drag.Layer!;
+        layer.Width = rect.Width;
+        layer.Height = rect.Height;
+        layer.SizeMode = WallpaperLayerSizeMode.Custom;
+        var (ox, oy) = WallpaperLayerLayout.ToOffsets(layer, rect, _islandWidth, _islandHeight);
+        layer.OffsetX = ox;
+        layer.OffsetY = oy;
+        if (xIsland)
+        {
+            ApplyIslandSnapX(layer, rect);
+        }
+
+        if (yIsland)
+        {
+            ApplyIslandSnapY(layer, rect);
+        }
+
+        _guideOverlay.SetGuides(ToStageGuides(guides));
+        Refresh();
+    }
+
+    // ============ 旋转 ============
+
+    private void RotationHandleOnPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (!e.GetCurrentPoint(_rotationHandle).Properties.IsLeftButtonPressed)
+        {
+            return;
+        }
+
+        var layer = SelectedLayer;
+        if (layer == null || _lockedIds.Contains(layer.Id))
+        {
+            return;
+        }
+
+        if (layer.SizeMode == WallpaperLayerSizeMode.FillIsland)
+        {
+            layer.SizeMode = WallpaperLayerSizeMode.Custom;
+            layer.Width = _islandWidth;
+            layer.Height = _islandHeight;
+        }
+
+        _drag = new DragState
+        {
+            Layer = layer,
+            Kind = DragKind.Rotate,
+            StartPointer = e.GetPosition(_stage),
+            StartRect = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer)),
+            StartRotation = layer.Rotation,
+            StartIslandW = _islandWidth,
+            StartIslandH = _islandHeight
+        };
+        EditStarted?.Invoke();
+        e.Pointer.Capture(_rotationHandle);
+        e.Handled = true;
+    }
+
+    private void RotationHandleOnPointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (_drag is not { Kind: DragKind.Rotate })
+        {
+            return;
+        }
+
+        UpdateRotate(_drag, e.GetPosition(_stage));
+        e.Handled = true;
+    }
+
+    private void RotationHandleOnPointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (_drag is not { Kind: DragKind.Rotate })
+        {
+            return;
+        }
+
+        _drag = null;
+        e.Pointer.Capture(null);
+        Edited?.Invoke();
+        e.Handled = true;
+    }
+
+    private void UpdateRotate(DragState drag, Point pointer)
+    {
+        var center = new Point(CanvasMargin + drag.StartRect.Center.X, CanvasMargin + drag.StartRect.Center.Y);
+        var v0 = drag.StartPointer - center;
+        var v1 = pointer - center;
+        var baseAngle = Math.Atan2(v0.Y, v0.X) * 180 / Math.PI;
+        var currentAngle = Math.Atan2(v1.Y, v1.X) * 180 / Math.PI;
+        var angle = NormalizeAngle(drag.StartRotation + (currentAngle - baseAngle));
+        // 吸附到 15° 倍（阈值 2.5°）
+        var snapped = Math.Round(angle / 15.0) * 15.0;
+        if (Math.Abs(snapped - angle) < 2.5)
+        {
+            angle = snapped;
+        }
+
+        drag.Layer!.Rotation = angle;
+        Refresh();
+    }
+
+    private static double NormalizeAngle(double angle)
+    {
+        angle %= 360;
+        return angle < 0 ? angle + 360 : angle;
+    }
+
+    // ============ 岛屿缩放（预览自适应）============
+
+    private void IslandHandleOnPointerPressed(Border handle, PointerPressedEventArgs e)
+    {
+        if (!_islandUnlocked || !e.GetCurrentPoint(handle).Properties.IsLeftButtonPressed)
+        {
+            return;
+        }
+
+        _drag = new DragState
+        {
+            Kind = DragKind.IslandResize,
+            HandleDir = _islandHandleDirs[handle],
+            StartPointer = e.GetPosition(_stage),
+            StartIslandW = _islandWidth,
+            StartIslandH = _islandHeight
+        };
+        e.Pointer.Capture(handle);
+        e.Handled = true;
+    }
+
+    private void IslandHandleOnPointerMoved(Border handle, PointerEventArgs e)
+    {
+        if (_drag is not { Kind: DragKind.IslandResize })
+        {
+            return;
+        }
+
+        UpdateIslandResize(_drag, e.GetPosition(_stage));
+        e.Handled = true;
+    }
+
+    private void IslandHandleOnPointerReleased(Border handle, PointerReleasedEventArgs e)
+    {
+        if (_drag is not { Kind: DragKind.IslandResize })
+        {
+            return;
+        }
+
+        _drag = null;
+        e.Pointer.Capture(null);
+        e.Handled = true;
+    }
+
+    private void UpdateIslandResize(DragState drag, Point pointer)
+    {
+        var delta = pointer - drag.StartPointer;
+        var (dx, dy) = drag.HandleDir;
+        var w = drag.StartIslandW + (dx > 0 ? delta.X : 0);
+        var h = drag.StartIslandH + (dy > 0 ? delta.Y : 0);
+        _islandWidth = Math.Clamp(w, 120, 1600);
+        _islandHeight = Math.Clamp(h, 40, 500);
+        UpdateStageSize();
+        Refresh();
+        IslandChanged?.Invoke();
+    }
+
+    // ============ 智能对齐标尺（PS 式吸附）============
+
+    private List<Rect> OtherLayerRects(WallpaperLayerItem exclude)
+    {
+        var result = new List<Rect>();
+        foreach (var layer in _layers)
+        {
+            if (layer == exclude || !layer.Visible)
+            {
+                continue;
+            }
+
+            var rect = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer));
+            if (rect.Width > 0 && rect.Height > 0)
+            {
+                result.Add(rect);
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// 把矩形吸附到岛屿或其它图层的边/中心（匹配同类型参考点：左对左、中对中、右对右），
+    /// 返回吸附后的矩形与参考线。参考线坐标位于岛屿坐标系，调用方负责转换为舞台坐标。
+    /// </summary>
+    private Rect SnapRect(Rect rect, List<Rect> others,
+        bool useLeft, bool useRight, bool useCenterX,
+        bool useTop, bool useBottom, bool useCenterY,
+        out List<Guide> guides, out bool xIsland, out bool yIsland)
+    {
+        guides = [];
+        xIsland = false;
+        yIsland = false;
+
+        var xRefs = new List<(double Pos, int Kind)>();
+        var yRefs = new List<(double Pos, int Kind)>();
+        if (useLeft)
+        {
+            xRefs.Add((rect.X, 0));
+        }
+
+        if (useCenterX)
+        {
+            xRefs.Add((rect.Center.X, 1));
+        }
+
+        if (useRight)
+        {
+            xRefs.Add((rect.Right, 2));
+        }
+
+        if (useTop)
+        {
+            yRefs.Add((rect.Y, 0));
+        }
+
+        if (useCenterY)
+        {
+            yRefs.Add((rect.Center.Y, 1));
+        }
+
+        if (useBottom)
+        {
+            yRefs.Add((rect.Bottom, 2));
+        }
+
+        var xTargets = new List<(double Pos, int Kind, bool Island)>
+        {
+            (0, 0, true),
+            (_islandWidth / 2, 1, true),
+            (_islandWidth, 2, true)
+        };
+        var yTargets = new List<(double Pos, int Kind, bool Island)>
+        {
+            (0, 0, true),
+            (_islandHeight / 2, 1, true),
+            (_islandHeight, 2, true)
+        };
+        foreach (var r in others)
+        {
+            xTargets.Add((r.X, 0, false));
+            xTargets.Add((r.Center.X, 1, false));
+            xTargets.Add((r.Right, 2, false));
+            yTargets.Add((r.Y, 0, false));
+            yTargets.Add((r.Center.Y, 1, false));
+            yTargets.Add((r.Bottom, 2, false));
+        }
+
+        var bestX = FindBestSnap(xRefs, xTargets);
+        var bestY = FindBestSnap(yRefs, yTargets);
+        var result = rect;
+        if (bestX is { } bx)
+        {
+            result = new Rect(result.X + bx.Shift, result.Y, result.Width, result.Height);
+            xIsland = bx.Island;
+            guides.Add(new Guide(true, bx.Target, SnapLabel(bx.Kind, bx.Island, true), bx.Kind == 1));
+        }
+
+        if (bestY is { } by)
+        {
+            result = new Rect(result.X, result.Y + by.Shift, result.Width, result.Height);
+            yIsland = by.Island;
+            guides.Add(new Guide(false, by.Target, SnapLabel(by.Kind, by.Island, false), by.Kind == 1));
+        }
+
+        return result;
+    }
+
+    private SnapResult? FindBestSnap(List<(double Pos, int Kind)> refs, List<(double Pos, int Kind, bool Island)> targets)
+    {
+        SnapResult? best = null;
+        foreach (var (pos, kind) in refs)
+        {
+            foreach (var (targetPos, targetKind, island) in targets)
+            {
+                if (kind != targetKind)
+                {
+                    continue;
+                }
+
+                var shift = targetPos - pos;
+                if (Math.Abs(shift) > SnapThreshold)
+                {
+                    continue;
+                }
+
+                if (best == null || Math.Abs(shift) < Math.Abs(best.Shift))
+                {
+                    best = new SnapResult(shift, targetPos, targetKind, island);
+                }
+            }
+        }
+
+        return best;
+    }
+
+    private static string SnapLabel(int kind, bool island, bool vertical)
+    {
+        var name = kind switch
+        {
+            0 => vertical ? "左对齐" : "顶对齐",
+            1 => vertical ? "水平居中" : "垂直居中",
+            _ => vertical ? "右对齐" : "底对齐"
+        };
+        return island ? name : $"{name} · 对齐图层";
+    }
+
+    /// <summary>吸附到岛屿左/右/水平中心时，把锚点切换为对应值并清零偏移（实现「右边缘 = 岛屿右边缘」）。</summary>
+    private void ApplyIslandSnapX(WallpaperLayerItem layer, Rect rect)
+    {
+        const double eps = 0.5;
+        if (Math.Abs(rect.X) < eps)
+        {
+            layer.AnchorX = WallpaperLayerAnchorX.Left;
+            layer.OffsetX = 0;
+        }
+        else if (Math.Abs(rect.Right - _islandWidth) < eps)
+        {
+            layer.AnchorX = WallpaperLayerAnchorX.Right;
+            layer.OffsetX = 0;
+        }
+        else if (Math.Abs(rect.Center.X - _islandWidth / 2) < eps)
+        {
+            layer.AnchorX = WallpaperLayerAnchorX.Center;
+            layer.OffsetX = 0;
+        }
+    }
+
+    private void ApplyIslandSnapY(WallpaperLayerItem layer, Rect rect)
+    {
+        const double eps = 0.5;
+        if (Math.Abs(rect.Y) < eps)
+        {
+            layer.AnchorY = WallpaperLayerAnchorY.Top;
+            layer.OffsetY = 0;
+        }
+        else if (Math.Abs(rect.Bottom - _islandHeight) < eps)
+        {
+            layer.AnchorY = WallpaperLayerAnchorY.Bottom;
+            layer.OffsetY = 0;
+        }
+        else if (Math.Abs(rect.Center.Y - _islandHeight / 2) < eps)
+        {
+            layer.AnchorY = WallpaperLayerAnchorY.Center;
+            layer.OffsetY = 0;
+        }
+    }
+
+    private List<Guide> ToStageGuides(List<Guide> guides) =>
+        guides.Select(g => g with { Position = g.Position + CanvasMargin }).ToList();
+
+    // ============ 键盘 ============
+
+    private void CanvasOnKeyDown(object? sender, KeyEventArgs e)
+    {
+        var layer = SelectedLayer;
+        switch (e.Key)
+        {
+            case Key.V:
+                SwitchTool(WallpaperEditorTool.Move);
+                e.Handled = true;
+                break;
+            case Key.S:
+                SwitchTool(WallpaperEditorTool.Select);
+                e.Handled = true;
+                break;
+            case Key.Z:
+                SwitchTool(WallpaperEditorTool.Zoom);
+                e.Handled = true;
+                break;
+            case Key.U:
+                SwitchTool(WallpaperEditorTool.Shape);
+                e.Handled = true;
+                break;
+            case Key.T:
+                SwitchTool(WallpaperEditorTool.Text);
+                e.Handled = true;
+                break;
+            case Key.Delete when layer != null && !_lockedIds.Contains(layer.Id):
+                DeleteRequested?.Invoke(layer);
+                e.Handled = true;
+                break;
+            case Key.Escape:
+                _drag = null;
+                _guideOverlay.Clear();
+                Select(null);
+                e.Handled = true;
+                break;
+            case Key.Left:
+                Nudge(layer, -1, 0, e.KeyModifiers.HasFlag(KeyModifiers.Shift));
+                e.Handled = true;
+                break;
+            case Key.Right:
+                Nudge(layer, 1, 0, e.KeyModifiers.HasFlag(KeyModifiers.Shift));
+                e.Handled = true;
+                break;
+            case Key.Up:
+                Nudge(layer, 0, -1, e.KeyModifiers.HasFlag(KeyModifiers.Shift));
+                e.Handled = true;
+                break;
+            case Key.Down:
+                Nudge(layer, 0, 1, e.KeyModifiers.HasFlag(KeyModifiers.Shift));
+                e.Handled = true;
+                break;
+        }
+    }
+
+    private void Nudge(WallpaperLayerItem? layer, double dx, double dy, bool large)
+    {
+        if (layer == null || _lockedIds.Contains(layer.Id))
+        {
+            return;
+        }
+
+        EditStarted?.Invoke();
+        var step = large ? 10 : 1;
+        layer.OffsetX += dx * step;
+        layer.OffsetY += dy * step;
+        Refresh();
+        Edited?.Invoke();
+    }
+
+    // ============ 内部类型 ============
+
+    private enum DragKind
+    {
+        None,
+        Move,
+        Resize,
+        Rotate,
+        IslandResize,
+        ZoomMarquee,
+        ShapeDraw
+    }
+
+    private sealed class DragState
+    {
+        public WallpaperLayerItem? Layer;
+        public DragKind Kind;
+        public Point StartPointer;
+        public Rect StartRect;
+        public double StartIslandW;
+        public double StartIslandH;
+        public (int Dx, int Dy) HandleDir;
+        public double StartRotation;
+        /// <summary>缩放工具：单击时是否缩小（Alt / 右键）。</summary>
+        public bool ZoomOut;
+    }
+
+    private sealed record Guide(bool Vertical, double Position, string Label, bool IsCenter);
+
+    private sealed record SnapResult(double Shift, double Target, int Kind, bool Island);
+
+    /// <summary>岛屿虚线边界（始终显示，帮助用户理解「锚点相对定位」的参照系）。</summary>
+    private sealed class IslandOutlineOverlay : Control
+    {
+        public Rect IslandBounds { get; set; }
+
+        public override void Render(DrawingContext context)
+        {
+            base.Render(context);
+            if (IslandBounds.Width <= 0)
+            {
+                return;
+            }
+            // 占位，实际绘制在下方完整方法中
+
+            var pen = new Pen(new SolidColorBrush(Color.FromArgb(160, 120, 190, 255)), 1)
+            {
+                DashStyle = new DashStyle([5, 4], 0)
+            };
+            var b = IslandBounds;
+            context.DrawRectangle(pen, new Rect(b.X + 0.5, b.Y + 0.5, b.Width - 1, b.Height - 1), 0);
+        }
+    }
+
+    /// <summary>选中图层的虚线框 + 旋转臂（PowerPoint 风格）。</summary>
+    private sealed class SelectionOverlay : Control
+    {
+        public Rect SelectionRect { get; set; }
+        public Point RotationStart { get; set; }
+        public Point RotationEnd { get; set; }
+
+        public override void Render(DrawingContext context)
+        {
+            base.Render(context);
+            if (SelectionRect.Width <= 0 || SelectionRect.Height <= 0)
+            {
+                return;
+            }
+
+            var boxPen = new Pen(new SolidColorBrush(Color.FromRgb(0, 120, 212)), 1)
+            {
+                DashStyle = new DashStyle([4, 3], 0)
+            };
+            var b = SelectionRect;
+            context.DrawRectangle(boxPen, new Rect(b.X + 0.5, b.Y + 0.5, b.Width - 1, b.Height - 1), 0);
+            var armPen = new Pen(new SolidColorBrush(Color.FromRgb(121, 80, 242)), 1)
+            {
+                DashStyle = new DashStyle([4, 3], 0)
+            };
+            context.DrawLine(armPen, RotationStart, RotationEnd);
+        }
+    }
+
+    /// <summary>智能对齐标尺：洋红色（边缘）/ 青色（中心）参考线 + 标签。</summary>
+    private sealed class GuideOverlay : Control
+    {
+        private readonly List<Guide> _guides = [];
+
+        public void SetGuides(List<Guide> guides)
+        {
+            _guides.Clear();
+            _guides.AddRange(guides);
+            InvalidateVisual();
+        }
+
+        public void Clear()
+        {
+            _guides.Clear();
+            InvalidateVisual();
+        }
+
+        public override void Render(DrawingContext context)
+        {
+            base.Render(context);
+            foreach (var guide in _guides)
+            {
+                var brush = new SolidColorBrush(guide.IsCenter ? Color.FromRgb(0, 200, 255) : Color.FromRgb(255, 61, 194));
+                var pen = new Pen(brush, 1);
+                if (guide.Vertical)
+                {
+                    context.DrawLine(pen, new Point(guide.Position, 0), new Point(guide.Position, Bounds.Height));
+                }
+                else
+                {
+                    context.DrawLine(pen, new Point(0, guide.Position), new Point(Bounds.Width, guide.Position));
+                }
+
+                var text = new FormattedText(guide.Label, CultureInfo.CurrentUICulture,
+                    FlowDirection.LeftToRight, Typeface.Default, 11, brush);
+                var labelX = guide.Vertical
+                    ? Math.Clamp(guide.Position + 6, 2, Math.Max(2, Bounds.Width - text.Width - 10))
+                    : 2;
+                var labelY = guide.Vertical
+                    ? 2
+                    : Math.Clamp(guide.Position + 6, 2, Math.Max(2, Bounds.Height - text.Height - 10));
+                context.DrawRectangle(new SolidColorBrush(Color.FromArgb(225, 24, 24, 28)), null,
+                    new Rect(labelX, labelY, text.Width + 8, text.Height + 4), 0, 0, default);
+                context.DrawText(text, new Point(labelX + 4, labelY + 2));
+            }
+        }
+    }
+}
+
+/// <summary>
+/// 九宫格锚点选择器（Photoshop / 游戏 UI 风格）：点击任意格点同时设置水平与垂直锚点。
+/// </summary>
+internal sealed class AnchorGridPicker : Control
+{
+    private const double Cell = 22;
+    private const double Gap = 5;
+    private const double Padding = 5;
+
+    public WallpaperLayerAnchorX AnchorX { get; set; } = WallpaperLayerAnchorX.Center;
+    public WallpaperLayerAnchorY AnchorY { get; set; } = WallpaperLayerAnchorY.Center;
+
+    public event Action? Changed;
+
+    public AnchorGridPicker()
+    {
+        Width = Padding * 2 + Cell * 3 + Gap * 2;
+        Height = Padding * 2 + Cell * 3 + Gap * 2;
+        Cursor = new Cursor(StandardCursorType.Hand);
+        PointerPressed += (_, e) =>
+        {
+            if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+            {
+                return;
+            }
+
+            var pos = e.GetPosition(this);
+            var col = (int)((pos.X - Padding) / (Cell + Gap));
+            var row = (int)((pos.Y - Padding) / (Cell + Gap));
+            col = Math.Clamp(col, 0, 2);
+            row = Math.Clamp(row, 0, 2);
+            AnchorX = col switch { 0 => WallpaperLayerAnchorX.Left, 1 => WallpaperLayerAnchorX.Center, _ => WallpaperLayerAnchorX.Right };
+            AnchorY = row switch { 0 => WallpaperLayerAnchorY.Top, 1 => WallpaperLayerAnchorY.Center, _ => WallpaperLayerAnchorY.Bottom };
+            InvalidateVisual();
+            Changed?.Invoke();
+            e.Handled = true;
+        };
+    }
+
+    public override void Render(DrawingContext context)
+    {
+        base.Render(context);
+        var selectedRow = AnchorY switch { WallpaperLayerAnchorY.Top => 0, WallpaperLayerAnchorY.Center => 1, _ => 2 };
+        var selectedCol = AnchorX switch { WallpaperLayerAnchorX.Left => 0, WallpaperLayerAnchorX.Center => 1, _ => 2 };
+        var accent = new SolidColorBrush(Color.FromRgb(0, 120, 212));
+        var idle = new SolidColorBrush(Color.FromArgb(110, 255, 255, 255));
+        for (var r = 0; r < 3; r++)
+        {
+            for (var c = 0; c < 3; c++)
+            {
+                var selected = r == selectedRow && c == selectedCol;
+                var cx = Padding + c * (Cell + Gap) + Cell / 2;
+                var cy = Padding + r * (Cell + Gap) + Cell / 2;
+                context.DrawEllipse(selected ? accent : null, new Pen(selected ? accent : idle, 2), new Point(cx, cy), 4, 4);
+            }
+        }
+    }
+}
