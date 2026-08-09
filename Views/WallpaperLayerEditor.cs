@@ -270,8 +270,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         var panel = new StackPanel { Spacing = 2 };
         panel.Children.Add(ToolButton(WallpaperEditorTool.Move, "\uE113", "移动工具（V）：拖拽图层移动，拖动空白取消选中"));
         panel.Children.Add(ToolButton(WallpaperEditorTool.Select, "\uE5BE", "选择工具（S）：点击只选中图层，不拖拽"));
-        panel.Children.Add(ToolButton(WallpaperEditorTool.Zoom, "\uF4D0", "缩放工具（Z）：单击放大 / Alt+单击缩小 / 拖拽框选放大"));
-        panel.Children.Add(ToolButton(WallpaperEditorTool.Shape, "\uE774", "形状工具（U）：点击选择形状类型并进入绘制"));
+        panel.Children.Add(ToolButton(WallpaperEditorTool.Zoom, "\uF4D0", "缩放工具（Z）：单击放大 / Alt+单击缩小 / 拖拽框选放大；Ctrl + / Ctrl - 也可缩放"));
+        panel.Children.Add(ToolButton(WallpaperEditorTool.Shape, "\uE774", "形状工具（U）：拖拽绘制矩形；创建后可在右侧修改形状类型"));
         panel.Children.Add(ToolButton(WallpaperEditorTool.Text, "\uF1BD", "文本工具（T）：点击插入文本框图层"));
         panel.Children.Add(new Separator { Margin = new Thickness(2, 5) });
         panel.Children.Add(ToolActionButton("\uEBCA", "添加 SMTC 图层", "把当前播放的专辑封面作为新的底图图层（无播放时显示占位封面）", AddSmtcLayer));
@@ -291,14 +291,9 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         ToolTip.SetTip(button, tip);
         button.Click += (_, _) =>
         {
-            if (tool == WallpaperEditorTool.Shape)
-            {
-                ShowShapeFlyout(button);
-            }
-            else
-            {
-                _canvas.Tool = tool;
-            }
+            // MenuFlyout 在宿主的 FluentAvalonia 2.4.1 中会在 PointerExited 时抛空引用，
+            // 因此此处不再弹出菜单。先直接绘制矩形，创建后可在检查器切换其它形状。
+            _canvas.Tool = tool;
         };
         _toolButtons[tool] = button;
         return button;
@@ -319,31 +314,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         ToolTip.SetTip(button, $"{label}：{tip}");
         button.Click += (_, _) => action();
         return button;
-    }
-
-    /// <summary>形状工具的下拉菜单：选择形状类型并进入形状工具。</summary>
-    private void ShowShapeFlyout(Button anchor)
-    {
-        var flyout = new MenuFlyout();
-        foreach (var (type, name) in new[]
-                 {
-                     (WallpaperShapeType.Rectangle, "矩形"),
-                     (WallpaperShapeType.Ellipse, "椭圆"),
-                     (WallpaperShapeType.Line, "直线"),
-                     (WallpaperShapeType.Triangle, "三角形")
-                 })
-        {
-            var t = type;
-            var item = new MenuFlyoutItem { Text = name };
-            item.Click += (_, _) =>
-            {
-                _canvas.ShapeToolType = t;
-                _canvas.Tool = WallpaperEditorTool.Shape;
-            };
-            flyout.Items.Add(item);
-        }
-
-        flyout.ShowAt(anchor);
     }
 
     /// <summary>按当前工具刷新工具栏按钮的选中态（强调色底 + 白色图标）。</summary>

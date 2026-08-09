@@ -113,6 +113,12 @@ internal sealed class WallpaperLayerCanvas : UserControl
     private WallpaperEditorTool _tool = WallpaperEditorTool.Move;
     /// <summary>形状工具当前形状类型。</summary>
     private WallpaperShapeType _shapeToolType = WallpaperShapeType.Rectangle;
+    /// <summary>当前位于舞台上的触摸点；用于空白处平移和双指捏合缩放。</summary>
+    private readonly Dictionary<IPointer, Point> _touchPoints = [];
+    private bool _isPinching;
+    private Point _pinchCenter;
+    private double _pinchStartDistance;
+    private double _pinchStartZoom;
 
     public event Action? EditStarted;
     public event Action? Edited;
@@ -267,6 +273,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
         _stage.PointerPressed += StageOnPointerPressed;
         _stage.PointerMoved += StageOnPointerMoved;
         _stage.PointerReleased += StageOnPointerReleased;
+        _stage.PointerCaptureLost += StageOnPointerCaptureLost;
+        _stage.PointerWheelChanged += StageOnPointerWheelChanged;
         KeyDown += CanvasOnKeyDown;
 
         _stageHost.Child = _stage;
@@ -969,13 +977,39 @@ internal sealed class WallpaperLayerCanvas : UserControl
     private void StageOnPointerPressed(object? sender, PointerPressedEventArgs e)
     {
         var point = e.GetCurrentPoint(_stage);
+        var pos = point.Position;
+        if (e.Pointer.Type == PointerType.Touch)
+        {
+            _touchPoints[e.Pointer] = pos;
+            if (_touchPoints.Count >= 2)
+            {
+                BeginPinch();
+                e.Handled = true;
+                return;
+            }
+
+            // 触屏在空白画布上拖动 = 平移视图；在图层上按下仍保留原有编辑行为。
+            if (HitTestLayer(pos) == null && !IsInsideIsland(pos))
+            {
+                Focus();
+                _drag = new DragState
+                {
+                    Kind = DragKind.Pan,
+                    Pointer = e.Pointer,
+                    StartPointer = pos,
+                    StartScrollOffset = _scrollViewer.Offset
+                };
+                e.Handled = true;
+                return;
+            }
+        }
+
         if (!point.Properties.IsLeftButtonPressed)
         {
             return;
         }
 
         Focus();
-        var pos = point.Position;
         switch (_tool)
         {
             case WallpaperEditorTool.Select:
@@ -1009,6 +1043,24 @@ internal sealed class WallpaperLayerCanvas : UserControl
 
     private void StageOnPointerMoved(object? sender, PointerEventArgs e)
     {
+        if (e.Pointer.Type == PointerType.Touch && _touchPoints.ContainsKey(e.Pointer))
+        {
+            _touchPoints[e.Pointer] = e.GetPosition(_stage);
+            if (_isPinching)
+            {
+                UpdatePinch();
+                e.Handled = true;
+                return;
+            }
+
+            if (_drag is { Kind: DragKind.Pan } pan && ReferenceEquals(pan.Pointer, e.Pointer))
+            {
+                UpdatePan(pan, e.GetPosition(_stage));
+                e.Handled = true;
+                return;
+            }
+        }
+
         switch (_drag?.Kind)
         {
             case DragKind.ZoomMarquee:
@@ -1028,6 +1080,24 @@ internal sealed class WallpaperLayerCanvas : UserControl
 
     private void StageOnPointerReleased(object? sender, PointerReleasedEventArgs e)
     {
+        if (e.Pointer.Type == PointerType.Touch)
+        {
+            var wasPan = _drag is { Kind: DragKind.Pan } pan && ReferenceEquals(pan.Pointer, e.Pointer);
+            var wasPinching = _isPinching;
+            _touchPoints.Remove(e.Pointer);
+            if (_touchPoints.Count < 2)
+            {
+                _isPinching = false;
+            }
+
+            if (wasPan || wasPinching)
+            {
+                _drag = null;
+                e.Handled = true;
+                return;
+            }
+        }
+
         switch (_drag?.Kind)
         {
             case DragKind.ZoomMarquee:
@@ -1051,6 +1121,79 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 break;
         }
     }
+
+    /// <summary>触摸点被系统取消捕获时清理对应的平移/捏合状态。</summary>
+    private void StageOnPointerCaptureLost(object? sender, PointerCaptureLostEventArgs e)
+    {
+        if (e.Pointer.Type != PointerType.Touch)
+        {
+            return;
+        }
+
+        _touchPoints.Remove(e.Pointer);
+        if (_drag is { Kind: DragKind.Pan } pan && ReferenceEquals(pan.Pointer, e.Pointer))
+        {
+            _drag = null;
+        }
+
+        if (_touchPoints.Count < 2)
+        {
+            _isPinching = false;
+        }
+    }
+
+    /// <summary>触控板/鼠标滚轮平移；Ctrl + 滚轮按光标位置缩放。</summary>
+    private void StageOnPointerWheelChanged(object? sender, PointerWheelEventArgs e)
+    {
+        if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            var factor = Math.Pow(1.15, e.Delta.Y);
+            ZoomTo(e.GetPosition(_stage), _zoom * factor);
+        }
+        else
+        {
+            // 触控板的双指滚动会作为 PointerWheel 发送；同时处理水平和垂直分量。
+            SetScrollOffset(_scrollViewer.Offset - new Vector(e.Delta.X * 48, e.Delta.Y * 48));
+        }
+
+        e.Handled = true;
+    }
+
+    /// <summary>开始双指捏合，固定两指中点以避免缩放时画面跳动。</summary>
+    private void BeginPinch()
+    {
+        var pair = _touchPoints.Values.Take(2).ToArray();
+        _pinchCenter = new Point((pair[0].X + pair[1].X) / 2, (pair[0].Y + pair[1].Y) / 2);
+        _pinchStartDistance = Distance(pair[0], pair[1]);
+        _pinchStartZoom = _zoom;
+        _isPinching = _pinchStartDistance > 0.1;
+        _drag = null;
+    }
+
+    /// <summary>按两指距离比例更新缩放。</summary>
+    private void UpdatePinch()
+    {
+        if (!_isPinching || _touchPoints.Count < 2)
+        {
+            return;
+        }
+
+        var pair = _touchPoints.Values.Take(2).ToArray();
+        var distance = Distance(pair[0], pair[1]);
+        if (distance > 0.1)
+        {
+            ZoomTo(_pinchCenter, _pinchStartZoom * distance / _pinchStartDistance);
+        }
+    }
+
+    /// <summary>手指拖动画布空白区时平移滚动视口。</summary>
+    private void UpdatePan(DragState drag, Point pointer)
+    {
+        var delta = pointer - drag.StartPointer;
+        SetScrollOffset(drag.StartScrollOffset - new Vector(delta.X * _zoom, delta.Y * _zoom));
+    }
+
+    private static double Distance(Point a, Point b) => Math.Sqrt(Math.Pow(a.X - b.X, 2) + Math.Pow(a.Y - b.Y, 2));
 
     // ============ 工具实现 ============
 
@@ -1220,10 +1363,10 @@ internal sealed class WallpaperLayerCanvas : UserControl
         }
 
         var offset = _scrollViewer.Offset;
-        var ox = offset.X + logicalPos.X * (oldZoom - newZoom);
-        var oy = offset.Y + logicalPos.Y * (oldZoom - newZoom);
+        var ox = offset.X + logicalPos.X * (newZoom - oldZoom);
+        var oy = offset.Y + logicalPos.Y * (newZoom - oldZoom);
         Zoom = newZoom;
-        _scrollViewer.Offset = new Vector(Math.Max(0, ox), Math.Max(0, oy));
+        SetScrollOffset(new Vector(ox, oy));
     }
 
     /// <summary>把逻辑坐标矩形放大到铺满视图。</summary>
@@ -1239,9 +1382,17 @@ internal sealed class WallpaperLayerCanvas : UserControl
         var newZoom = Math.Clamp(_zoom * scale, 0.4, 2.5);
         var center = new Point(logicalRect.X + logicalRect.Width / 2, logicalRect.Y + logicalRect.Height / 2);
         Zoom = newZoom;
-        _scrollViewer.Offset = new Vector(
-            Math.Max(0, center.X * newZoom - viewport.Width / 2),
-            Math.Max(0, center.Y * newZoom - viewport.Height / 2));
+        SetScrollOffset(new Vector(
+            center.X * newZoom - viewport.Width / 2,
+            center.Y * newZoom - viewport.Height / 2));
+    }
+
+    /// <summary>将滚动偏移限制在当前画布内容边界内。</summary>
+    private void SetScrollOffset(Vector offset)
+    {
+        var maxX = Math.Max(0, _scrollViewer.Extent.Width - _scrollViewer.Viewport.Width);
+        var maxY = Math.Max(0, _scrollViewer.Extent.Height - _scrollViewer.Viewport.Height);
+        _scrollViewer.Offset = new Vector(Math.Clamp(offset.X, 0, maxX), Math.Clamp(offset.Y, 0, maxY));
     }
 
     /// <summary>把普通两点矩形归一化为左上 + 宽高的矩形。</summary>
@@ -1789,6 +1940,23 @@ internal sealed class WallpaperLayerCanvas : UserControl
 
     private void CanvasOnKeyDown(object? sender, KeyEventArgs e)
     {
+        if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            switch (e.Key)
+            {
+                case Key.OemPlus:
+                case Key.Add:
+                    ZoomAtViewportCenter(1.15);
+                    e.Handled = true;
+                    return;
+                case Key.OemMinus:
+                case Key.Subtract:
+                    ZoomAtViewportCenter(1 / 1.15);
+                    e.Handled = true;
+                    return;
+            }
+        }
+
         var layer = SelectedLayer;
         switch (e.Key)
         {
@@ -1841,6 +2009,17 @@ internal sealed class WallpaperLayerCanvas : UserControl
         }
     }
 
+    /// <summary>以当前视口中心为锚点进行快捷键缩放。</summary>
+    private void ZoomAtViewportCenter(double factor)
+    {
+        var viewport = _scrollViewer.Viewport;
+        var offset = _scrollViewer.Offset;
+        var center = new Point(
+            (offset.X + viewport.Width / 2) / _zoom,
+            (offset.Y + viewport.Height / 2) / _zoom);
+        ZoomTo(center, _zoom * factor);
+    }
+
     private void Nudge(WallpaperLayerItem? layer, double dx, double dy, bool large)
     {
         if (layer == null || _lockedIds.Contains(layer.Id))
@@ -1866,7 +2045,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
         Rotate,
         IslandResize,
         ZoomMarquee,
-        ShapeDraw
+        ShapeDraw,
+        Pan
     }
 
     private sealed class DragState
@@ -1874,6 +2054,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
         public WallpaperLayerItem? Layer;
         public DragKind Kind;
         public Point StartPointer;
+        public IPointer? Pointer;
+        public Vector StartScrollOffset;
         public Rect StartRect;
         public double StartIslandW;
         public double StartIslandH;
