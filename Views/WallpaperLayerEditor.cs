@@ -62,6 +62,28 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private Control _smtcModeItem = null!;
     /// <summary>显示方式行（仅位图图层显示）。</summary>
     private Control _displayModeItem = null!;
+    // 全屏扩展 / 九宫格切图（仅图片图层）
+    private readonly ToggleSwitch _fullscreenToggle = new() { OnContent = "开", OffContent = "关" };
+    private readonly ToggleSwitch _sliceToggle = new() { OnContent = "开", OffContent = "关" };
+    private readonly EditorSpin _sliceLeftSpin = new(0, 5000, 1, "0");
+    private readonly EditorSpin _sliceTopSpin = new(0, 5000, 1, "0");
+    private readonly EditorSpin _sliceRightSpin = new(0, 5000, 1, "0");
+    private readonly EditorSpin _sliceBottomSpin = new(0, 5000, 1, "0");
+    private readonly Button _editSliceButton = new() { Content = "编辑切图" };
+    private Control _fullscreenItem = null!;
+    private Control _sliceItem = null!;
+    private Control _editSliceItem = null!;
+    private Control _sliceLeftItem = null!;
+    private Control _sliceTopItem = null!;
+    private Control _sliceRightItem = null!;
+    private Control _sliceBottomItem = null!;
+    /// <summary>全屏扩展说明。</summary>
+    private readonly TextBlock _fullscreenHint = new()
+    {
+        TextWrapping = TextWrapping.Wrap,
+        Opacity = 0.75,
+        FontSize = 12
+    };
     // 形状图层检查器
     private readonly ComboBox _shapeTypeBox = new() { MinWidth = 140 };
     private readonly ColorPicker _shapeFillPicker = ColorPicker();
@@ -69,7 +91,13 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private readonly EditorSpin _shapeStrokeSpin = new(0, 40, 0.25, "0.##");
     private readonly ToggleSwitch _shapeFillThemeToggle = new() { OnContent = "开", OffContent = "关" };
     private readonly ToggleSwitch _shapeStrokeThemeToggle = new() { OnContent = "开", OffContent = "关" };
+    private readonly EditorSpin _shapeCornerRadiusSpin = new(0, 100, 1, "0");
+    private readonly EditorSpin _shapeStarPointsSpin = new(3, 16, 1, "0");
+    private readonly EditorSpin _shapeStarInsetSpin = new(0.1, 0.95, 0.05, "0.##");
     private Control _shapeTypeItem = null!;
+    private Control _shapeCornerRadiusItem = null!;
+    private Control _shapeStarPointsItem = null!;
+    private Control _shapeStarInsetItem = null!;
     private Control _shapeFillItem = null!;
     private Control _shapeStrokeItem = null!;
     private Control _shapeStrokeWidthItem = null!;
@@ -82,12 +110,20 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private readonly ColorPicker _textColorPicker = ColorPicker();
     private readonly ToggleSwitch _textColorThemeToggle = new() { OnContent = "开", OffContent = "关" };
     private readonly ToggleSwitch _textBoldToggle = new() { OnContent = "开", OffContent = "关" };
+    private readonly ToggleSwitch _textStrokeToggle = new() { OnContent = "开", OffContent = "关" };
+    private readonly ColorPicker _textStrokeColorPicker = ColorPicker();
+    private readonly EditorSpin _textStrokeThicknessSpin = new(0, 20, 0.25, "0.##");
+    private readonly ToggleSwitch _textUseSmtcTitleToggle = new() { OnContent = "开", OffContent = "关" };
     private readonly ComboBox _textAlignBox = new() { MinWidth = 140 };
     private Control _textItem = null!;
     private Control _textFontSizeItem = null!;
     private Control _textFontFamilyItem = null!;
     private Control _textColorItem = null!;
     private Control _textColorThemeItem = null!;
+    private Control _textStrokeItem = null!;
+    private Control _textStrokeColorItem = null!;
+    private Control _textStrokeThicknessItem = null!;
+    private Control _textUseSmtcTitleItem = null!;
     private Control _textBoldItem = null!;
     private Control _textAlignItem = null!;
 
@@ -107,6 +143,11 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     /// <summary>命令栏组合/取消组合按钮（按选中状态启停）。</summary>
     private CommandBarButton _groupButton = null!;
     private CommandBarButton _ungroupButton = null!;
+    /// <summary>图层面板操作按钮（按选中状态启停；效果仅背景可用）。</summary>
+    private Button _newLayerButton = null!;
+    private Button _duplicateButton = null!;
+    private Button _deleteButton = null!;
+    private Button _effectButton = null!;
     /// <summary>拖拽排序：独立置顶的「幽灵快照」预览窗口（参考「主界面 → 组件」拖拽）。</summary>
     private Window? _dragPreviewWindow;
     private Border? _dragPreviewHost;
@@ -174,6 +215,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             RefreshInspector();
             UpdateStatus();
             UpdateGroupButtons();
+            UpdateLayerActionButtons();
         };
         _canvas.IslandChanged += () =>
         {
@@ -215,36 +257,61 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             }
         };
 
-        // ---- 右侧：图层面板 + 检查器（原生设置项平铺，不包裹卡片）----
-        // 布局参考弃用可视化编辑器：统一行高/间距；横向禁用滚动（避免右侧出现横向滚动条破坏观感）。
+        // ---- 右侧：上 = 属性检查器（可滚动），下 = 图层面板（固定在底部），
+        // 两区之间用水平手柄分割高度。----
         var layerListHost = new Grid { Children = { _layerStack, _reorderIndicator } };
-        var layersTitle = SectionTitle("\uEA2F", "图层");
         var inspector = BuildInspector();
-        var rightColumn = new ScrollViewer
+        // 上：属性检查器面板（无边框，仅用背景区分）。
+        var inspectorPanel = new Border
         {
             Background = ThemePalette.PanelBackground(),
-            BorderBrush = ThemePalette.SurfaceBorder(),
-            BorderThickness = new Thickness(1),
             Padding = new Thickness(12),
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            Content = new StackPanel
+            Child = new ScrollViewer
             {
-                Classes = { "settings-container" },
-                Spacing = 8,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                Content = inspector
+            }
+        };
+        // 下：图层面板（固定在底部，无边框）：图层列表（可滚动）+ 底部固定操作按钮行。
+        var layerActions = BuildLayerActions();
+        var layerPanel = new Border
+        {
+            Background = ThemePalette.PanelBackground(),
+            Padding = new Thickness(12),
+            MaxHeight = 340,
+            Child = new Grid
+            {
+                RowDefinitions = new RowDefinitions("*,Auto"),
                 Children =
                 {
-                    layersTitle,
                     new ScrollViewer
                     {
-                        MaxHeight = 320,
                         HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                        VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
                         Content = layerListHost
                     },
-                    new Separator { Margin = new Thickness(0, 8, 0, 8) },
-                    inspector
+                    layerActions
                 }
             }
         };
+        Grid.SetRow(layerActions, 1);
+        // 上下区之间的水平分割手柄（高度与横向间隙一致）。
+        var rowSplitter = new GridSplitter
+        {
+            Height = 8,
+            ResizeDirection = GridResizeDirection.Rows,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Center,
+            Background = Brushes.Transparent
+        };
+        // 两个区域 + 中间手柄。
+        var rightColumn = new Grid
+        {
+            RowDefinitions = new RowDefinitions("*,8,Auto"),
+            Children = { inspectorPanel, rowSplitter, layerPanel }
+        };
+        Grid.SetRow(rowSplitter, 1);
+        Grid.SetRow(layerPanel, 2);
 
         // 左侧工具栏（Photoshop 式）+ 舞台 + 右侧设置区之间加垂直分割手柄，可左右拖动调整宽度。
         var toolbar = new Border
@@ -271,13 +338,15 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         var body = new Grid
         {
             ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,330"),
-            ColumnSpacing = 10,
             Children = { toolbar, stageHost, columnSplitter, rightColumn }
         };
         Grid.SetColumn(toolbar, 0);
         Grid.SetColumn(stageHost, 1);
         Grid.SetColumn(columnSplitter, 2);
         Grid.SetColumn(rightColumn, 3);
+        // 统一左右间隙为 8px：左侧 = 工具栏右 margin；右侧 = 舞台右 margin(2) + 分割手柄(6)。
+        toolbar.Margin = new Thickness(0, 0, 8, 0);
+        stageHost.Margin = new Thickness(0, 0, 2, 0);
 
         _body = body;
         _contentGrid = new Grid
@@ -294,6 +363,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         Content = _contentGrid;
         UpdateToolBarSelection();
         UpdateGroupButtons();
+        UpdateLayerActionButtons();
     }
 
     /// <summary>把 body（舞台 + 右侧栏）高度限制在当前可视区内，保证两侧严格等高且都在窗口内。</summary>
@@ -312,6 +382,74 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     }
 
     // ============ 左侧工具栏（Photoshop 式）============
+
+    /// <summary>图层面板底部的操作按钮行（纯图标 + 提示，固定在面板底边）。</summary>
+    private Control BuildLayerActions()
+    {
+        var panel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        _newLayerButton = LayerIconButton("\uE9B4", "新建图层（选择一张图片）", AddImageLayer);
+        _duplicateButton = LayerIconButton("\uE58B", "复制图层（Ctrl+J）", () => _canvas.DuplicateSelection());
+        _deleteButton = LayerIconButton("\uE61D", "删除图层", () =>
+        {
+            var layer = _canvas.SelectedLayer;
+            if (layer != null)
+            {
+                DeleteLayer(layer);
+            }
+        });
+        _effectButton = LayerIconButton("\uF42F", "效果选项（只作用于 ClassIsland 背景，需先点击背景行）", OpenBackgroundEffects);
+        panel.Children.Add(_newLayerButton);
+        panel.Children.Add(_duplicateButton);
+        panel.Children.Add(_deleteButton);
+        panel.Children.Add(_effectButton);
+        return panel;
+    }
+
+    /// <summary>图层面板操作按钮（纯图标，提示文字放 ToolTip）。</summary>
+    private static Button LayerIconButton(string glyph, string tooltip, Action action)
+    {
+        var button = new Button
+        {
+            Content = new IconText { Glyph = glyph, Text = string.Empty },
+            Padding = new Thickness(8, 5)
+        };
+        ToolTip.SetTip(button, tooltip);
+        button.Click += (_, _) => action();
+        return button;
+    }
+
+    /// <summary>按当前选中状态同步图层面板操作按钮：复制/删除仅选中图层可用；效果仅背景（无选中）可用。</summary>
+    private void UpdateLayerActionButtons()
+    {
+        var hasSelection = _canvas.SelectedLayer != null;
+        _duplicateButton.IsEnabled = hasSelection;
+        _deleteButton.IsEnabled = hasSelection;
+        _effectButton.IsEnabled = !hasSelection;
+    }
+
+    /// <summary>打开背景效果窗口（单例；已打开则聚焦）。</summary>
+    private void OpenBackgroundEffects()
+    {
+        if (BackgroundEffectsWindow.Current is { } existing)
+        {
+            existing.Activate();
+            return;
+        }
+
+        new BackgroundEffectsWindow().Show();
+    }
+
+    /// <summary>打开九宫格切图编辑器（在图片上框选切边，实时预览拉伸效果）。</summary>
+    private void OpenSliceEditor()
+    {
+        var layer = _canvas.SelectedLayer;
+        if (layer == null || _canvas.GetThumbnail(layer.Id) is not { } bitmap)
+        {
+            return;
+        }
+
+        new SliceEditorWindow(layer, bitmap).Show();
+    }
 
     /// <summary>构建左侧纵向工具栏：移动 / 选择 / 缩放 / 形状 / 文本。</summary>
     private Control BuildToolBar()
@@ -421,6 +559,63 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _nameBox.TextChanged += (_, _) => ApplyToSelected(l => l.Name = _nameBox.Text ?? "底图图层");
         _opacitySlider.ValueChanged += (_, _) => ApplyToSelected(l => l.Opacity = _opacitySlider.Value);
         _displayModeBox.SelectionChanged += (_, _) => ApplyToSelected(l => l.DisplayMode = Selected(_displayModeBox, WallpaperDisplayMode.Fill));
+        _fullscreenToggle.PropertyChanged += async (_, e) =>
+        {
+            if (_updatingInspector || e.Property != ToggleSwitch.IsCheckedProperty)
+            {
+                return;
+            }
+
+            if (_fullscreenToggle.IsChecked == true)
+            {
+                // 实验性功能：启用前弹窗警告。
+                var topLevel = TopLevel.GetTopLevel(this);
+                if (topLevel != null)
+                {
+                    var dialog = new ContentDialog
+                    {
+                        Title = "实验性功能警告",
+                        Content = "「扩展到整个显示框架」是实验性功能：启用后该图片会铺满整个 ClassIsland 主界面，并临时隐藏底色、边框与阴影。\n\n若图片比例与主界面不一致，请务必开启「九宫格切图」并对图片进行切图，防止拉伸变形。确定要启用吗？",
+                        PrimaryButtonText = "我已知晓并启用",
+                        CloseButtonText = "取消",
+                        DefaultButton = ContentDialogButton.Close
+                    };
+                    var result = await dialog.ShowAsync(topLevel);
+                    if (result != ContentDialogResult.Primary)
+                    {
+                        _fullscreenToggle.IsChecked = false;
+                        return;
+                    }
+                }
+
+                ApplyToSelected(l => { if (l.Kind == WallpaperLayerKind.Image) l.FullscreenExtend = true; });
+            }
+            else
+            {
+                ApplyToSelected(l => { if (l.Kind == WallpaperLayerKind.Image) l.FullscreenExtend = false; });
+            }
+
+            // 全屏扩展会切换画布渲染控件（普通 Image ↔ 九宫格），重新赋列表触发控件重建。
+            _canvas.Layers = _layers;
+        };
+        _sliceToggle.PropertyChanged += (_, e) =>
+        {
+            if (!_updatingInspector && e.Property == ToggleSwitch.IsCheckedProperty)
+            {
+                ApplyToSelected(l =>
+                {
+                    if (l.Kind == WallpaperLayerKind.Image)
+                    {
+                        l.SliceEnabled = _sliceToggle.IsChecked == true;
+                    }
+                });
+            }
+        };
+        _sliceLeftSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) ApplyToSelected(l => l.SliceLeft = _sliceLeftSpin.DoubleValue); };
+        _sliceTopSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) ApplyToSelected(l => l.SliceTop = _sliceTopSpin.DoubleValue); };
+        _sliceRightSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) ApplyToSelected(l => l.SliceRight = _sliceRightSpin.DoubleValue); };
+        _sliceBottomSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) ApplyToSelected(l => l.SliceBottom = _sliceBottomSpin.DoubleValue); };
+        _editSliceButton.Click += (_, _) => OpenSliceEditor();
         _shapeTypeBox.SelectionChanged += (_, _) => ApplyToSelected(l =>
         {
             if (l.Kind == WallpaperLayerKind.Shape)
@@ -477,6 +672,27 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 });
             }
         };
+        _shapeCornerRadiusSpin.PropertyChanged += (_, e) =>
+        {
+            if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty)
+            {
+                ApplyToSelected(l => { if (l.Kind == WallpaperLayerKind.Shape) l.ShapeCornerRadius = _shapeCornerRadiusSpin.DoubleValue; });
+            }
+        };
+        _shapeStarPointsSpin.PropertyChanged += (_, e) =>
+        {
+            if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty)
+            {
+                ApplyToSelected(l => { if (l.Kind == WallpaperLayerKind.Shape) l.ShapeStarPoints = (int)_shapeStarPointsSpin.DoubleValue; });
+            }
+        };
+        _shapeStarInsetSpin.PropertyChanged += (_, e) =>
+        {
+            if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty)
+            {
+                ApplyToSelected(l => { if (l.Kind == WallpaperLayerKind.Shape) l.ShapeStarInset = _shapeStarInsetSpin.DoubleValue; });
+            }
+        };
         _textBox.PropertyChanged += (_, e) =>
         {
             if (!_updatingInspector && e.Property == TextBox.TextProperty)
@@ -517,6 +733,34 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                         l.TextUsesThemeColor = on;
                     }
                 });
+            }
+        };
+        _textStrokeToggle.PropertyChanged += (_, e) =>
+        {
+            if (!_updatingInspector && e.Property == ToggleSwitch.IsCheckedProperty)
+            {
+                ApplyToSelected(l => { if (l.Kind == WallpaperLayerKind.Text) l.TextStrokeEnabled = _textStrokeToggle.IsChecked == true; });
+            }
+        };
+        _textStrokeColorPicker.PropertyChanged += (_, e) =>
+        {
+            if (!_updatingInspector && e.Property?.Name == "Color")
+            {
+                ApplyToSelected(l => { if (l.Kind == WallpaperLayerKind.Text) l.TextStrokeColor = _textStrokeColorPicker.Color.ToString(); });
+            }
+        };
+        _textStrokeThicknessSpin.PropertyChanged += (_, e) =>
+        {
+            if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty)
+            {
+                ApplyToSelected(l => { if (l.Kind == WallpaperLayerKind.Text) l.TextStrokeThickness = _textStrokeThicknessSpin.DoubleValue; });
+            }
+        };
+        _textUseSmtcTitleToggle.PropertyChanged += (_, e) =>
+        {
+            if (!_updatingInspector && e.Property == ToggleSwitch.IsCheckedProperty)
+            {
+                ApplyToSelected(l => { if (l.Kind == WallpaperLayerKind.Text) l.TextUseSmtcTitle = _textUseSmtcTitleToggle.IsChecked == true; });
             }
         };
         _textBoldToggle.PropertyChanged += (_, e) =>
@@ -571,16 +815,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             l.AnchorY = _anchorPicker.AnchorY;
         });
 
-        // 对齐按钮（图标）：横向 左/中/右，纵向 顶/中/底
-        var alignXRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
-        var alignYRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
-        alignXRow.Children.Add(AlignIconButton("\uE03B", "左对齐", () => SetAnchor(0, null)));
-        alignXRow.Children.Add(AlignIconButton("\uE033", "水平居中", () => SetAnchor(1, null)));
-        alignXRow.Children.Add(AlignIconButton("\uE03D", "右对齐", () => SetAnchor(2, null)));
-        alignYRow.Children.Add(AlignIconButton("\uE057", "顶对齐", () => SetAnchor(null, 0)));
-        alignYRow.Children.Add(AlignIconButton("\uE035", "垂直居中", () => SetAnchor(null, 1)));
-        alignYRow.Children.Add(AlignIconButton("\uE031", "底对齐", () => SetAnchor(null, 2)));
-
         // 设置项平铺：小标题分组，不包裹卡片（参考弃用可视化编辑器的检查器罗列方式：
         // 分组小标题 + 每行「标签 | 控件」，统一行高、统一间距，视觉更整齐）。
         var inspector = new StackPanel { Spacing = 8 };
@@ -599,14 +833,36 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         inspector.Children.Add(SettingsRow("不透明度", _opacitySlider));
         _displayModeItem = SettingsRow("显示方式", _displayModeBox);
         inspector.Children.Add(_displayModeItem);
+        // 全屏扩展 + 九宫格切图（仅图片图层）
+        _fullscreenItem = SettingsRow("扩展到整个显示框架", _fullscreenToggle);
+        _sliceItem = SettingsRow("启用九宫格切图", _sliceToggle);
+        _editSliceItem = SettingsRow("切图编辑", _editSliceButton);
+        _sliceLeftItem = SettingsRow("左切边 (px)", _sliceLeftSpin);
+        _sliceTopItem = SettingsRow("上切边 (px)", _sliceTopSpin);
+        _sliceRightItem = SettingsRow("右切边 (px)", _sliceRightSpin);
+        _sliceBottomItem = SettingsRow("下切边 (px)", _sliceBottomSpin);
+        inspector.Children.Add(_fullscreenItem);
+        inspector.Children.Add(_sliceItem);
+        inspector.Children.Add(_editSliceItem);
+        inspector.Children.Add(_sliceLeftItem);
+        inspector.Children.Add(_sliceTopItem);
+        inspector.Children.Add(_sliceRightItem);
+        inspector.Children.Add(_sliceBottomItem);
+        inspector.Children.Add(_fullscreenHint);
         // 形状图层专属（仅选中形状图层时显示）
         _shapeTypeItem = SettingsRow("形状类型", _shapeTypeBox);
+        _shapeCornerRadiusItem = SettingsRow("圆角半径", _shapeCornerRadiusSpin);
+        _shapeStarPointsItem = SettingsRow("星角数", _shapeStarPointsSpin);
+        _shapeStarInsetItem = SettingsRow("内凹比例", _shapeStarInsetSpin);
         _shapeFillItem = SettingsRow("填充色", _shapeFillPicker);
         _shapeFillThemeItem = SettingsRow("填充色跟随主题", _shapeFillThemeToggle);
         _shapeStrokeItem = SettingsRow("描边色", _shapeStrokePicker);
         _shapeStrokeThemeItem = SettingsRow("描边色跟随主题", _shapeStrokeThemeToggle);
         _shapeStrokeWidthItem = SettingsRow("描边粗细", _shapeStrokeSpin);
         inspector.Children.Add(_shapeTypeItem);
+        inspector.Children.Add(_shapeCornerRadiusItem);
+        inspector.Children.Add(_shapeStarPointsItem);
+        inspector.Children.Add(_shapeStarInsetItem);
         inspector.Children.Add(_shapeFillItem);
         inspector.Children.Add(_shapeFillThemeItem);
         inspector.Children.Add(_shapeStrokeItem);
@@ -618,6 +874,10 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _textFontFamilyItem = SettingsRow("字体", _textFontFamilyBox);
         _textColorItem = SettingsRow("文字颜色", _textColorPicker);
         _textColorThemeItem = SettingsRow("文字颜色跟随主题", _textColorThemeToggle);
+        _textStrokeItem = SettingsRow("文字描边", _textStrokeToggle);
+        _textStrokeColorItem = SettingsRow("描边颜色", _textStrokeColorPicker);
+        _textStrokeThicknessItem = SettingsRow("描边粗细", _textStrokeThicknessSpin);
+        _textUseSmtcTitleItem = SettingsRow("显示为媒体标题", _textUseSmtcTitleToggle);
         _textBoldItem = SettingsRow("加粗", _textBoldToggle);
         _textAlignItem = SettingsRow("水平对齐", _textAlignBox);
         inspector.Children.Add(_textItem);
@@ -625,6 +885,10 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         inspector.Children.Add(_textFontFamilyItem);
         inspector.Children.Add(_textColorItem);
         inspector.Children.Add(_textColorThemeItem);
+        inspector.Children.Add(_textStrokeItem);
+        inspector.Children.Add(_textStrokeColorItem);
+        inspector.Children.Add(_textStrokeThicknessItem);
+        inspector.Children.Add(_textUseSmtcTitleItem);
         inspector.Children.Add(_textBoldItem);
         inspector.Children.Add(_textAlignItem);
         _widthItem = SettingsRow("宽度 (px)", _widthSpin);
@@ -640,8 +904,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         inspector.Children.Add(SettingsRow("水平偏移 (px)", _offsetXSpin));
         inspector.Children.Add(SettingsRow("垂直偏移 (px)", _offsetYSpin));
         inspector.Children.Add(_relativeHint);
-        inspector.Children.Add(SettingsRow("水平对齐", alignXRow));
-        inspector.Children.Add(SettingsRow("垂直对齐", alignYRow));
         inspector.Children.Add(SettingsRow("重置变换", Button("重置变换", ResetLayerTransform)));
         return inspector;
     }
@@ -678,39 +940,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         };
         Grid.SetColumn(footer, 1);
         return row;
-    }
-
-    /// <summary>对齐图标按钮。</summary>
-    private static Button AlignIconButton(string glyph, string tooltip, Action action)
-    {
-        var button = new Button
-        {
-            Content = new IconText { Glyph = glyph, Text = string.Empty },
-            Padding = new Thickness(8, 5)
-        };
-        ToolTip.SetTip(button, tooltip);
-        button.Click += (_, _) => action();
-        return button;
-    }
-
-    /// <summary>把选中图层水平/垂直对齐到岛屿对应参考点（等价于把锚点设为对应值并清零偏移）。</summary>
-    private void SetAnchor(int? xIndex, int? yIndex)
-    {
-        ApplyToSelected(l =>
-        {
-            if (xIndex is { } xi)
-            {
-                l.AnchorX = xi switch { 0 => WallpaperLayerAnchorX.Left, 1 => WallpaperLayerAnchorX.Center, _ => WallpaperLayerAnchorX.Right };
-                l.OffsetX = 0;
-            }
-
-            if (yIndex is { } yi)
-            {
-                l.AnchorY = yi switch { 0 => WallpaperLayerAnchorY.Top, 1 => WallpaperLayerAnchorY.Center, _ => WallpaperLayerAnchorY.Bottom };
-                l.OffsetY = 0;
-            }
-        });
-        UpdateStatus();
     }
 
     private void ResetLayerTransform()
@@ -1013,6 +1242,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             null);
         // 背景行可拖拽调整层级：顶部 = 底色之后，底部 = 底色之上、组件之下。
         islandRow.DragHandlePressed += e => BeginBackgroundReorder(islandRow, e);
+        // 双击背景行 = 打开背景效果窗口（与 Photoshop 双击图层唤出效果一致）。
+        islandRow.DoubleTapRequested += OpenBackgroundEffects;
 
         // 背景行位置跟随层级：底色之后 → 列表顶部（最前）；其余 → 列表底部（最后）。
         var islandAtTop = _canvas.ZOrder == WallpaperLayerZOrder.BehindBackground;
@@ -1458,6 +1689,14 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 _smtcModeBox.IsEnabled = false;
                 _smtcModeItem.IsVisible = false;
                 _displayModeItem.IsVisible = false;
+                _fullscreenItem.IsVisible = false;
+                _sliceItem.IsVisible = false;
+                _editSliceItem.IsVisible = false;
+                _sliceLeftItem.IsVisible = false;
+                _sliceTopItem.IsVisible = false;
+                _sliceRightItem.IsVisible = false;
+                _sliceBottomItem.IsVisible = false;
+                _fullscreenHint.IsVisible = false;
                 _fillIslandToggle.IsEnabled = false;
                 _widthSpin.IsEnabled = false;
                 _heightSpin.IsEnabled = false;
@@ -1466,6 +1705,9 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 _offsetYSpin.IsEnabled = false;
                 _anchorPicker.IsEnabled = false;
                 _shapeTypeItem.IsVisible = false;
+                _shapeCornerRadiusItem.IsVisible = false;
+                _shapeStarPointsItem.IsVisible = false;
+                _shapeStarInsetItem.IsVisible = false;
                 _shapeFillItem.IsVisible = false;
                 _shapeFillThemeItem.IsVisible = false;
                 _shapeStrokeItem.IsVisible = false;
@@ -1476,6 +1718,10 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 _textFontFamilyItem.IsVisible = false;
                 _textColorItem.IsVisible = false;
                 _textColorThemeItem.IsVisible = false;
+                _textStrokeItem.IsVisible = false;
+                _textStrokeColorItem.IsVisible = false;
+                _textStrokeThicknessItem.IsVisible = false;
+                _textUseSmtcTitleItem.IsVisible = false;
                 _textBoldItem.IsVisible = false;
                 _textAlignItem.IsVisible = false;
                 _relativeHint.Text = "未选中图层。点击画布上的图层，或在左侧图层面板选择。";
@@ -1496,7 +1742,23 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             _smtcModeBox.IsEnabled = true;
             _smtcModeItem.IsVisible = layer.Source == WallpaperSource.SmtcAlbum;
             _displayModeItem.IsVisible = layer.Kind == WallpaperLayerKind.Image;
+            var isFullscreen = layer.Kind == WallpaperLayerKind.Image && layer.FullscreenExtend;
+            _fullscreenItem.IsVisible = layer.Kind == WallpaperLayerKind.Image;
+            _sliceItem.IsVisible = isFullscreen;
+            _editSliceItem.IsVisible = isFullscreen && layer.SliceEnabled;
+            _sliceLeftItem.IsVisible = isFullscreen && layer.SliceEnabled;
+            _sliceTopItem.IsVisible = isFullscreen && layer.SliceEnabled;
+            _sliceRightItem.IsVisible = isFullscreen && layer.SliceEnabled;
+            _sliceBottomItem.IsVisible = isFullscreen && layer.SliceEnabled;
+            _fullscreenHint.IsVisible = isFullscreen;
+            _fullscreenHint.Text = isFullscreen
+                ? "该图片将铺满整个 ClassIsland 显示框架，运行时隐藏底色、边框与阴影。开启「九宫格切图」后点击「编辑切图」，可在图片上直接框选四条切边防止四角拉伸变形。"
+                : string.Empty;
             _shapeTypeItem.IsVisible = isShape;
+            // 圆角半径仅圆角矩形、星角/内凹仅五角星显示；属性值在 ShapeType 变化时由读值刷新。
+            _shapeCornerRadiusItem.IsVisible = isShape && layer.ShapeType == WallpaperShapeType.RoundedRectangle;
+            _shapeStarPointsItem.IsVisible = isShape && layer.ShapeType == WallpaperShapeType.Star;
+            _shapeStarInsetItem.IsVisible = isShape && layer.ShapeType == WallpaperShapeType.Star;
             _shapeFillItem.IsVisible = isShape;
             _shapeFillThemeItem.IsVisible = isShape;
             _shapeStrokeItem.IsVisible = isShape;
@@ -1507,6 +1769,10 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             _textFontFamilyItem.IsVisible = isText;
             _textColorItem.IsVisible = isText;
             _textColorThemeItem.IsVisible = isText;
+            _textStrokeItem.IsVisible = isText;
+            _textStrokeColorItem.IsVisible = isText && layer.TextStrokeEnabled;
+            _textStrokeThicknessItem.IsVisible = isText && layer.TextStrokeEnabled;
+            _textUseSmtcTitleItem.IsVisible = isText;
             _textBoldItem.IsVisible = isText;
             _textAlignItem.IsVisible = isText;
             // 默认处理模式：锁定尺寸/位移/旋转，强制铺满岛屿。
@@ -1520,8 +1786,17 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             _nameBox.Text = layer.Name;
             _opacitySlider.Value = layer.Opacity;
             _displayModeBox.SelectedItem = DisplayModeChoices.FirstOrDefault(c => c.Value == layer.DisplayMode) ?? DisplayModeChoices[0];
+            _fullscreenToggle.IsChecked = layer.FullscreenExtend;
+            _sliceToggle.IsChecked = layer.SliceEnabled;
+            _sliceLeftSpin.DoubleValue = layer.SliceLeft;
+            _sliceTopSpin.DoubleValue = layer.SliceTop;
+            _sliceRightSpin.DoubleValue = layer.SliceRight;
+            _sliceBottomSpin.DoubleValue = layer.SliceBottom;
             _smtcModeBox.SelectedItem = SmtcModeChoices.FirstOrDefault(c => c.Value == layer.SmtcMode) ?? SmtcModeChoices[0];
             _shapeTypeBox.SelectedItem = ShapeTypeChoices.FirstOrDefault(c => c.Value == layer.ShapeType) ?? ShapeTypeChoices[0];
+            _shapeCornerRadiusSpin.DoubleValue = layer.ShapeCornerRadius;
+            _shapeStarPointsSpin.DoubleValue = layer.ShapeStarPoints;
+            _shapeStarInsetSpin.DoubleValue = layer.ShapeStarInset;
             _shapeFillPicker.Color = InspectorColor(layer.FillColor, Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF), layer.FillUsesThemeColor);
             _shapeStrokePicker.Color = InspectorColor(layer.StrokeColor, Colors.White, layer.StrokeUsesThemeColor);
             _shapeStrokeSpin.DoubleValue = layer.StrokeThickness;
@@ -1531,6 +1806,10 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 .FirstOrDefault(font => string.Equals(font.Name, layer.TextFontFamily, StringComparison.CurrentCultureIgnoreCase))
                 ?? FontFamily.Default;
             _textColorPicker.Color = InspectorColor(layer.TextColor, Colors.White, layer.TextUsesThemeColor);
+            _textStrokeToggle.IsChecked = layer.TextStrokeEnabled;
+            _textStrokeColorPicker.Color = ReadColor(layer.TextStrokeColor, Colors.Black);
+            _textStrokeThicknessSpin.DoubleValue = layer.TextStrokeThickness;
+            _textUseSmtcTitleToggle.IsChecked = layer.TextUseSmtcTitle;
             _textBoldToggle.IsChecked = layer.TextBold;
             _textAlignBox.SelectedItem = TextAlignChoices.FirstOrDefault(c => c.Value == layer.TextAlign) ?? TextAlignChoices[1];
             _fillIslandToggle.IsChecked = smtcDefault || layer.SizeMode == WallpaperLayerSizeMode.FillIsland;
@@ -1773,9 +2052,16 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private static string ShapeTypeName(WallpaperShapeType type) => type switch
     {
         WallpaperShapeType.Rectangle => "矩形",
+        WallpaperShapeType.RoundedRectangle => "圆角矩形",
         WallpaperShapeType.Ellipse => "椭圆",
         WallpaperShapeType.Line => "直线",
         WallpaperShapeType.Triangle => "三角形",
+        WallpaperShapeType.Diamond => "菱形",
+        WallpaperShapeType.Pentagon => "五边形",
+        WallpaperShapeType.Hexagon => "六边形",
+        WallpaperShapeType.Star => "五角星",
+        WallpaperShapeType.Heart => "心形",
+        WallpaperShapeType.Parallelogram => "平行四边形",
         _ => "矩形"
     };
 
@@ -1809,9 +2095,16 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private static readonly Pick<WallpaperShapeType>[] ShapeTypeChoices =
     [
         new(WallpaperShapeType.Rectangle, "矩形"),
+        new(WallpaperShapeType.RoundedRectangle, "圆角矩形"),
         new(WallpaperShapeType.Ellipse, "椭圆"),
         new(WallpaperShapeType.Line, "直线"),
         new(WallpaperShapeType.Triangle, "三角形"),
+        new(WallpaperShapeType.Diamond, "菱形"),
+        new(WallpaperShapeType.Pentagon, "五边形"),
+        new(WallpaperShapeType.Hexagon, "六边形"),
+        new(WallpaperShapeType.Star, "五角星"),
+        new(WallpaperShapeType.Heart, "心形"),
+        new(WallpaperShapeType.Parallelogram, "平行四边形"),
     ];
 
     private static readonly Pick<WallpaperTextAlign>[] TextAlignChoices =
@@ -1853,6 +2146,12 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
 
         /// <summary>拖拽手柄按下（用于图层列表排序）。</summary>
         public event Action<PointerPressedEventArgs>? DragHandlePressed;
+        /// <summary>内容区双击（用于唤出背景效果窗口）。</summary>
+        public event Action? DoubleTapRequested;
+
+        private DateTime _lastPressUtc = DateTime.MinValue;
+        private double _lastPressX;
+        private double _lastPressY;
 
         public LayerRowControl WithHandlers(Action<bool>? select, Action? visibility, Action? lockAction, Action? delete)
         {
@@ -1959,6 +2258,18 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             {
                 if (e.GetCurrentPoint(contentArea).Properties.IsLeftButtonPressed)
                 {
+                    var now = DateTime.UtcNow;
+                    var pos = e.GetPosition(this);
+                    // 500ms 内、位移小于 8px 的连续两次左键点击 = 双击。
+                    if ((now - _lastPressUtc).TotalMilliseconds < 500 &&
+                        Math.Abs(pos.X - _lastPressX) < 8 && Math.Abs(pos.Y - _lastPressY) < 8)
+                    {
+                        DoubleTapRequested?.Invoke();
+                    }
+
+                    _lastPressUtc = now;
+                    _lastPressX = pos.X;
+                    _lastPressY = pos.Y;
                     var ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
                     _select?.Invoke(ctrl);
                 }

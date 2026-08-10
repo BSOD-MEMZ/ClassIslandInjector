@@ -8,11 +8,13 @@ namespace ClassIslandInjector;
 /// </summary>
 internal sealed class SmtcMediaChangedEventArgs : EventArgs
 {
-    public SmtcMediaChangedEventArgs(AlbumAccentColors? colors, byte[]? thumbnailBytes, bool isPlaying)
+    public SmtcMediaChangedEventArgs(AlbumAccentColors? colors, byte[]? thumbnailBytes, bool isPlaying, string? title, string? artist)
     {
         Colors = colors;
         ThumbnailBytes = thumbnailBytes;
         IsPlaying = isPlaying;
+        Title = title ?? string.Empty;
+        Artist = artist ?? string.Empty;
     }
 
     /// <summary>从专辑封面提取的 Material You 颜色；无缩略图时为 null。</summary>
@@ -23,6 +25,12 @@ internal sealed class SmtcMediaChangedEventArgs : EventArgs
 
     /// <summary>当前焦点会话是否正在播放；暂停/停止时为 false。</summary>
     public bool IsPlaying { get; }
+
+    /// <summary>当前媒体的标题（无媒体时为空字符串）。</summary>
+    public string Title { get; }
+
+    /// <summary>当前媒体的艺术家（无媒体时为空字符串）。</summary>
+    public string Artist { get; }
 }
 
 /// <summary>
@@ -282,7 +290,7 @@ internal sealed class SmtcWatcher : IDisposable
                 }
 
                 SmtcAlbumColorPicker.LogDiagnostic("SMTC 媒体停止: 无当前会话，通知恢复原色");
-                MediaChanged?.Invoke(this, new SmtcMediaChangedEventArgs(null, null, false));
+                MediaChanged?.Invoke(this, new SmtcMediaChangedEventArgs(null, null, false, string.Empty, string.Empty));
                 return;
             }
 
@@ -322,7 +330,8 @@ internal sealed class SmtcWatcher : IDisposable
             SmtcAlbumColorPicker.LogDiagnostic(
                 $"SMTC 媒体变化: 会话={session.SourceAppUserModelId}, 播放={isPlaying}, 标题={mediaProperties.Title}, " +
                 $"缩略图={bytes?.Length ?? 0} 字节, 颜色={(colors is null ? "null" : $"{colors.Background}")}");
-            MediaChanged?.Invoke(this, new SmtcMediaChangedEventArgs(colors, bytes, isPlaying));
+            MediaChanged?.Invoke(this, new SmtcMediaChangedEventArgs(colors, bytes, isPlaying,
+                mediaProperties.Title, mediaProperties.Artist));
         }
         catch (Exception ex)
         {

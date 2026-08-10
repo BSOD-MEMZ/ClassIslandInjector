@@ -222,9 +222,16 @@ public enum WallpaperLayerKind
 public enum WallpaperShapeType
 {
     Rectangle,
+    RoundedRectangle,
     Ellipse,
     Line,
-    Triangle
+    Triangle,
+    Diamond,
+    Pentagon,
+    Hexagon,
+    Star,
+    Heart,
+    Parallelogram
 }
 
 /// <summary>
@@ -305,8 +312,33 @@ public sealed class WallpaperLayerItem
     /// <summary>图层内容类型（位图 / 矢量形状 / 文本框）。</summary>
     public WallpaperLayerKind Kind { get; set; } = WallpaperLayerKind.Image;
 
+    /// <summary>是否扩展到整个 ClassIsland 显示框架：忽略锚点/尺寸，铺满主界面
+    /// （启用时运行时隐藏底色、边框、阴影）。</summary>
+    public bool FullscreenExtend { get; set; }
+
+    /// <summary>全屏扩展时是否启用九宫格切图（防变形拉伸）。</summary>
+    public bool SliceEnabled { get; set; }
+
+    /// <summary>九宫格上/下/左/右切边（像素，相对图片本身）。</summary>
+    public double SliceTop { get; set; }
+
+    public double SliceBottom { get; set; }
+
+    public double SliceLeft { get; set; }
+
+    public double SliceRight { get; set; }
+
     /// <summary>矢量形状类型（仅 Kind 为 Shape 时生效）。</summary>
     public WallpaperShapeType ShapeType { get; set; } = WallpaperShapeType.Rectangle;
+
+    /// <summary>圆角矩形的圆角半径（像素，仅 ShapeType 为 RoundedRectangle 时生效）。</summary>
+    public double ShapeCornerRadius { get; set; } = 16;
+
+    /// <summary>星形角数（仅 ShapeType 为 Star 时生效）。</summary>
+    public int ShapeStarPoints { get; set; } = 5;
+
+    /// <summary>星形内凹比例（0.1-0.95，仅 ShapeType 为 Star 时生效）。</summary>
+    public double ShapeStarInset { get; set; } = 0.5;
 
     /// <summary>矢量形状填充色（仅 Kind 为 Shape 时生效；可为透明）。</summary>
     public string FillColor { get; set; } = "#66FFFFFF";
@@ -331,6 +363,18 @@ public sealed class WallpaperLayerItem
 
     /// <summary>文字颜色是否跟随当前 ClassIsland 主题色。</summary>
     public bool TextUsesThemeColor { get; set; }
+
+    /// <summary>是否启用文字描边。</summary>
+    public bool TextStrokeEnabled { get; set; }
+
+    /// <summary>文字描边颜色。</summary>
+    public string TextStrokeColor { get; set; } = "#FF000000";
+
+    /// <summary>文字描边粗细（像素）。</summary>
+    public double TextStrokeThickness { get; set; } = 1;
+
+    /// <summary>文本内容是否显示为当前播放媒体的标题；暂停/停止时恢复为「文本」字段的内容。</summary>
+    public bool TextUseSmtcTitle { get; set; }
 
     /// <summary>字号（像素）。</summary>
     public double TextFontSize { get; set; } = 16;
@@ -365,7 +409,16 @@ public sealed class WallpaperLayerItem
         Rotation = Rotation,
         SlideshowIntervalSeconds = SlideshowIntervalSeconds,
         Kind = Kind,
+        FullscreenExtend = FullscreenExtend,
+        SliceEnabled = SliceEnabled,
+        SliceTop = SliceTop,
+        SliceBottom = SliceBottom,
+        SliceLeft = SliceLeft,
+        SliceRight = SliceRight,
         ShapeType = ShapeType,
+        ShapeCornerRadius = ShapeCornerRadius,
+        ShapeStarPoints = ShapeStarPoints,
+        ShapeStarInset = ShapeStarInset,
         FillColor = FillColor,
         FillUsesThemeColor = FillUsesThemeColor,
         StrokeColor = StrokeColor,
@@ -374,6 +427,10 @@ public sealed class WallpaperLayerItem
         Text = Text,
         TextColor = TextColor,
         TextUsesThemeColor = TextUsesThemeColor,
+        TextStrokeEnabled = TextStrokeEnabled,
+        TextStrokeColor = TextStrokeColor,
+        TextStrokeThickness = TextStrokeThickness,
+        TextUseSmtcTitle = TextUseSmtcTitle,
         TextFontSize = TextFontSize,
         TextFontFamily = TextFontFamily,
         TextBold = TextBold,

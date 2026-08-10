@@ -17,7 +17,24 @@ namespace ClassIslandInjector;
 public sealed class WallpaperLayerVisual : Control
 {
     private WallpaperLayerItem? _layer;
+    private string? _overrideText;
     private EventHandler<ThemeUpdatedEventArgs>? _themeHandler;
+
+    /// <summary>临时覆盖的文本内容（运行时「显示媒体标题」用）；为 null 时使用图层 Text。</summary>
+    public string? OverrideText
+    {
+        get => _overrideText;
+        set
+        {
+            if (_overrideText == value)
+            {
+                return;
+            }
+
+            _overrideText = value;
+            InvalidateVisual();
+        }
+    }
 
     public WallpaperLayerVisual()
     {
@@ -110,6 +127,10 @@ public sealed class WallpaperLayerVisual : Control
             case WallpaperShapeType.Rectangle:
                 context.DrawRectangle(fillBrush, pen, new Rect(0, 0, w, h), 0, 0, default);
                 break;
+            case WallpaperShapeType.RoundedRectangle:
+                var cornerRadius = Math.Clamp(layer.ShapeCornerRadius, 0, Math.Min(w, h) / 2);
+                context.DrawRectangle(fillBrush, pen, new Rect(0, 0, w, h), cornerRadius, cornerRadius, default);
+                break;
             case WallpaperShapeType.Ellipse:
                 context.DrawEllipse(fillBrush, pen, new Point(w / 2, h / 2), w / 2, h / 2);
                 break;
@@ -121,23 +142,133 @@ public sealed class WallpaperLayerVisual : Control
 
                 break;
             case WallpaperShapeType.Triangle:
-                var geo = new StreamGeometry();
-                using (var g = geo.Open())
+                DrawGeometry(context, fillBrush, pen, BuildRegularPolygon(w, h, 3));
+                break;
+            case WallpaperShapeType.Diamond:
+                DrawGeometry(context, fillBrush, pen, BuildRegularPolygon(w, h, 4));
+                break;
+            case WallpaperShapeType.Pentagon:
+                DrawGeometry(context, fillBrush, pen, BuildRegularPolygon(w, h, 5));
+                break;
+            case WallpaperShapeType.Hexagon:
+                DrawGeometry(context, fillBrush, pen, BuildRegularPolygon(w, h, 6));
+                break;
+            case WallpaperShapeType.Star:
+                DrawGeometry(context, fillBrush, pen, BuildStarGeometry(w, h, layer.ShapeStarPoints, layer.ShapeStarInset));
+                break;
+            case WallpaperShapeType.Heart:
+                DrawGeometry(context, fillBrush, pen, BuildHeartGeometry(w, h));
+                break;
+            case WallpaperShapeType.Parallelogram:
+                var para = new StreamGeometry();
+                using (var g = para.Open())
                 {
-                    g.BeginFigure(new Point(w / 2, 0), true);
-                    g.LineTo(new Point(w, h));
+                    g.BeginFigure(new Point(w * 0.25, 0), true);
+                    g.LineTo(new Point(w, 0));
+                    g.LineTo(new Point(w * 0.75, h));
                     g.LineTo(new Point(0, h));
                     g.EndFigure(true);
                 }
 
-                context.DrawGeometry(fillBrush, pen, geo);
+                DrawGeometry(context, fillBrush, pen, para);
                 break;
         }
     }
 
+    private static void DrawGeometry(DrawingContext context, IBrush? fill, Pen? pen, StreamGeometry geometry)
+        => context.DrawGeometry(fill, pen, geometry);
+
+    /// <summary>构建正多边形路径（边数 ≥ 3，第一个顶点朝上）。</summary>
+    private static StreamGeometry BuildRegularPolygon(double w, double h, int sides)
+    {
+        sides = Math.Max(3, sides);
+        var cx = w / 2;
+        var cy = h / 2;
+        var radius = Math.Max(1, Math.Min(w, h) / 2);
+        var geo = new StreamGeometry();
+        using (var g = geo.Open())
+        {
+            for (var i = 0; i < sides; i++)
+            {
+                var angle = -Math.PI / 2 + i * 2 * Math.PI / sides;
+                var x = cx + radius * Math.Cos(angle);
+                var y = cy + radius * Math.Sin(angle);
+                if (i == 0)
+                {
+                    g.BeginFigure(new Point(x, y), true);
+                }
+                else
+                {
+                    g.LineTo(new Point(x, y));
+                }
+            }
+
+            g.EndFigure(true);
+        }
+
+        return geo;
+    }
+
+    /// <summary>构建星形路径（外顶点 + 内凹顶点交替，外半径 = 短边一半，内半径 = 外半径 × 内凹比例）。</summary>
+    private static StreamGeometry BuildStarGeometry(double w, double h, int points, double inset)
+    {
+        points = Math.Clamp(points, 3, 16);
+        inset = Math.Clamp(inset, 0.1, 0.95);
+        var cx = w / 2;
+        var cy = h / 2;
+        var outer = Math.Max(1, Math.Min(w, h) / 2);
+        var inner = outer * inset;
+        var geo = new StreamGeometry();
+        using (var g = geo.Open())
+        {
+            for (var i = 0; i < points * 2; i++)
+            {
+                var radius = i % 2 == 0 ? outer : inner;
+                var angle = -Math.PI / 2 + i * Math.PI / points;
+                var x = cx + radius * Math.Cos(angle);
+                var y = cy + radius * Math.Sin(angle);
+                if (i == 0)
+                {
+                    g.BeginFigure(new Point(x, y), true);
+                }
+                else
+                {
+                    g.LineTo(new Point(x, y));
+                }
+            }
+
+            g.EndFigure(true);
+        }
+
+        return geo;
+    }
+
+    /// <summary>构建心形路径（底部尖角 + 两个三次贝塞尔凸瓣）。</summary>
+    private static StreamGeometry BuildHeartGeometry(double w, double h)
+    {
+        var cx = w / 2;
+        var geo = new StreamGeometry();
+        using (var g = geo.Open())
+        {
+            g.BeginFigure(new Point(cx, h * 0.96), true);
+            // 左瓣
+            g.CubicBezierTo(new Point(w * 0.02, h * 0.58), new Point(w * 0.2, h * 0.12), new Point(cx, h * 0.38));
+            // 右瓣
+            g.CubicBezierTo(new Point(w * 0.8, h * 0.12), new Point(w * 0.98, h * 0.58), new Point(cx, h * 0.96));
+            g.EndFigure(true);
+        }
+
+        return geo;
+    }
+
     private void DrawText(DrawingContext context, WallpaperLayerItem layer)
     {
-        var text = string.IsNullOrEmpty(layer.Text) ? " " : layer.Text;
+        var text = string.IsNullOrEmpty(OverrideText) ? (layer.Text ?? string.Empty) : OverrideText!;
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
         var size = Math.Max(4, layer.TextFontSize);
         var brush = new SolidColorBrush(ResolveColor(layer.TextColor, Colors.White, layer.TextUsesThemeColor));
         var typeface = new Typeface(ParseFontFamily(layer.TextFontFamily), FontStyle.Normal,
@@ -166,7 +297,26 @@ public sealed class WallpaperLayerVisual : Control
             var x = alignment == TextAlignment.Left ? 0
                 : alignment == TextAlignment.Right ? Math.Max(0, maxWidth - formatted.Width)
                 : Math.Max(0, (maxWidth - formatted.Width) / 2);
-            context.DrawText(formatted, new Point(x, y0 + i * lineHeight));
+            var origin = new Point(x, y0 + i * lineHeight);
+            if (layer.TextStrokeEnabled && layer.TextStrokeThickness > 0)
+            {
+                // 文字描边：把文本转为几何，先描边再填充（保持原填充色）。
+                var strokeBrush = new SolidColorBrush(ParseColor(layer.TextStrokeColor, Colors.Black));
+                var pen = new Pen(strokeBrush, Math.Clamp(layer.TextStrokeThickness, 0.5, 20))
+                {
+                    LineJoin = PenLineJoin.Round
+                };
+                var geometry = formatted.BuildGeometry(origin);
+                if (geometry != null)
+                {
+                    context.DrawGeometry(strokeBrush, pen, geometry);
+                    context.DrawGeometry(brush, null, geometry);
+                }
+            }
+            else
+            {
+                context.DrawText(formatted, origin);
+            }
         }
     }
 

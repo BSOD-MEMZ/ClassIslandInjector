@@ -311,7 +311,7 @@ internal static class InjectorRuntime
     private static void OnSmtcMediaChanged(object? sender, SmtcMediaChangedEventArgs e)
     {
         // SMTC 事件可能在非 UI 线程触发，统一调度到 UI 线程再应用。
-        Dispatcher.UIThread.Post(() => _injector?.OnSmtcMediaChanged(e.Colors, e.ThumbnailBytes, e.IsPlaying));
+        Dispatcher.UIThread.Post(() => _injector?.OnSmtcMediaChanged(e.Colors, e.ThumbnailBytes, e.IsPlaying, e.Title, e.Artist));
     }
 
     /// <summary>

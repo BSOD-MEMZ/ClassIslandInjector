@@ -63,6 +63,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
     private readonly GuideOverlay _guideOverlay = new() { IsHitTestVisible = false };
     private readonly Dictionary<string, Image> _layerImages = [];
     private readonly Dictionary<string, WallpaperLayerVisual> _layerVisuals = [];
+    private readonly Dictionary<string, WallpaperNineSliceVisual> _layerNineSlices = [];
     private readonly Dictionary<string, Bitmap> _bitmaps = [];
     private readonly Dictionary<string, MemoryStream> _streams = [];
     private readonly Dictionary<string, string> _loadedSignatures = [];
@@ -83,6 +84,9 @@ internal sealed class WallpaperLayerCanvas : UserControl
     private readonly Dictionary<Border, (int Dx, int Dy)> _islandHandleDirs = [];
     /// <summary>选中图层上方的浮动操作条（对齐 / 删除）。</summary>
     private readonly Border _floatToolbar;
+    /// <summary>浮动操作条层序按钮（置顶/置底时禁用）。</summary>
+    private Button _moveUpButton = null!;
+    private Button _moveDownButton = null!;
     /// <summary>缩放滑动条（舞台右下角）。</summary>
     private readonly Slider _zoomSlider = new()
     {
@@ -110,6 +114,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
     private string? _selectedId;
     /// <summary>全部选中图层 Id（含主选中；Ctrl 多选时包含多个）。</summary>
     private readonly List<string> _selectedIds = [];
+    /// <summary>内部剪贴板：Ctrl+C 复制的图层（Ctrl+V 粘贴）。</summary>
+    private WallpaperLayerItem? _copiedLayer;
     private readonly HashSet<string> _lockedIds = [];
     private bool _islandUnlocked;
     private DragState? _drag;
@@ -233,11 +239,39 @@ internal sealed class WallpaperLayerCanvas : UserControl
             h.ZIndex = 120;
         }
 
-        // 选中图层上方的浮动操作条（参考 ClassIsland 编辑模式）：对齐 + 删除。
+        // 选中图层上方的浮动操作条（参考 ClassIsland 编辑模式）：对齐 + 层序 + 复制 + 删除。
         // 置于根网格（不随舞台缩放/滚动）。背景按宿主主题深浅直接取稳定色值（不依赖可能解析错误的主题资源），
         // 图标前景按背景明暗自适应，避免深色主题下出现「浅色浮动条」。
         var toolbarBackground = ThemePalette.PanelBackground();
         var toolbarForeground = ThemePalette.ForegroundColor();
+        var toolbarChildren = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 2
+        };
+        toolbarChildren.Children.Add(FloatButton("\uE03B", "左对齐", () => AlignSelected(0, null), toolbarForeground));
+        toolbarChildren.Children.Add(FloatButton("\uE033", "水平居中", () => AlignSelected(1, null), toolbarForeground));
+        toolbarChildren.Children.Add(FloatButton("\uE03D", "右对齐", () => AlignSelected(2, null), toolbarForeground));
+        toolbarChildren.Children.Add(ToolbarSeparator(toolbarForeground));
+        toolbarChildren.Children.Add(FloatButton("\uE057", "顶对齐", () => AlignSelected(null, 0), toolbarForeground));
+        toolbarChildren.Children.Add(FloatButton("\uE035", "垂直居中", () => AlignSelected(null, 1), toolbarForeground));
+        toolbarChildren.Children.Add(FloatButton("\uE031", "底对齐", () => AlignSelected(null, 2), toolbarForeground));
+        toolbarChildren.Children.Add(ToolbarSeparator(toolbarForeground));
+        _moveUpButton = FloatButton("\uE197", "上一层", () => MoveLayerUp(), toolbarForeground);
+        _moveDownButton = FloatButton("\uE0CB", "下一层", () => MoveLayerDown(), toolbarForeground);
+        toolbarChildren.Children.Add(_moveUpButton);
+        toolbarChildren.Children.Add(_moveDownButton);
+        toolbarChildren.Children.Add(ToolbarSeparator(toolbarForeground));
+        toolbarChildren.Children.Add(FloatButton("\uE58B", "复制图层", () => DuplicateSelection(), toolbarForeground));
+        toolbarChildren.Children.Add(ToolbarSeparator(toolbarForeground));
+        toolbarChildren.Children.Add(FloatButton("\uE61D", "删除图层", () =>
+        {
+            var layer = SelectedLayer;
+            if (layer != null)
+            {
+                DeleteRequested?.Invoke(layer);
+            }
+        }, toolbarForeground, isDanger: true));
         _floatToolbar = new Border
         {
             IsVisible = false,
@@ -250,30 +284,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
             IsHitTestVisible = true,
             ZIndex = 500,
             BoxShadow = new BoxShadows(new BoxShadow { Blur = 10, Color = Color.FromArgb(90, 0, 0, 0) }),
-            Child = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                Spacing = 2,
-                Children =
-                {
-                    FloatButton("\uE03B", "左对齐", () => AlignSelected(0, null), toolbarForeground),
-                    FloatButton("\uE033", "水平居中", () => AlignSelected(1, null), toolbarForeground),
-                    FloatButton("\uE03D", "右对齐", () => AlignSelected(2, null), toolbarForeground),
-                    ToolbarSeparator(toolbarForeground),
-                    FloatButton("\uE057", "顶对齐", () => AlignSelected(null, 0), toolbarForeground),
-                    FloatButton("\uE035", "垂直居中", () => AlignSelected(null, 1), toolbarForeground),
-                    FloatButton("\uE031", "底对齐", () => AlignSelected(null, 2), toolbarForeground),
-                    ToolbarSeparator(toolbarForeground),
-                    FloatButton("\uE61D", "删除图层", () =>
-                    {
-                        var layer = SelectedLayer;
-                        if (layer != null)
-                        {
-                            DeleteRequested?.Invoke(layer);
-                        }
-                    }, toolbarForeground, isDanger: true)
-                }
-            }
+            Child = toolbarChildren
         };
 
         _stage.PointerPressed += StageOnPointerPressed;
@@ -718,10 +729,48 @@ internal sealed class WallpaperLayerCanvas : UserControl
             _layerVisuals.Remove(staleId);
         }
 
+        foreach (var staleId in _layerNineSlices.Keys.Where(id => !wantedIds.Contains(id)).ToArray())
+        {
+            _stage.Children.Remove(_layerNineSlices[staleId]);
+            _layerNineSlices.Remove(staleId);
+        }
+
         foreach (var layer in _layers)
         {
-            if (layer.Kind == WallpaperLayerKind.Image)
+            var isFullscreenImage = layer.Kind == WallpaperLayerKind.Image && layer.FullscreenExtend;
+            if (isFullscreenImage)
             {
+                // 全屏扩展图层用九宫格控件渲染（铺满显示框架）；若曾以普通 Image 存在则移除。
+                if (_layerImages.Remove(layer.Id, out var oldImage))
+                {
+                    _stage.Children.Remove(oldImage);
+                }
+
+                if (!_layerNineSlices.TryGetValue(layer.Id, out var nine))
+                {
+                    nine = new WallpaperNineSliceVisual
+                    {
+                        IsHitTestVisible = false,
+                        RenderTransformOrigin = RelativePoint.Center
+                    };
+                    _layerNineSlices[layer.Id] = nine;
+                    _stage.Children.Add(nine);
+                }
+
+                nine.Bitmap = _bitmaps.TryGetValue(layer.Id, out var bm) ? bm : null;
+                nine.SliceEnabled = layer.SliceEnabled;
+                nine.SliceLeft = layer.SliceLeft;
+                nine.SliceTop = layer.SliceTop;
+                nine.SliceRight = layer.SliceRight;
+                nine.SliceBottom = layer.SliceBottom;
+            }
+            else if (layer.Kind == WallpaperLayerKind.Image)
+            {
+                if (_layerNineSlices.Remove(layer.Id, out var oldNine))
+                {
+                    _stage.Children.Remove(oldNine);
+                }
+
                 if (!_layerImages.TryGetValue(layer.Id, out var image))
                 {
                     image = new Image
@@ -758,6 +807,31 @@ internal sealed class WallpaperLayerCanvas : UserControl
             var rect = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer));
             if (layer.Kind == WallpaperLayerKind.Image)
             {
+                if (layer.FullscreenExtend)
+                {
+                    // 全屏扩展图层：画布中以岛屿区域近似预览（运行时铺满整个显示框架）。
+                    if (!_layerNineSlices.TryGetValue(layer.Id, out var nine))
+                    {
+                        continue;
+                    }
+
+                    nine.Width = rect.Width;
+                    nine.Height = rect.Height;
+                    Canvas.SetLeft(nine, CanvasMargin + rect.X);
+                    Canvas.SetTop(nine, CanvasMargin + rect.Y);
+                    nine.Opacity = layer.Visible ? layer.Opacity : 0;
+                    nine.IsVisible = layer.Visible;
+                    nine.ZIndex = imageBase + i;
+                    // 同步九宫格参数（检查器改动后预览实时更新）。
+                    nine.SliceEnabled = layer.SliceEnabled;
+                    nine.SliceLeft = layer.SliceLeft;
+                    nine.SliceTop = layer.SliceTop;
+                    nine.SliceRight = layer.SliceRight;
+                    nine.SliceBottom = layer.SliceBottom;
+                    nine.InvalidateVisual();
+                    continue;
+                }
+
                 if (!_layerImages.TryGetValue(layer.Id, out var image))
                 {
                     continue;
@@ -942,6 +1016,13 @@ internal sealed class WallpaperLayerCanvas : UserControl
 
     // ============ 交互：选中框与手柄定位 ============
 
+    /// <summary>图层的舞台坐标选中矩形（岛屿坐标 + 边距）。</summary>
+    private Rect LayerSelectionRect(WallpaperLayerItem layer)
+    {
+        var r = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer));
+        return new Rect(CanvasMargin + r.X, CanvasMargin + r.Y, r.Width, r.Height);
+    }
+
     private void UpdateSelectionOverlay()
     {
         var layer = SelectedLayer;
@@ -962,9 +1043,9 @@ internal sealed class WallpaperLayerCanvas : UserControl
 
         // 多选时：主选中显示完整虚线框 + 手柄；其它选中只画虚线框（不画手柄）。
         var selected = SelectedLayers;
-        var primary = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer));
-        var x = CanvasMargin + primary.X;
-        var y = CanvasMargin + primary.Y;
+        var primary = LayerSelectionRect(layer);
+        var x = primary.X;
+        var y = primary.Y;
         var w = primary.Width;
         var h = primary.Height;
         _selectionOverlay.SecondaryRects.Clear();
@@ -975,8 +1056,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 continue;
             }
 
-            var r = WallpaperLayerLayout.ComputeRect(other, _islandWidth, _islandHeight, AspectOf(other));
-            _selectionOverlay.SecondaryRects.Add(new Rect(CanvasMargin + r.X, CanvasMargin + r.Y, r.Width, r.Height));
+            _selectionOverlay.SecondaryRects.Add(LayerSelectionRect(other));
         }
 
         _selectionOverlay.IsVisible = true;
@@ -985,7 +1065,11 @@ internal sealed class WallpaperLayerCanvas : UserControl
         _selectionOverlay.RotationEnd = new Point(x + w / 2, y - 34);
         _selectionOverlay.InvalidateVisual();
 
-        var locked = _lockedIds.Contains(layer.Id);
+        var locked = _lockedIds.Contains(layer.Id) || layer.FullscreenExtend;
+        // 层序按钮：置顶时「上一层」禁用，置底时「下一层」禁用。
+        var zIndex = _layers.IndexOf(layer);
+        _moveUpButton.IsEnabled = !locked && zIndex >= 0 && zIndex < _layers.Count - 1;
+        _moveDownButton.IsEnabled = !locked && zIndex > 0;
         foreach (var handle in _resizeHandles)
         {
             var dir = _handleDirs[handle];
@@ -1334,9 +1418,9 @@ internal sealed class WallpaperLayerCanvas : UserControl
             SelectWithGroup(layer.Id);
         }
 
-        if (_lockedIds.Contains(layer.Id))
+        if (_lockedIds.Contains(layer.Id) || layer.FullscreenExtend)
         {
-            // 锁定图层只允许选中，不进入拖拽。
+            // 锁定 / 全屏扩展图层只允许选中，不进入拖拽（全屏图层固定铺满显示框架）。
             return;
         }
 
@@ -2062,12 +2146,118 @@ internal sealed class WallpaperLayerCanvas : UserControl
         Edited?.Invoke();
     }
 
+    /// <summary>复制主选中的图层（新 Id、名字加「副本」、轻微偏移）；无选中返回 null。</summary>
+    public WallpaperLayerItem? DuplicateSelection()
+    {
+        var layer = SelectedLayer;
+        if (layer == null)
+        {
+            return null;
+        }
+
+        // 先压撤销再添加，保证「撤销」能移除副本。
+        EditStarted?.Invoke();
+        var clone = layer.Clone();
+        clone.Id = Guid.NewGuid().ToString("N");
+        clone.Name = layer.Name + " 副本";
+        clone.OffsetX += 12;
+        clone.OffsetY += 12;
+        _layers.Add(clone);
+        // 关键：必须走 RefreshImages 重新加载位图（新 Id 在 _bitmaps 中没有对应的图，
+        // 只调 SyncImageControls 会导致复制的图片图层没有 Source 而不显示）。
+        RefreshImages();
+        Select(clone.Id);
+        Edited?.Invoke();
+        return clone;
+    }
+
+    /// <summary>把选中图层上移一层（z 序更靠前）；已在最前时返回 false。</summary>
+    public bool MoveLayerUp()
+    {
+        var layer = SelectedLayer;
+        if (layer == null)
+        {
+            return false;
+        }
+
+        var index = _layers.IndexOf(layer);
+        if (index < 0 || index >= _layers.Count - 1)
+        {
+            return false;
+        }
+
+        EditStarted?.Invoke();
+        _layers.RemoveAt(index);
+        _layers.Insert(index + 1, layer);
+        Refresh();
+        Edited?.Invoke();
+        return true;
+    }
+
+    /// <summary>把选中图层下移一层（z 序更靠后）；已在最底时返回 false。</summary>
+    public bool MoveLayerDown()
+    {
+        var layer = SelectedLayer;
+        if (layer == null)
+        {
+            return false;
+        }
+
+        var index = _layers.IndexOf(layer);
+        if (index <= 0)
+        {
+            return false;
+        }
+
+        EditStarted?.Invoke();
+        _layers.RemoveAt(index);
+        _layers.Insert(index - 1, layer);
+        Refresh();
+        Edited?.Invoke();
+        return true;
+    }
+
+    /// <summary>把选中的图层复制到内部剪贴板（Ctrl+C）。</summary>
+    public void CopySelection()
+    {
+        var layer = SelectedLayer;
+        if (layer == null)
+        {
+            return;
+        }
+
+        _copiedLayer = layer.Clone();
+    }
+
+    /// <summary>粘贴内部剪贴板中的图层（Ctrl+V；无复制内容时无操作）。</summary>
+    public WallpaperLayerItem? PasteLayer()
+    {
+        if (_copiedLayer == null)
+        {
+            return null;
+        }
+
+        // 先压撤销再添加，保证「撤销」能移除粘贴的副本。
+        EditStarted?.Invoke();
+        var clone = _copiedLayer.Clone();
+        clone.Id = Guid.NewGuid().ToString("N");
+        clone.Name = clone.Name + " 副本";
+        clone.OffsetX += 12;
+        clone.OffsetY += 12;
+        _layers.Add(clone);
+        // 走 RefreshImages 重载位图，否则粘贴的图片图层没有 Source 而不显示。
+        RefreshImages();
+        Select(clone.Id);
+        Edited?.Invoke();
+        return clone;
+    }
+
     private List<Rect> OtherLayerRects(WallpaperLayerItem exclude)
     {
         var result = new List<Rect>();
         foreach (var layer in _layers)
         {
-            if (layer == exclude || !layer.Visible)
+            if (layer == exclude || !layer.Visible || layer.FullscreenExtend)
             {
                 continue;
             }
@@ -2276,6 +2466,18 @@ internal sealed class WallpaperLayerCanvas : UserControl
                     return;
                 case Key.G:
                     GroupSelection();
+                    e.Handled = true;
+                    return;
+                case Key.J:
+                    DuplicateSelection();
+                    e.Handled = true;
+                    return;
+                case Key.C:
+                    CopySelection();
+                    e.Handled = true;
+                    return;
+                case Key.V:
+                    PasteLayer();
                     e.Handled = true;
                     return;
             }
