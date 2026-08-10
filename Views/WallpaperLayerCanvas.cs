@@ -1016,7 +1016,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
 
     // ============ 交互：选中框与手柄定位 ============
 
-    /// <summary>图层的舞台坐标选中矩形（主界面坐标 + 边距，含旋转后的轴对齐包围盒）。</summary>
+    /// <summary>图层的舞台坐标选中矩形（主界面坐标 + 边距，含旋转后的轴对齐包围盒 AABB）。</summary>
     private Rect LayerSelectionRect(WallpaperLayerItem layer)
     {
         var r = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer));
@@ -1042,7 +1042,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
             return;
         }
 
-        // 多选时：主选中显示完整虚线框 + 手柄；其它选中只画虚线框（不画手柄）。
+        // 选中框与八向手柄都在「旋转后的轴对齐包围盒（AABB）」上：旋转后框选区域
+        // = 最高宽高。缩放时把该框选区域当成一张图片（被拖边跟随鼠标、对边固定）。
         var selected = SelectedLayers;
         var primary = LayerSelectionRect(layer);
         var x = primary.X;
@@ -1445,6 +1446,10 @@ internal sealed class WallpaperLayerCanvas : UserControl
             }
         }
 
+        // 先压撤销再改动图层（含铺满→自定义的切换），保证「撤销」能完整恢复原始状态。
+        EditStarted?.Invoke();
+
+        // 铺满主界面的图层被拖动时自动切换为自定义尺寸（以当前主界面大小为初始尺寸）。
         foreach (var sel in moving)
         {
             if (sel.SizeMode == WallpaperLayerSizeMode.FillIsland)
@@ -1455,6 +1460,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
             }
         }
 
+        // 转换后再取初始矩形（此时 ComputeRect 反映图层当前实际位置，避免拖动瞬间跳变）。
         _drag = new DragState
         {
             Layer = layer,
@@ -1464,7 +1470,6 @@ internal sealed class WallpaperLayerCanvas : UserControl
             StartIslandW = _islandWidth,
             StartIslandH = _islandHeight
         };
-        EditStarted?.Invoke();
         e.Pointer.Capture(_stage);
         e.Handled = true;
     }
@@ -1795,6 +1800,9 @@ internal sealed class WallpaperLayerCanvas : UserControl
             return;
         }
 
+        // 先压撤销再改动图层（含铺满→自定义的切换），保证「撤销」能完整恢复原始状态。
+        EditStarted?.Invoke();
+
         // 铺满主界面的图层被拖动时自动切换为自定义尺寸（以当前主界面大小为初始尺寸）。
         if (layer.SizeMode == WallpaperLayerSizeMode.FillIsland)
         {
@@ -1803,6 +1811,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
             layer.Height = _islandHeight;
         }
 
+        // 转换后再取初始矩形（此时 ComputeRect 反映图层当前实际位置，避免拖动瞬间跳变）。
         _drag = new DragState
         {
             Layer = layer,
@@ -1813,7 +1822,6 @@ internal sealed class WallpaperLayerCanvas : UserControl
             StartIslandW = _islandWidth,
             StartIslandH = _islandHeight
         };
-        EditStarted?.Invoke();
         e.Pointer.Capture(handle);
         e.Handled = true;
     }
@@ -1846,85 +1854,110 @@ internal sealed class WallpaperLayerCanvas : UserControl
 
     private void UpdateResize(DragState drag, Point pointer, bool keepAspect)
     {
-        var delta = pointer - drag.StartPointer;
+        // 旋转后八向缩放：把「手柄框选的区域（旋转后的 AABB）」当成一张图片来缩放——
+        // 被拖动的 AABB 边/角跟随鼠标、对边/对角固定（跟手）；再把新 AABB 反解回
+        // 图层的本地宽高（W = w·|cos| + h·|sin|，H = w·|sin| + h·|cos|）。
+        var layer = drag.Layer!;
         var r = drag.StartRect;
         var (dx, dy) = drag.HandleDir;
-        var x = r.X;
-        var y = r.Y;
-        var w = r.Width;
-        var h = r.Height;
+        var aabb = WallpaperLayerLayout.RotatedBounds(r, layer.Rotation);
+        var p = new Point(pointer.X - CanvasMargin, pointer.Y - CanvasMargin);
+        var angle = layer.Rotation * Math.PI / 180.0;
+        var c = Math.Abs(Math.Cos(angle));
+        var s = Math.Abs(Math.Sin(angle));
+
+        // 1) 新 AABB：被拖动的边跟随鼠标，对边固定。
+        var x0 = aabb.X;
+        var y0 = aabb.Y;
+        var x1 = aabb.Right;
+        var y1 = aabb.Bottom;
         if (dx < 0)
         {
-            x += delta.X;
-            w -= delta.X;
+            x0 = Math.Min(p.X, x1 - MinLayerSize);
         }
-        else if (dx > 0)
+
+        if (dx > 0)
         {
-            w += delta.X;
+            x1 = Math.Max(p.X, x0 + MinLayerSize);
         }
 
         if (dy < 0)
         {
-            y += delta.Y;
-            h -= delta.Y;
-        }
-        else if (dy > 0)
-        {
-            h += delta.Y;
+            y0 = Math.Min(p.Y, y1 - MinLayerSize);
         }
 
-        if (keepAspect && (dx != 0 || dy != 0) && r.Width > 0 && r.Height > 0)
+        if (dy > 0)
         {
-            var aspect = r.Width / r.Height;
-            if (dx != 0 && dy != 0)
-            {
-                if (Math.Abs(delta.X) >= Math.Abs(delta.Y))
-                {
-                    h = w / aspect;
-                }
-                else
-                {
-                    w = h * aspect;
-                }
+            y1 = Math.Max(p.Y, y0 + MinLayerSize);
+        }
 
-                if (dy < 0)
-                {
-                    y = r.Bottom - h;
-                }
-            }
-            else if (dx != 0)
+        // Shift：角手柄等比缩放（锚点 = 对角固定，按拖动比例统一缩放）。
+        if (keepAspect && dx != 0 && dy != 0 && aabb.Width > 0 && aabb.Height > 0)
+        {
+            var scale = Math.Max((x1 - x0) / aabb.Width, (y1 - y0) / aabb.Height);
+            var nw = aabb.Width * scale;
+            var nh = aabb.Height * scale;
+            if (dx < 0)
             {
-                h = w / aspect;
+                x0 = x1 - nw;
             }
             else
             {
-                w = h * aspect;
-                if (dx < 0)
-                {
-                    x = r.Right - w;
-                }
+                x1 = x0 + nw;
+            }
+
+            if (dy < 0)
+            {
+                y0 = y1 - nh;
+            }
+            else
+            {
+                y1 = y0 + nh;
             }
         }
 
-        w = Math.Max(MinLayerSize, w);
-        h = Math.Max(MinLayerSize, h);
-        if (dx < 0)
+        var aabbW = x1 - x0;
+        var aabbH = y1 - y0;
+
+        // 2) 由新 AABB 反解图层本地宽高。
+        double w;
+        double h;
+        var det = c * c - s * s;
+        if (Math.Abs(det) > 1e-3)
         {
-            x = Math.Min(x, r.Right - MinLayerSize);
+            w = Math.Max(MinLayerSize, (aabbW * c - aabbH * s) / det);
+            h = Math.Max(MinLayerSize, (aabbH * c - aabbW * s) / det);
+        }
+        else
+        {
+            // 45°/135° 奇异角：AABB 无法唯一确定 w/h，等比缩放保持宽高比。
+            var scale = Math.Max(aabbW / Math.Max(1, aabb.Width), aabbH / Math.Max(1, aabb.Height));
+            w = Math.Max(MinLayerSize, r.Width * scale);
+            h = Math.Max(MinLayerSize, r.Height * scale);
         }
 
-        if (dy < 0)
+        // Shift 边手柄等比：另一轴按原宽高比缩放（角手柄已在 AABB 层等比处理）。
+        if (keepAspect && r.Width > 0 && r.Height > 0)
         {
-            y = Math.Min(y, r.Bottom - MinLayerSize);
+            var aspect = r.Width / r.Height;
+            if (dx == 0 && dy != 0)
+            {
+                w = Math.Max(MinLayerSize, h * aspect);
+            }
+            else if (dx != 0 && dy == 0)
+            {
+                h = Math.Max(MinLayerSize, w / aspect);
+            }
         }
 
-        var rect = new Rect(x, y, w, h);
-        var others = OtherLayerRects(drag.Layer!);
-        // 只吸附被拖动的边 + 中心
-        rect = SnapRect(rect, others,
+        // 3) 吸附（AABB 边，与框选区域一致）→ 新本地矩形中心 = 吸附后 AABB 中心。
+        var others = OtherLayerRects(layer);
+        var snapAabb = SnapRect(new Rect(x0, y0, aabbW, aabbH), others,
             dx < 0, dx > 0, true, dy < 0, dy > 0, true,
             out var guides, out var xIsland, out var yIsland);
-        var layer = drag.Layer!;
+        var center = snapAabb.Center;
+        var rect = new Rect(center.X - w / 2, center.Y - h / 2, w, h);
+
         layer.Width = rect.Width;
         layer.Height = rect.Height;
         layer.SizeMode = WallpaperLayerSizeMode.Custom;
@@ -1960,6 +1993,10 @@ internal sealed class WallpaperLayerCanvas : UserControl
             return;
         }
 
+        // 先压撤销再改动图层（含铺满→自定义的切换），保证「撤销」能完整恢复原始状态。
+        EditStarted?.Invoke();
+
+        // 铺满主界面的图层被拖动时自动切换为自定义尺寸（以当前主界面大小为初始尺寸）。
         if (layer.SizeMode == WallpaperLayerSizeMode.FillIsland)
         {
             layer.SizeMode = WallpaperLayerSizeMode.Custom;
@@ -1967,6 +2004,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
             layer.Height = _islandHeight;
         }
 
+        // 转换后再取初始矩形（此时 ComputeRect 反映图层当前实际位置，避免旋转起点偏移）。
         _drag = new DragState
         {
             Layer = layer,
@@ -1977,7 +2015,6 @@ internal sealed class WallpaperLayerCanvas : UserControl
             StartIslandW = _islandWidth,
             StartIslandH = _islandHeight
         };
-        EditStarted?.Invoke();
         e.Pointer.Capture(_rotationHandle);
         e.Handled = true;
     }
@@ -2631,7 +2668,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         }
     }
 
-    /// <summary>选中图层的虚线框 + 旋转臂（PowerPoint 风格；多选时其它选中显示浅色虚线框）。</summary>
+    /// <summary>选中图层的虚线框 + 旋转臂（AABB 框选区域；多选时其它选中显示浅色虚线框）。</summary>
     private sealed class SelectionOverlay : Control
     {
         public Rect SelectionRect { get; set; }

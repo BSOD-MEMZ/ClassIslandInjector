@@ -128,4 +128,23 @@ public static class WallpaperLayerLayout
         var cy = rect.Y + rect.Height / 2;
         return new Rect(cx - w / 2, cy - h / 2, w, h);
     }
+
+    /// <summary>
+    /// 计算矩形绕自身中心旋转指定角度（度）后的四个角坐标（旋转矩形本体，不是 AABB）。
+    /// 八向缩放手柄与选中框应放在旋转矩形本体上：手柄即图形真实角/边，拖动时手柄与鼠标
+    /// 完全同步、对边固定（PS 式）；若放在 AABB 上，手柄会落在图形角/边之外，缩放时
+    /// 永远追不上鼠标（「不跟手」）。返回顺序：左上 → 右上 → 右下 → 左下（已应用旋转）。
+    /// </summary>
+    public static Point[] RotatedCorners(Rect rect, double rotationDegrees)
+    {
+        var angle = rotationDegrees * Math.PI / 180.0;
+        var cx = rect.X + rect.Width / 2;
+        var cy = rect.Y + rect.Height / 2;
+        var hw = rect.Width / 2;
+        var hh = rect.Height / 2;
+        var cos = Math.Cos(angle);
+        var sin = Math.Sin(angle);
+        Point R(double x, double y) => new(cx + x * cos - y * sin, cy + x * sin + y * cos);
+        return [R(-hw, -hh), R(hw, -hh), R(hw, hh), R(-hw, hh)];
+    }
 }

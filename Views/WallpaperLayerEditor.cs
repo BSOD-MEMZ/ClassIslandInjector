@@ -109,10 +109,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private readonly ComboBox _textFontFamilyBox = new() { MinWidth = 140, MaxDropDownHeight = 360 };
     private readonly ColorPicker _textColorPicker = ColorPicker();
     private readonly ToggleSwitch _textColorThemeToggle = new() { OnContent = "开", OffContent = "关" };
-    /// <summary>镂空（透明填充）：把文字填充色置为全透明，配合描边形成空心字/镂空效果。</summary>
-    private readonly ToggleSwitch _textFillTransparentToggle = new() { OnContent = "开", OffContent = "关" };
-    /// <summary>镂空开关打开前的文字填充色（关闭时恢复为不透明）。</summary>
-    private Color _lastOpaqueTextColor = Colors.White;
     private readonly ToggleSwitch _textBoldToggle = new() { OnContent = "开", OffContent = "关" };
     private readonly ToggleSwitch _textStrokeToggle = new() { OnContent = "开", OffContent = "关" };
     private readonly ColorPicker _textStrokeColorPicker = ColorPicker();
@@ -124,7 +120,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private Control _textFontFamilyItem = null!;
     private Control _textColorItem = null!;
     private Control _textColorThemeItem = null!;
-    private Control _textFillTransparentItem = null!;
     private Control _textStrokeItem = null!;
     private Control _textStrokeColorItem = null!;
     private Control _textStrokeThicknessItem = null!;
@@ -527,10 +522,10 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         var panel = new StackPanel { Spacing = 2 };
         panel.Children.Add(ToolButton(WallpaperEditorTool.Move, "\uE113", "移动工具（V）：拖拽图层移动，拖动空白取消选中"));
         panel.Children.Add(ToolButton(WallpaperEditorTool.Hand, "\uE941", "抓手工具（H）：按住拖动平移画布，查看画布任意区域"));
-        panel.Children.Add(ToolButton(WallpaperEditorTool.Select, "\uE5BE", "选择工具（S）：点击只选中图层，不拖拽"));
-        panel.Children.Add(ToolButton(WallpaperEditorTool.Zoom, "\uF4D0", "缩放工具（Z）：单击放大 / Alt+单击缩小 / 拖拽框选放大；Ctrl + / Ctrl - 也可缩放"));
-        panel.Children.Add(ToolButton(WallpaperEditorTool.Shape, "\uE774", "形状工具（U）：拖拽绘制矩形；创建后可在右侧修改形状类型"));
-        panel.Children.Add(ToolButton(WallpaperEditorTool.Text, "\uF1BD", "文本工具（T）：点击插入文本框图层"));
+        panel.Children.Add(ToolButton(WallpaperEditorTool.Select, "\uE5BF", "选择工具（S）：点击只选中图层，不拖拽"));
+        panel.Children.Add(ToolButton(WallpaperEditorTool.Zoom, "\uF4D1", "缩放工具（Z）：单击放大 / Alt+单击缩小 / 拖拽框选放大；Ctrl + / Ctrl - 也可缩放"));
+        panel.Children.Add(ToolButton(WallpaperEditorTool.Shape, "\uE775", "形状工具（U）：拖拽绘制矩形；创建后可在右侧修改形状类型"));
+        panel.Children.Add(ToolButton(WallpaperEditorTool.Text, "\uF1BE", "文本工具（T）：点击插入文本框图层"));
         panel.Children.Add(new Separator { Margin = new Thickness(2, 5) });
         panel.Children.Add(ToolActionButton("\uEBCA", "添加 SMTC 图层", "把当前播放的专辑封面作为新的底图图层（无播放时显示占位封面）", AddSmtcLayer));
         panel.Children.Add(ToolActionButton("\uE7DC", "添加贴纸", "在线获取 Project Sekai 角色贴纸，插入为新的底图图层", OpenStickerPicker));
@@ -575,7 +570,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         return button;
     }
 
-    /// <summary>按当前工具刷新工具栏按钮的选中态（强调色底 + 白色图标）。</summary>
+    /// <summary>按当前工具刷新工具栏按钮的选中态（强调色底 + 白色图标；选中用实心图标，未选中用空心图标）。</summary>
     private void UpdateToolBarSelection()
     {
         foreach (var (tool, button) in _toolButtons)
@@ -587,8 +582,24 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             button.Foreground = active
                 ? new SolidColorBrush(Colors.White)
                 : new SolidColorBrush(ThemePalette.ForegroundColor());
+            // 选中工具显示实心图标，未选中显示空心（regular）图标。
+            if (button.Content is IconText icon && ToolGlyphs.TryGetValue(tool, out var glyphs))
+            {
+                icon.Glyph = active ? glyphs.Filled : glyphs.Regular;
+            }
         }
     }
+
+    /// <summary>左侧工具栏各工具的实心/空心图标码点（FluentSystemIcons，filled/regular 成对）。</summary>
+    private static readonly Dictionary<WallpaperEditorTool, (string Filled, string Regular)> ToolGlyphs = new()
+    {
+        [WallpaperEditorTool.Move] = ("\uE112", "\uE113"),
+        [WallpaperEditorTool.Hand] = ("\uE940", "\uE941"),
+        [WallpaperEditorTool.Select] = ("\uE5BE", "\uE5BF"),
+        [WallpaperEditorTool.Zoom] = ("\uF4D0", "\uF4D1"),
+        [WallpaperEditorTool.Shape] = ("\uE774", "\uE775"),
+        [WallpaperEditorTool.Text] = ("\uF1BD", "\uF1BE")
+    };
 
     private StackPanel BuildInspector()
     {
@@ -789,19 +800,11 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         {
             if (!_updatingInspector && e.Property?.Name == "Color")
             {
-                var color = _textColorPicker.Color;
-                // 镂空开启时选择器只能改 RGB，透明度强制保持 0。
-                if (_textFillTransparentToggle.IsChecked == true)
-                {
-                    color = Color.FromArgb(0, color.R, color.G, color.B);
-                    _textColorPicker.Color = color;
-                }
-
                 ApplyToSelected(l =>
                 {
                     if (l.Kind == WallpaperLayerKind.Text)
                     {
-                        l.TextColor = color.ToString();
+                        l.TextColor = _textColorPicker.Color.ToString();
                     }
                 });
             }
@@ -819,48 +822,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                     }
                 });
             }
-        };
-        // 镂空（透明填充）：开启后文字填充变全透明，配合描边形成空心字；关闭时恢复原填充色。
-        _textFillTransparentToggle.PropertyChanged += (_, e) =>
-        {
-            if (_updatingInspector || e.Property != ToggleSwitch.IsCheckedProperty)
-            {
-                return;
-            }
-
-            var on = _textFillTransparentToggle.IsChecked == true;
-            ApplyToSelected(l =>
-            {
-                if (l.Kind != WallpaperLayerKind.Text)
-                {
-                    return;
-                }
-
-                var current = ReadColor(l.TextColor, Colors.White);
-                if (on)
-                {
-                    // 记住当前不透明填充色，用于关闭时恢复。
-                    if (current.A > 0)
-                    {
-                        _lastOpaqueTextColor = current;
-                    }
-
-                    l.TextColor = Color.FromArgb(0, _lastOpaqueTextColor.R, _lastOpaqueTextColor.G, _lastOpaqueTextColor.B).ToString();
-                    // 空心字需要描边才可见：未开启描边时自动开启。
-                    if (!l.TextStrokeEnabled)
-                    {
-                        l.TextStrokeEnabled = true;
-                        if (l.TextStrokeThickness <= 0)
-                        {
-                            l.TextStrokeThickness = 1.5;
-                        }
-                    }
-                }
-                else
-                {
-                    l.TextColor = Color.FromArgb(255, _lastOpaqueTextColor.R, _lastOpaqueTextColor.G, _lastOpaqueTextColor.B).ToString();
-                }
-            });
         };
         _textStrokeToggle.PropertyChanged += (_, e) =>
         {
@@ -1001,7 +962,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _textFontFamilyItem = SettingsRow("字体", _textFontFamilyBox);
         _textColorItem = SettingsRow("文字颜色", _textColorPicker);
         _textColorThemeItem = SettingsRow("文字颜色跟随主题", _textColorThemeToggle);
-        _textFillTransparentItem = SettingsRow("镂空（透明填充）", _textFillTransparentToggle);
         _textStrokeItem = SettingsRow("文字描边", _textStrokeToggle);
         _textStrokeColorItem = SettingsRow("描边颜色", _textStrokeColorPicker);
         _textStrokeThicknessItem = SettingsRow("描边粗细", _textStrokeThicknessSpin);
@@ -1013,7 +973,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         inspector.Children.Add(_textFontFamilyItem);
         inspector.Children.Add(_textColorItem);
         inspector.Children.Add(_textColorThemeItem);
-        inspector.Children.Add(_textFillTransparentItem);
         inspector.Children.Add(_textStrokeItem);
         inspector.Children.Add(_textStrokeColorItem);
         inspector.Children.Add(_textStrokeThicknessItem);
@@ -1406,7 +1365,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         {
             IsIsland = true,
             Title = "ClassIsland 主界面",
-            Subtitle = "背景图层 · 默认锁定",
+            Subtitle = "背景图层",
             IconGlyph = "\uE62F",
             Unlocked = _canvas.IslandUnlocked,
             Selected = _canvas.SelectedLayer == null
@@ -1893,7 +1852,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 _textFontFamilyItem.IsVisible = false;
                 _textColorItem.IsVisible = false;
                 _textColorThemeItem.IsVisible = false;
-                _textFillTransparentItem.IsVisible = false;
                 _textStrokeItem.IsVisible = false;
                 _textStrokeColorItem.IsVisible = false;
                 _textStrokeThicknessItem.IsVisible = false;
@@ -1945,7 +1903,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             _textFontFamilyItem.IsVisible = isText;
             _textColorItem.IsVisible = isText;
             _textColorThemeItem.IsVisible = isText;
-            _textFillTransparentItem.IsVisible = isText;
             _textStrokeItem.IsVisible = isText;
             _textStrokeColorItem.IsVisible = isText && layer.TextStrokeEnabled;
             _textStrokeThicknessItem.IsVisible = isText && layer.TextStrokeEnabled;
@@ -1982,15 +1939,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             _textFontFamilyBox.SelectedItem = ((IEnumerable<FontFamily>)_textFontFamilyBox.ItemsSource!)
                 .FirstOrDefault(font => string.Equals(font.Name, layer.TextFontFamily, StringComparison.CurrentCultureIgnoreCase))
                 ?? FontFamily.Default;
-            var loadedTextColor = ReadColor(layer.TextColor, Colors.White);
             _textColorPicker.Color = InspectorColor(layer.TextColor, Colors.White, layer.TextUsesThemeColor);
-            // 镂空开关状态 = 文字填充是否全透明；同时记住不透明填充色供关闭镂空时恢复。
-            _textFillTransparentToggle.IsChecked = loadedTextColor.A == 0;
-            if (loadedTextColor.A > 0)
-            {
-                _lastOpaqueTextColor = loadedTextColor;
-            }
-
             _textStrokeToggle.IsChecked = layer.TextStrokeEnabled;
             _textStrokeColorPicker.Color = ReadColor(layer.TextStrokeColor, Colors.Black);
             _textStrokeThicknessSpin.DoubleValue = layer.TextStrokeThickness;
@@ -2351,7 +2300,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         private void Build()
         {
             CornerRadius = new CornerRadius(6);
-            BorderThickness = new Thickness(1);
+            // 无边框（参考 ClassIsland 组件库卡片的框子样式），选中仅用底色高亮。
+            BorderThickness = new Thickness(0);
             Padding = new Thickness(8, 6);
 
             // 原生风格：透明底 + 悬停微高亮 + 选中强调色（跟随主题，不手搓深色卡片）。
@@ -2362,9 +2312,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                     : hover
                         ? ThemePalette.SubtleFill()
                         : Brushes.Transparent;
-                BorderBrush = Selected
-                    ? new SolidColorBrush(ThemePalette.AccentColorWithAlpha(180))
-                    : Brushes.Transparent;
+                BorderBrush = Brushes.Transparent;
             }
 
             ApplyBackground(false);
@@ -2479,9 +2427,11 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                     Cursor = new Cursor(StandardCursorType.Hand),
                     Child = new IconText
                     {
-                        Glyph = "\uE771",
+                        // 与 ClassIsland 组件库 TouchDragThumb（compact）同款拖拽手柄图标。
+                        Glyph = "\uEE49",
                         Text = string.Empty,
-                        Opacity = 0.45,
+                        FontSize = 18,
+                        Opacity = 0.8,
                         HorizontalAlignment = HorizontalAlignment.Center
                     }
                 };
@@ -2511,9 +2461,11 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                     Cursor = new Cursor(StandardCursorType.Hand),
                     Child = new IconText
                     {
-                        Glyph = "\uE771",
+                        // 与 ClassIsland 组件库 TouchDragThumb（compact）同款拖拽手柄图标。
+                        Glyph = "\uEE49",
                         Text = string.Empty,
-                        Opacity = 0.45,
+                        FontSize = 18,
+                        Opacity = 0.8,
                         HorizontalAlignment = HorizontalAlignment.Center
                     }
                 };
