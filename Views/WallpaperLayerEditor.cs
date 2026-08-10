@@ -109,6 +109,10 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private readonly ComboBox _textFontFamilyBox = new() { MinWidth = 140, MaxDropDownHeight = 360 };
     private readonly ColorPicker _textColorPicker = ColorPicker();
     private readonly ToggleSwitch _textColorThemeToggle = new() { OnContent = "开", OffContent = "关" };
+    /// <summary>镂空（透明填充）：把文字填充色置为全透明，配合描边形成空心字/镂空效果。</summary>
+    private readonly ToggleSwitch _textFillTransparentToggle = new() { OnContent = "开", OffContent = "关" };
+    /// <summary>镂空开关打开前的文字填充色（关闭时恢复为不透明）。</summary>
+    private Color _lastOpaqueTextColor = Colors.White;
     private readonly ToggleSwitch _textBoldToggle = new() { OnContent = "开", OffContent = "关" };
     private readonly ToggleSwitch _textStrokeToggle = new() { OnContent = "开", OffContent = "关" };
     private readonly ColorPicker _textStrokeColorPicker = ColorPicker();
@@ -120,6 +124,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private Control _textFontFamilyItem = null!;
     private Control _textColorItem = null!;
     private Control _textColorThemeItem = null!;
+    private Control _textFillTransparentItem = null!;
     private Control _textStrokeItem = null!;
     private Control _textStrokeColorItem = null!;
     private Control _textStrokeThicknessItem = null!;
@@ -253,6 +258,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 _ungroupButton,
                 new CommandBarSeparator(),
                 CommandButton("\uE62F", "重置岛屿尺寸", "把岛屿预览尺寸恢复为 ClassIsland 实际尺寸", ResetIslandSize),
+                CommandButton("\uE92A", "棋盘格配色", "设置画布背景棋盘格：跟随主题自动按深浅色选择，或自定义两种颜色", OpenCheckerboardSettings),
                 CommandButton("\uEEB5", "保存并应用", "保存图层并应用到主界面", Save)
             }
         };
@@ -437,6 +443,77 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         }
 
         new BackgroundEffectsWindow().Show();
+    }
+
+    /// <summary>
+    /// 打开「画布棋盘格配色」对话框：跟随主题自动按深浅色选择，或自定义两种颜色；
+    /// 改动实时写回设置并刷新画布。
+    /// </summary>
+    private async void OpenCheckerboardSettings()
+    {
+        var topLevel = TopLevel.GetTopLevel(this);
+        if (topLevel == null)
+        {
+            return;
+        }
+
+        var settings = InjectorRuntime.Settings;
+        var followTheme = new ToggleSwitch
+        {
+            OnContent = "开",
+            OffContent = "关",
+            IsChecked = settings.WallpaperCheckerFollowTheme
+        };
+        var color1 = ColorPicker();
+        color1.Color = ReadColor(settings.WallpaperCheckerColor1, Color.FromRgb(45, 47, 52));
+        var color2 = ColorPicker();
+        color2.Color = ReadColor(settings.WallpaperCheckerColor2, Color.FromRgb(38, 40, 45));
+        void SyncColors() => color1.IsEnabled = color2.IsEnabled = followTheme.IsChecked != true;
+        followTheme.PropertyChanged += (_, _) => SyncColors();
+        SyncColors();
+
+        // 改动实时写回设置并刷新画布棋盘格（EndUpdate 会触发 Changed → 保存应用）。
+        void Apply()
+        {
+            settings.BeginUpdate();
+            settings.WallpaperCheckerFollowTheme = followTheme.IsChecked == true;
+            settings.WallpaperCheckerColor1 = color1.Color.ToString();
+            settings.WallpaperCheckerColor2 = color2.Color.ToString();
+            settings.EndUpdate();
+            _canvas.ApplyCheckerboardColors();
+        }
+
+        followTheme.PropertyChanged += (_, _) => Apply();
+        color1.PropertyChanged += (_, e) => { if (e.Property?.Name == "Color") Apply(); };
+        color2.PropertyChanged += (_, e) => { if (e.Property?.Name == "Color") Apply(); };
+
+        var panel = new StackPanel
+        {
+            Spacing = 4,
+            Width = 360,
+            Children =
+            {
+                SettingsRow("跟随主题", followTheme),
+                SettingsRow("棋盘格颜色 1", color1),
+                SettingsRow("棋盘格颜色 2", color2),
+                new TextBlock
+                {
+                    Text = "跟随主题时按深浅色自动选择（深色主题用深棋盘格，浅色用白/浅灰 fff/ccc）；关闭后可自定义两种颜色。",
+                    TextWrapping = TextWrapping.Wrap,
+                    Opacity = 0.8,
+                    Margin = new Thickness(0, 6, 0, 0)
+                }
+            }
+        };
+        var dialog = new ContentDialog
+        {
+            Title = "画布棋盘格配色",
+            Content = panel,
+            PrimaryButtonText = "完成",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary
+        };
+        await dialog.ShowAsync(topLevel);
     }
 
     /// <summary>打开九宫格切图编辑器（在图片上框选切边，实时预览拉伸效果）。</summary>
@@ -718,7 +795,21 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         {
             if (!_updatingInspector && e.Property?.Name == "Color")
             {
-                ApplyToSelected(l => { if (l.Kind == WallpaperLayerKind.Text) l.TextColor = _textColorPicker.Color.ToString(); });
+                var color = _textColorPicker.Color;
+                // 镂空开启时选择器只能改 RGB，透明度强制保持 0。
+                if (_textFillTransparentToggle.IsChecked == true)
+                {
+                    color = Color.FromArgb(0, color.R, color.G, color.B);
+                    _textColorPicker.Color = color;
+                }
+
+                ApplyToSelected(l =>
+                {
+                    if (l.Kind == WallpaperLayerKind.Text)
+                    {
+                        l.TextColor = color.ToString();
+                    }
+                });
             }
         };
         _textColorThemeToggle.PropertyChanged += (_, e) =>
@@ -734,6 +825,48 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                     }
                 });
             }
+        };
+        // 镂空（透明填充）：开启后文字填充变全透明，配合描边形成空心字；关闭时恢复原填充色。
+        _textFillTransparentToggle.PropertyChanged += (_, e) =>
+        {
+            if (_updatingInspector || e.Property != ToggleSwitch.IsCheckedProperty)
+            {
+                return;
+            }
+
+            var on = _textFillTransparentToggle.IsChecked == true;
+            ApplyToSelected(l =>
+            {
+                if (l.Kind != WallpaperLayerKind.Text)
+                {
+                    return;
+                }
+
+                var current = ReadColor(l.TextColor, Colors.White);
+                if (on)
+                {
+                    // 记住当前不透明填充色，用于关闭时恢复。
+                    if (current.A > 0)
+                    {
+                        _lastOpaqueTextColor = current;
+                    }
+
+                    l.TextColor = Color.FromArgb(0, _lastOpaqueTextColor.R, _lastOpaqueTextColor.G, _lastOpaqueTextColor.B).ToString();
+                    // 空心字需要描边才可见：未开启描边时自动开启。
+                    if (!l.TextStrokeEnabled)
+                    {
+                        l.TextStrokeEnabled = true;
+                        if (l.TextStrokeThickness <= 0)
+                        {
+                            l.TextStrokeThickness = 1.5;
+                        }
+                    }
+                }
+                else
+                {
+                    l.TextColor = Color.FromArgb(255, _lastOpaqueTextColor.R, _lastOpaqueTextColor.G, _lastOpaqueTextColor.B).ToString();
+                }
+            });
         };
         _textStrokeToggle.PropertyChanged += (_, e) =>
         {
@@ -874,6 +1007,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _textFontFamilyItem = SettingsRow("字体", _textFontFamilyBox);
         _textColorItem = SettingsRow("文字颜色", _textColorPicker);
         _textColorThemeItem = SettingsRow("文字颜色跟随主题", _textColorThemeToggle);
+        _textFillTransparentItem = SettingsRow("镂空（透明填充）", _textFillTransparentToggle);
         _textStrokeItem = SettingsRow("文字描边", _textStrokeToggle);
         _textStrokeColorItem = SettingsRow("描边颜色", _textStrokeColorPicker);
         _textStrokeThicknessItem = SettingsRow("描边粗细", _textStrokeThicknessSpin);
@@ -885,6 +1019,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         inspector.Children.Add(_textFontFamilyItem);
         inspector.Children.Add(_textColorItem);
         inspector.Children.Add(_textColorThemeItem);
+        inspector.Children.Add(_textFillTransparentItem);
         inspector.Children.Add(_textStrokeItem);
         inspector.Children.Add(_textStrokeColorItem);
         inspector.Children.Add(_textStrokeThicknessItem);
@@ -1718,6 +1853,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 _textFontFamilyItem.IsVisible = false;
                 _textColorItem.IsVisible = false;
                 _textColorThemeItem.IsVisible = false;
+                _textFillTransparentItem.IsVisible = false;
                 _textStrokeItem.IsVisible = false;
                 _textStrokeColorItem.IsVisible = false;
                 _textStrokeThicknessItem.IsVisible = false;
@@ -1769,6 +1905,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             _textFontFamilyItem.IsVisible = isText;
             _textColorItem.IsVisible = isText;
             _textColorThemeItem.IsVisible = isText;
+            _textFillTransparentItem.IsVisible = isText;
             _textStrokeItem.IsVisible = isText;
             _textStrokeColorItem.IsVisible = isText && layer.TextStrokeEnabled;
             _textStrokeThicknessItem.IsVisible = isText && layer.TextStrokeEnabled;
@@ -1805,7 +1942,15 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             _textFontFamilyBox.SelectedItem = ((IEnumerable<FontFamily>)_textFontFamilyBox.ItemsSource!)
                 .FirstOrDefault(font => string.Equals(font.Name, layer.TextFontFamily, StringComparison.CurrentCultureIgnoreCase))
                 ?? FontFamily.Default;
+            var loadedTextColor = ReadColor(layer.TextColor, Colors.White);
             _textColorPicker.Color = InspectorColor(layer.TextColor, Colors.White, layer.TextUsesThemeColor);
+            // 镂空开关状态 = 文字填充是否全透明；同时记住不透明填充色供关闭镂空时恢复。
+            _textFillTransparentToggle.IsChecked = loadedTextColor.A == 0;
+            if (loadedTextColor.A > 0)
+            {
+                _lastOpaqueTextColor = loadedTextColor;
+            }
+
             _textStrokeToggle.IsChecked = layer.TextStrokeEnabled;
             _textStrokeColorPicker.Color = ReadColor(layer.TextStrokeColor, Colors.Black);
             _textStrokeThicknessSpin.DoubleValue = layer.TextStrokeThickness;

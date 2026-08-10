@@ -217,11 +217,14 @@ public sealed class ContractCatalog
         catalog.ControlNames["WorkingRoot"] = new("WorkingRoot", "客户区根（布局边界）");
         catalog.ControlNames["RootLayoutTransformControl"] = new("RootLayoutTransformControl", "根布局缩放控件");
         catalog.ControlNames["GridRoot"] = new("GridRoot", "主界面网格根（底图/纹理宿主）");
-        catalog.ControlNames["BackgroundBorder"] = new("BackgroundBorder", "每行主界面背景（底色/边框/圆角）");
+        // BackgroundBorder / BackgroundBorderOverlayMask / OverlayMask / GridOverlay 是
+        // MainWindowLine 控件模板的模板部件：行未物化或使用精简模板（IsNotificationEnabled=False）
+        // 时它们会合法地不在可视树中，因此标记 Optional，避免被健康检查误判为宿主点位失效。
+        catalog.ControlNames["BackgroundBorder"] = new("BackgroundBorder", "每行主界面背景（底色/边框/圆角）") { Optional = true };
         catalog.ControlNames["BackgroundBorderWrapper"] = new("BackgroundBorderWrapper", "Fluent 主题背景容器") { Optional = true };
-        catalog.ControlNames["BackgroundBorderOverlayMask"] = new("BackgroundBorderOverlayMask", "背景遮罩");
-        catalog.ControlNames["OverlayMask"] = new("OverlayMask", "通知遮罩");
-        catalog.ControlNames["GridOverlay"] = new("GridOverlay", "覆盖层宿主（即将上课/倒计时箭头）");
+        catalog.ControlNames["BackgroundBorderOverlayMask"] = new("BackgroundBorderOverlayMask", "背景遮罩") { Optional = true };
+        catalog.ControlNames["OverlayMask"] = new("OverlayMask", "通知遮罩") { Optional = true };
+        catalog.ControlNames["GridOverlay"] = new("GridOverlay", "覆盖层宿主（即将上课/倒计时箭头）") { Optional = true };
 
         // ---- 类型全名 ----
         catalog.TypeNames["MainWindowLine"] = new("ClassIsland.Controls.MainWindowLine", "主界面行（提醒/覆盖层/纹理宿主）");

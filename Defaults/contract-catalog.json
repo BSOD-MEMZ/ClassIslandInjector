@@ -32,7 +32,8 @@
     },
     "BackgroundBorder": {
       "value": "BackgroundBorder",
-      "feature": "每行主界面背景（底色/边框/圆角）"
+      "feature": "每行主界面背景（底色/边框/圆角）",
+      "optional": true
     },
     "BackgroundBorderWrapper": {
       "value": "BackgroundBorderWrapper",
@@ -41,15 +42,18 @@
     },
     "BackgroundBorderOverlayMask": {
       "value": "BackgroundBorderOverlayMask",
-      "feature": "背景遮罩"
+      "feature": "背景遮罩",
+      "optional": true
     },
     "OverlayMask": {
       "value": "OverlayMask",
-      "feature": "通知遮罩"
+      "feature": "通知遮罩",
+      "optional": true
     },
     "GridOverlay": {
       "value": "GridOverlay",
-      "feature": "覆盖层宿主（即将上课/倒计时箭头）"
+      "feature": "覆盖层宿主（即将上课/倒计时箭头）",
+      "optional": true
     }
   },
   "typeNames": {

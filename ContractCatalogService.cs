@@ -80,6 +80,19 @@ internal static class ContractCatalogService
 {
     private const string CatalogFileName = "contract-catalog.json";
 
+    /// <summary>
+    /// MainWindowLine 控件模板的模板部件名。这些命名控件只存在于行模板中，
+    /// 当某行未物化或使用精简模板（IsNotificationEnabled=False）时它们会合法地
+    /// 不在主窗口可视树里，因此不能用「可视树扫描缺失」判定宿主点位失效。
+    /// </summary>
+    private static readonly HashSet<string> MainWindowLineTemplateParts = new(StringComparer.Ordinal)
+    {
+        "BackgroundBorder",
+        "BackgroundBorderOverlayMask",
+        "OverlayMask",
+        "GridOverlay",
+    };
+
     /// <summary>插件网站上的对照表索引地址（写死，用户无需填写）。</summary>
     public const string DefaultIndexUrl = "https://xxtsoft.top/support/injector/tables/index.json";
 
@@ -242,10 +255,20 @@ internal static class ContractCatalogService
             // 控件名
             foreach (var (key, entry) in Current.ControlNames)
             {
-                if (!controlNames.Contains(entry.Value) && !entry.Optional)
+                if (controlNames.Contains(entry.Value) || entry.Optional)
                 {
-                    list.Add(new ContractDegradation("控件名", key, entry.Value, entry.Feature ?? key));
+                    continue;
                 }
+
+                // MainWindowLine 模板部件：行未物化 / 使用精简模板（IsNotificationEnabled=False）时
+                // 会合法地不在可视树中，只要宿主 MainWindowLine 类型仍存在就不算点位失效。
+                if (MainWindowLineTemplateParts.Contains(entry.Value) &&
+                    FindType(HostContract.MainWindowLineTypeName) != null)
+                {
+                    continue;
+                }
+
+                list.Add(new ContractDegradation("控件名", key, entry.Value, entry.Feature ?? key));
             }
 
             // 类型名（AvaloniaRuntimeXamlLoader 不在可视树中，改为反射查类型）
