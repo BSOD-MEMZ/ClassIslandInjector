@@ -15,7 +15,7 @@ namespace ClassIslandInjector.Views;
 /// <summary>
 /// Photoshop 风格底图图层编辑器。
 /// 概念：
-/// - 画布 = 一层「ClassIsland 岛屿」（默认锁定，解锁后可拖动边缘模拟岛屿长度变化）
+/// - 画布 = 一层「ClassIsland 主界面」（默认锁定，解锁后可拖动边缘模拟主界面长度变化）
 ///   叠加任意数量的图片图层（锚点相对定位 + 像素偏移 + 尺寸 + 旋转）。
 /// - 相对定位：图层矩形由「锚点（左/中/右 × 上/中/下）+ 偏移」表达，
 ///   因此 ClassIsland 主界面长度变化时底图按锚点自适应。
@@ -55,7 +55,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         Opacity = 0.75,
         FontSize = 12
     };
-    /// <summary>自定义尺寸的两行（铺满岛屿关闭时显示）。</summary>
+    /// <summary>自定义尺寸的两行（铺满主界面关闭时显示）。</summary>
     private Control _widthItem = null!;
     private Control _heightItem = null!;
     /// <summary>SMTC 模式行（仅选中 SMTC 图层时显示）。</summary>
@@ -257,7 +257,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 _groupButton,
                 _ungroupButton,
                 new CommandBarSeparator(),
-                CommandButton("\uE62F", "重置岛屿尺寸", "把岛屿预览尺寸恢复为 ClassIsland 实际尺寸", ResetIslandSize),
+                CommandButton("\uE62F", "重置主界面尺寸", "把主界面预览尺寸恢复为 ClassIsland 实际尺寸", ResetIslandSize),
                 CommandButton("\uE92A", "棋盘格配色", "设置画布背景棋盘格：跟随主题自动按深浅色选择，或自定义两种颜色", OpenCheckerboardSettings),
                 CommandButton("\uEEB5", "保存并应用", "保存图层并应用到主界面", Save)
             }
@@ -495,14 +495,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             {
                 SettingsRow("跟随主题", followTheme),
                 SettingsRow("棋盘格颜色 1", color1),
-                SettingsRow("棋盘格颜色 2", color2),
-                new TextBlock
-                {
-                    Text = "跟随主题时按深浅色自动选择（深色主题用深棋盘格，浅色用白/浅灰 fff/ccc）；关闭后可自定义两种颜色。",
-                    TextWrapping = TextWrapping.Wrap,
-                    Opacity = 0.8,
-                    Margin = new Thickness(0, 6, 0, 0)
-                }
+                SettingsRow("棋盘格颜色 2", color2)
             }
         };
         var dialog = new ContentDialog
@@ -540,6 +533,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         panel.Children.Add(ToolButton(WallpaperEditorTool.Text, "\uF1BD", "文本工具（T）：点击插入文本框图层"));
         panel.Children.Add(new Separator { Margin = new Thickness(2, 5) });
         panel.Children.Add(ToolActionButton("\uEBCA", "添加 SMTC 图层", "把当前播放的专辑封面作为新的底图图层（无播放时显示占位封面）", AddSmtcLayer));
+        panel.Children.Add(ToolActionButton("\uE7DC", "添加贴纸", "在线获取 Project Sekai 角色贴纸，插入为新的底图图层", OpenStickerPicker));
         return panel;
     }
 
@@ -913,7 +907,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _smtcModeBox.SelectionChanged += (_, _) => ApplyToSelected(l =>
         {
             l.SmtcMode = Selected(_smtcModeBox, WallpaperLayerSmtcMode.AsImage);
-            // 默认处理：强制铺满岛屿（不可自定义尺寸/位移）。
+            // 默认处理：强制铺满主界面（不可自定义尺寸/位移）。
             if (l.SmtcMode == WallpaperLayerSmtcMode.Default)
             {
                 l.SizeMode = WallpaperLayerSizeMode.FillIsland;
@@ -1029,7 +1023,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _widthItem = SettingsRow("宽度 (px)", _widthSpin);
         _heightItem = SettingsRow("高度 (px)", _heightSpin);
         inspector.Children.Add(GroupSubtitle("\uE27E", "尺寸"));
-        inspector.Children.Add(SettingsRow("铺满岛屿", _fillIslandToggle));
+        inspector.Children.Add(SettingsRow("铺满主界面", _fillIslandToggle));
         inspector.Children.Add(_widthItem);
         inspector.Children.Add(_heightItem);
         inspector.Children.Add(GroupSubtitle("\uEEA5", "旋转"));
@@ -1204,7 +1198,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _ungroupButton.IsEnabled = sameGroup;
     }
 
-    // ============ 添加图层 / 岛屿重置 ============
+    // ============ 添加图层 / 主界面重置 ============
 
     private async void AddImageLayer()
     {
@@ -1274,7 +1268,53 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         UpdateStatus();
     }
 
-    /// <summary>在岛屿中央添加一个矢量形状图层（可在画布上继续移动 / 调整）。</summary>
+    /// <summary>打开在线贴纸选择窗口（单例；已打开则聚焦）。</summary>
+    private void OpenStickerPicker()
+    {
+        if (StickerPickerWindow.Current is { } existing)
+        {
+            existing.Activate();
+            return;
+        }
+
+        new StickerPickerWindow(AddStickerLayer).Show();
+    }
+
+    /// <summary>把下载到本地缓存的贴纸插入为新的图片图层（按贴纸比例自动设定初始尺寸）。</summary>
+    private void AddStickerLayer(string path, string name)
+    {
+        PushUndo();
+        var layer = new WallpaperLayerItem
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            Name = name,
+            Source = WallpaperSource.LocalImage,
+            Path = path,
+            SizeMode = WallpaperLayerSizeMode.Custom,
+            DisplayMode = WallpaperDisplayMode.Fit,
+            AnchorX = WallpaperLayerAnchorX.Center,
+            AnchorY = WallpaperLayerAnchorY.Center
+        };
+        _layers.Add(layer);
+        _dirty = true;
+        _canvas.Layers = _layers; // 触发 RefreshImages 加载位图
+        // 按贴纸宽高比设定初始尺寸（高 = 主界面 0.8，宽按比例），并居中放置。
+        if (_canvas.GetThumbnail(layer.Id) is { } bitmap && bitmap.PixelSize.Height > 0)
+        {
+            var aspect = bitmap.PixelSize.Width / (double)bitmap.PixelSize.Height;
+            var h = _canvas.IslandHeight * 0.8;
+            layer.Width = Math.Max(1, h * aspect);
+            layer.Height = h;
+            _canvas.Refresh();
+        }
+
+        _canvas.Select(layer.Id);
+        RefreshLayerList();
+        RefreshInspector();
+        UpdateStatus();
+    }
+
+    /// <summary>在主界面中央添加一个矢量形状图层（可在画布上继续移动 / 调整）。</summary>
     private void AddShapeLayer()
     {
         PushUndo();
@@ -1299,7 +1339,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         UpdateStatus();
     }
 
-    /// <summary>在岛屿中央添加一个文本框图层。</summary>
+    /// <summary>在主界面中央添加一个文本框图层。</summary>
     private void AddTextLayer()
     {
         PushUndo();
@@ -1330,14 +1370,14 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         var size = InjectorRuntime.GetCurrentIslandSize();
         _canvas.SetIslandSize(size?.Width > 0 ? size.Value.Width : DefaultIslandWidth,
             size?.Height > 0 ? size.Value.Height : DefaultIslandHeight);
-        _statusText.Text = "已把岛屿尺寸重置为 ClassIsland 实际尺寸。";
+        _statusText.Text = "已把主界面尺寸重置为 ClassIsland 实际尺寸。";
     }
 
     // ============ 图层面板 ============
 
     /// <summary>当前正在拖拽排序的图层（非空表示正在拖拽中）。</summary>
     private WallpaperLayerItem? _reorderLayer;
-    /// <summary>当前正在拖拽的背景（岛屿）行（与 _reorderLayer 互斥）。</summary>
+    /// <summary>当前正在拖拽的背景（主界面）行（与 _reorderLayer 互斥）。</summary>
     private bool _reorderBackground;
     /// <summary>背景行拖拽的目标层级。</summary>
     private WallpaperLayerZOrder _reorderBackgroundTarget;
@@ -1365,7 +1405,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         var islandRow = new LayerRowControl
         {
             IsIsland = true,
-            Title = "ClassIsland 岛屿",
+            Title = "ClassIsland 主界面",
             Subtitle = "背景图层 · 默认锁定",
             IconGlyph = "\uE62F",
             Unlocked = _canvas.IslandUnlocked,
@@ -1481,7 +1521,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     }
 
     /// <summary>
-    /// 开始拖拽背景（岛屿）行：放到列表顶部 = 底色之后，放到列表底部 = 底色之上、组件之下。
+    /// 开始拖拽背景（主界面）行：放到列表顶部 = 底色之后，放到列表底部 = 底色之上、组件之下。
     /// 层级由背景行在图层面板中的上下位置决定，释放时才生效。
     /// </summary>
     private void BeginBackgroundReorder(LayerRowControl row, PointerPressedEventArgs e)
@@ -1912,7 +1952,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             _textUseSmtcTitleItem.IsVisible = isText;
             _textBoldItem.IsVisible = isText;
             _textAlignItem.IsVisible = isText;
-            // 默认处理模式：锁定尺寸/位移/旋转，强制铺满岛屿。
+            // 默认处理模式：锁定尺寸/位移/旋转，强制铺满主界面。
             _fillIslandToggle.IsEnabled = !smtcDefault;
             _rotationSpin.IsEnabled = !smtcDefault;
             _offsetXSpin.IsEnabled = !smtcDefault;
@@ -2010,31 +2050,31 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         return Color.FromArgb(color.A, accent.R, accent.G, accent.B);
     }
 
-    /// <summary>把选中图层的相对位置表达成人类可读的提示，如「右边缘 = 岛屿右边缘 - 16px」。</summary>
+    /// <summary>把选中图层的相对位置表达成人类可读的提示，如「右边缘 = 主界面右边缘 - 16px」。</summary>
     private string RelativeHintText(WallpaperLayerItem layer)
     {
         if (IsSmtcDefaultMode(layer))
         {
-            return "当前为 SMTC 图层的默认处理：铺满整个岛屿，仅可调整透明度与显示方式。\n切换为「当作图片处理」后可自由位移、缩放、旋转。";
+            return "当前为 SMTC 图层的默认处理：铺满整个主界面，仅可调整透明度与显示方式。\n切换为「当作图片处理」后可自由位移、缩放、旋转。";
         }
 
         if (layer.SizeMode == WallpaperLayerSizeMode.FillIsland)
         {
-            return "当前图层铺满整个岛屿，随岛屿尺寸自适应。拖动手柄或旋转后会切换为自定义尺寸。";
+            return "当前图层铺满整个主界面，随主界面尺寸自适应。拖动手柄或旋转后会切换为自定义尺寸。";
         }
 
         var xText = layer.AnchorX switch
         {
-            WallpaperLayerAnchorX.Left => $"左边缘 = 岛屿左边缘 {OffsetText(layer.OffsetX)}",
-            WallpaperLayerAnchorX.Center => $"中心 = 岛屿中心 {OffsetText(layer.OffsetX)}",
-            WallpaperLayerAnchorX.Right => $"右边缘 = 岛屿右边缘 {OffsetText(layer.OffsetX)}",
+            WallpaperLayerAnchorX.Left => $"左边缘 = 主界面左边缘 {OffsetText(layer.OffsetX)}",
+            WallpaperLayerAnchorX.Center => $"中心 = 主界面中心 {OffsetText(layer.OffsetX)}",
+            WallpaperLayerAnchorX.Right => $"右边缘 = 主界面右边缘 {OffsetText(layer.OffsetX)}",
             _ => string.Empty
         };
         var yText = layer.AnchorY switch
         {
-            WallpaperLayerAnchorY.Top => $"上边缘 = 岛屿上边缘 {OffsetText(layer.OffsetY)}",
-            WallpaperLayerAnchorY.Center => $"垂直中心 = 岛屿垂直中心 {OffsetText(layer.OffsetY)}",
-            WallpaperLayerAnchorY.Bottom => $"下边缘 = 岛屿下边缘 {OffsetText(layer.OffsetY)}",
+            WallpaperLayerAnchorY.Top => $"上边缘 = 主界面上边缘 {OffsetText(layer.OffsetY)}",
+            WallpaperLayerAnchorY.Center => $"垂直中心 = 主界面垂直中心 {OffsetText(layer.OffsetY)}",
+            WallpaperLayerAnchorY.Bottom => $"下边缘 = 主界面下边缘 {OffsetText(layer.OffsetY)}",
             _ => string.Empty
         };
         return $"{xText}\n{yText} · 宽 {layer.Width:0}px × 高 {layer.Height:0}px · 旋转 {layer.Rotation:0}°";
@@ -2052,10 +2092,10 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
 
     private void UpdateStatus()
     {
-        var islandPart = $"岛屿 {_canvas.IslandWidth:0} × {_canvas.IslandHeight:0}";
+        var islandPart = $"主界面 {_canvas.IslandWidth:0} × {_canvas.IslandHeight:0}";
         var unlockPart = _canvas.IslandUnlocked
-            ? "· 岛屿已解锁：拖动右/下边缘可模拟 ClassIsland 长度变化，观察底图自适应"
-            : "· 在右侧图层面板解锁岛屿后可拖动边缘测试自适应";
+            ? "· 主界面已解锁：拖动右/下边缘可模拟 ClassIsland 长度变化，观察底图自适应"
+            : "· 在右侧图层面板解锁主界面后可拖动边缘测试自适应";
         var selected = _canvas.SelectedLayers;
         var selectedPart = selected.Count switch
         {
@@ -2234,7 +2274,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private static readonly Pick<WallpaperLayerSmtcMode>[] SmtcModeChoices =
     [
         new(WallpaperLayerSmtcMode.AsImage, "当作图片处理"),
-        new(WallpaperLayerSmtcMode.Default, "默认处理（铺满岛屿）"),
+        new(WallpaperLayerSmtcMode.Default, "默认处理（铺满主界面）"),
     ];
 
     private static readonly Pick<WallpaperShapeType>[] ShapeTypeChoices =
@@ -2430,8 +2470,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
 
             if (IsIsland)
             {
-                // 岛屿行：左侧拖拽手柄调整背景层级（顶部 = 底色之后，底部 = 底色之上、组件之下）；
-                // 右侧为「解锁岛屿」按钮（眼睛不可用，岛屿始终可见）。
+                // 主界面行：左侧拖拽手柄调整背景层级（顶部 = 底色之后，底部 = 底色之上、组件之下）；
+                // 右侧为「解锁主界面」按钮（眼睛不可用，主界面始终可见）。
                 var dragHandle = new Border
                 {
                     Width = 18,
@@ -2455,7 +2495,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                     }
                 };
                 var lockButton = IconButton(Unlocked ? "\uEAF8" : "\uEAF0",
-                    Unlocked ? "锁定岛屿" : "解锁岛屿（可拖动边缘测试自适应）", _lockAction);
+                    Unlocked ? "锁定主界面" : "解锁主界面（可拖动边缘测试自适应）", _lockAction);
                 grid.ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto,Auto");
                 Grid.SetColumn(dragHandle, 0);
                 Grid.SetColumn(lockButton, 3);

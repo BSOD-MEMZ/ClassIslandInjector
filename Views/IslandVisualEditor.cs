@@ -583,7 +583,7 @@ internal sealed class IslandVisualEditorWindow : MyWindow
                 CompactRow("水平偏移", ShadowOffsetXSpin, ShadowToggle),
                 CompactRow("垂直偏移", ShadowOffsetYSpin, ShadowToggle),
                 CompactRow("阴影不透明度", ShadowOpacitySpin, ShadowToggle),
-                SectionTitle("\uE254", "岛屿边框"),
+                SectionTitle("\uE254", "主界面边框"),
                 CompactRow("启用边框", BorderToggle),
                 CompactRow("边框颜色", BorderColorPicker, BorderToggle),
                 CompactRow("边框线宽", BorderThicknessSpin, BorderToggle)

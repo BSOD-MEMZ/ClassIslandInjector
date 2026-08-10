@@ -117,7 +117,7 @@ internal static class InjectorRuntime
     public static string HostVersion => ContractCatalogService.GetHostVersion();
 
     /// <summary>
-    /// 当前主界面岛屿尺寸（供底图图层编辑器初始化预览画布；未附着或不可用时返回 null）。
+    /// 当前主界面尺寸（供底图图层编辑器初始化预览画布；未附着或不可用时返回 null）。
     /// </summary>
     public static Size? GetCurrentIslandSize()
     {

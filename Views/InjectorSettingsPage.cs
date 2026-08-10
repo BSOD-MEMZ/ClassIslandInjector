@@ -117,7 +117,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly Spin _wallpaperOffsetY = Spinner(-0.5, 0.5, 0.01);
     private readonly Spin _wallpaperSlideshowInterval = Spinner(2, 3600, 1, "0");
     private readonly Spin _wallpaperBlur = Spinner(0, 60, 1);
-    private readonly ComboBox _wallpaperZOrder = Combo(WallpaperLayerZOrders);
     /// <summary>「打开图层编辑器」入口（仅专家模式显示）。</summary>
     private SettingsExpanderItem _wallpaperEditorItem = null!;
     /// <summary>基础模式专属设置项（专家模式时整体隐藏）。</summary>
@@ -376,13 +375,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         new(BackgroundTexture.Spectrum, "动态频谱"),
     ];
 
-    private static readonly Choice<WallpaperLayerZOrder>[] WallpaperLayerZOrders =
-    [
-        new(WallpaperLayerZOrder.BehindBackground, "底色之后（默认，当前行为）"),
-        new(WallpaperLayerZOrder.AboveBackground, "底色之上、组件之下"),
-        new(WallpaperLayerZOrder.AboveComponents, "组件之上（最顶层）"),
-    ];
-
     public InjectorSettingsPage()
     {
         Content = BuildContent();
@@ -515,13 +507,12 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         };
         panel.Children.Add(_wallpaperModeInfoBar);
         var wallpaperGroup = SwitchableGroup("\uF42D", "背景图片", "为 ClassIsland 主界面添加背景图片", _wallpaperEnabled,
-            Item("编辑模式", "基础模式使用简单的单图设置；专家模式使用 Photoshop 风格的图层编辑器，可叠加任意数量的图片、形状与文字图层。", _wallpaperModeBox),
-            _wallpaperEditorItem = Item("打开图层编辑器", "用专家模式编辑器彻底自定义背景图片：八向调整、旋转、智能对齐标尺、锚点相对定位，并可测试主界面长度变化时的自适应效果。", Button("打开编辑器", OpenWallpaperLayerEditor)),
-            Item("底图所在层级", "选择底图相对主界面自身的层级；默认位于底色之后（等同旧版行为）。", _wallpaperZOrder),
+            Item("编辑模式", "", _wallpaperModeBox),
+            _wallpaperEditorItem = Item("打开图层编辑器", "", Button("打开编辑器", OpenWallpaperLayerEditor)),
             _wallpaperSourceItem = Item("图片来源", "选择底图的来源（专家模式启用时被忽略）。", _wallpaperSource),
             _wallpaperPathItem = wallpaperPathItem,
             _wallpaperOpacityItem = Item("图片不透明度", "底图的整体透明度。", _wallpaperOpacity),
-            _wallpaperDisplayModeItem = Item("显示方式", "图片在岛屿内的显示方式。", _wallpaperDisplayMode),
+            _wallpaperDisplayModeItem = Item("显示方式", "图片在主界面内的显示方式。", _wallpaperDisplayMode),
             _wallpaperScaleItem = Item("缩放", "底图的缩放倍率（1 为按显示方式适应，大于 1 放大裁剪）", _wallpaperScale),
             _wallpaperOffsetXItem = Item("水平偏移", "底图的水平偏移（相对图片宽度，-0.5 到 0.5）", _wallpaperOffsetX),
             _wallpaperOffsetYItem = Item("垂直偏移", "底图的垂直偏移（相对图片高度，-0.5 到 0.5）", _wallpaperOffsetY),
@@ -1300,7 +1291,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                      _border, _borderColor, _borderThickness,
                      _wallpaperEnabled, _wallpaperModeBox, _wallpaperSource, _wallpaperPath, _wallpaperOpacity, _wallpaperDisplayMode,
                      _wallpaperScale, _wallpaperOffsetX, _wallpaperOffsetY, _wallpaperSlideshowInterval, _wallpaperBlur,
-                     _wallpaperZOrder,
                      _visibilityAnimation, _visibilityAnimationEnabled, _visibilityDuration,
                      _emphasisAnimation, _emphasisAnimationEnabled, _emphasisAmount, _emphasisDuration,
                      _notificationTransition, _notificationTransitionEnabled, _notificationTransitionDuration,
@@ -1657,7 +1647,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _wallpaperOffsetY.DoubleValue = settings.WallpaperOffsetY;
         _wallpaperSlideshowInterval.DoubleValue = settings.WallpaperSlideshowIntervalSeconds;
         _wallpaperBlur.DoubleValue = settings.WallpaperBlurRadius;
-        Select(_wallpaperZOrder, WallpaperLayerZOrders, settings.WallpaperZOrder);
         UpdateWallpaperModeVisibility();
         Select(_visibilityAnimation, VisibilityAnimations, settings.VisibilityAnimation);
         _visibilityAnimationEnabled.IsChecked = settings.VisibilityAnimation != VisibilityAnimation.None;
@@ -1812,7 +1801,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.WallpaperOffsetY = _wallpaperOffsetY.DoubleValue;
             settings.WallpaperSlideshowIntervalSeconds = _wallpaperSlideshowInterval.DoubleValue;
             settings.WallpaperBlurRadius = _wallpaperBlur.DoubleValue;
-            settings.WallpaperZOrder = Selected(_wallpaperZOrder, WallpaperLayerZOrder.BehindBackground);
             settings.VisibilityAnimation = _visibilityAnimationEnabled.IsChecked == true
                 ? Selected(_visibilityAnimation, VisibilityAnimation.None)
                 : VisibilityAnimation.None;
@@ -2198,7 +2186,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         var window = new WallpaperLayerEditorWindow();
         window.Closed += (_, _) => Dispatcher.UIThread.Post(LoadFromSettings);
         window.Show();
-        _status.Text = "已打开底图图层编辑器：添加图片图层后可用八向手柄调整、旋转，拖动时会出现智能对齐标尺；解锁岛屿后可拖动边缘测试长度自适应。";
     }
 
     /// <summary>回退到旧版简单模式底图（清空图层并关闭图层式底图）。</summary>
@@ -2243,7 +2230,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         RefreshWallpaperModeInfo();
     }
 
-    /// <summary>刷新「专家模式」状态提示（显示图层数并提示可回退到基础模式）。</summary>
+    /// <summary>刷新「专家模式」状态提示（专家模式时显示 InfoBar，可一键回退基础模式）。</summary>
     private void RefreshWallpaperModeInfo()
     {
         if (_wallpaperModeInfoBar == null)
@@ -2252,16 +2239,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         }
 
         var settings = InjectorRuntime.Settings;
-        if (!settings.WallpaperDesignerEnabled)
-        {
-            _wallpaperModeInfoBar.IsOpen = false;
-            return;
-        }
-
-        var count = settings.WallpaperLayers.Count(l => l.Visible && (l.Source != WallpaperSource.None || l.Kind != WallpaperLayerKind.Image));
-        _wallpaperModeInfoBar.Message =
-            $"当前使用 Photoshop 风格图层编辑器配置（{count} 个可用图层）。上方已隐藏「图片来源」等基础模式设置；如需回退请点击「恢复简单模式」或把「编辑模式」切回基础模式。";
-        _wallpaperModeInfoBar.IsOpen = true;
+        _wallpaperModeInfoBar.IsOpen = settings.WallpaperDesignerEnabled;
     }
 
     private static StackPanel Actions(string firstText, Action firstAction, string secondText, Action secondAction) => new()

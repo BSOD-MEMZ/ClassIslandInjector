@@ -28,7 +28,7 @@ internal static class HostContract
     /// <summary>根布局缩放控件（宿主整体缩放）。</summary>
     public static string RootLayoutTransformControl { get; private set; } = "RootLayoutTransformControl";
 
-    /// <summary>岛屿内容根 Grid。</summary>
+    /// <summary>主界面内容根 Grid。</summary>
     public static string GridRoot { get; private set; } = "GridRoot";
 
     /// <summary>每行主界面的背景 Border。</summary>

@@ -1650,7 +1650,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
     }
 
     /// <summary>
-    /// 把底图约束到岛屿的实际可见边界内（各行的 BackgroundBorder 并集），
+    /// 把底图约束到主界面的实际可见边界内（各行的 BackgroundBorder 并集），
     /// 避免底图溢出到整个窗口区域。
     /// </summary>
     private void UpdateWallpaperBounds(IEnumerable<Control>? descendants = null)
@@ -1851,7 +1851,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         // 位图图层需要来源；形状 / 文本图层（Kind != Image）始终参与渲染；
-        // 「扩展到整个显示框架」的图层由独立全屏宿主渲染，不参与岛屿画布。
+        // 「扩展到整个显示框架」的图层由独立全屏宿主渲染，不参与主界面画布。
         var wanted = _settings.WallpaperLayers
             .Where(l => l.Visible && !l.FullscreenExtend &&
                         (l.Kind != WallpaperLayerKind.Image || l.Source != WallpaperSource.None))
@@ -1913,8 +1913,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
     }
 
     /// <summary>
-    /// 按当前岛屿尺寸与各图层设置重排图层矩形（锚点相对定位 + 尺寸模式 + 旋转）。
-    /// 岛屿尺寸变化（宿主 SizeChanged）与图片加载完成时调用。
+    /// 按当前主界面尺寸与各图层设置重排图层矩形（锚点相对定位 + 尺寸模式 + 旋转）。
+    /// 主界面尺寸变化（宿主 SizeChanged）与图片加载完成时调用。
     /// </summary>
     private void LayoutWallpaperLayers()
     {
@@ -2293,7 +2293,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _wallpaperLayerViews.Clear();
     }
 
-    /// <summary>按设置把底图宿主插入岛屿 GridRoot 的对应层级（底色后 / 底色上组件下 / 组件上）。</summary>
+    /// <summary>按设置把底图宿主插入主界面 GridRoot 的对应层级（底色后 / 底色上组件下 / 组件上）。</summary>
     private void PositionWallpaperZOrder()
     {
         if (_wallpaperHost == null)
@@ -2330,7 +2330,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         islandGrid.Children.Insert(Math.Clamp(targetIndex, 0, islandGrid.Children.Count), _wallpaperHost);
     }
 
-    /// <summary>当前主界面岛屿的可见尺寸（供图层编辑器初始化预览画布；不可用返回 null）。</summary>
+    /// <summary>当前主界面的可见尺寸（供图层编辑器初始化预览画布；不可用返回 null）。</summary>
     public Size? GetIslandSize()
     {
         if (_wallpaperHost is { Bounds.Width: > 0, Bounds.Height: > 0 })
@@ -3553,7 +3553,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         var effectControls = TryGetFullScreenEffectHost(out var effectWindow);
-        // 花火/爆炸/屏幕涟漪比岛屿大得多，必须进全屏特效窗口，否则早期启动会被裁切。
+        // 花火/爆炸/屏幕涟漪比主界面大得多，必须进全屏特效窗口，否则早期启动会被裁切。
         if (_settings.RippleType is RippleType.Hanabi or RippleType.Explode or RippleType.Cinematic &&
             effectControls == null)
         {
@@ -3847,7 +3847,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     /// <summary>
     /// 抓取主窗口当前渲染帧（含主界面全部内容），作为全屏抓屏失败时的兜底。
-    /// 失败时再回退抓取岛屿根节点；仍失败则返回 null。
+    /// 失败时再回退抓取主界面根节点；仍失败则返回 null。
     /// </summary>
     private Bitmap? CaptureMainWindowFrame()
     {
@@ -3889,7 +3889,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
     }
 
     /// <summary>
-    /// 自动约束半径：包含主界面岛屿并留出舒适的扩散余量，同时确保全屏特效窗口里的
+    /// 自动约束半径：包含主界面并留出舒适的扩散余量，同时确保全屏特效窗口里的
     /// Ripple 不会扩散到整块桌面。
     /// </summary>
     private double GetAutomaticConstraintRadius()

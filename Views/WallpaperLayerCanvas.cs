@@ -31,9 +31,9 @@ internal enum WallpaperEditorTool
 }
 
 /// <summary>
-/// 底图图层编辑器的画布：渲染岛屿 + 图片/形状/文本图层，提供移动 / 八向缩放 / 旋转、
-/// 智能对齐标尺（吸附）、岛屿解锁拖动测试自适应。
-/// 所有矩形运算都在「岛屿坐标系」（原点 = 岛屿左上角）进行，锚点定位公式与运行时一致。
+/// 底图图层编辑器的画布：渲染主界面 + 图片/形状/文本图层，提供移动 / 八向缩放 / 旋转、
+/// 智能对齐标尺（吸附）、主界面解锁拖动测试自适应。
+/// 所有矩形运算都在「主界面坐标系」（原点 = 主界面左上角）进行，锚点定位公式与运行时一致。
 /// </summary>
 internal sealed class WallpaperLayerCanvas : UserControl
 {
@@ -208,7 +208,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         _rotationHandle.PointerReleased += RotationHandleOnPointerReleased;
         _stage.Children.Add(_rotationHandle);
 
-        // 岛屿缩放手柄（解锁后出现：右 / 下 / 右下角）
+        // 主界面缩放手柄（解锁后出现：右 / 下 / 右下角）
         foreach (var (dir, cursor) in new[]
                  {
                      ((Dx: 1, Dy: 0), StandardCursorType.RightSide),
@@ -576,7 +576,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
     public Bitmap? GetThumbnail(string id) => _bitmaps.TryGetValue(id, out var bm) ? bm : null;
 
     /// <summary>
-    /// 把选中图层对齐到岛屿对应参考点（等价于把锚点设为对应值并清零偏移），
+    /// 把选中图层对齐到主界面对应参考点（等价于把锚点设为对应值并清零偏移），
     /// 供浮动操作条与键盘操作调用；多选时对全部选中生效（跳过锁定）；会压入撤销并触发刷新。
     /// </summary>
     public void AlignSelected(int? xIndex, int? yIndex)
@@ -809,7 +809,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
             {
                 if (layer.FullscreenExtend)
                 {
-                    // 全屏扩展图层：画布中以岛屿区域近似预览（运行时铺满整个显示框架）。
+                    // 全屏扩展图层：画布中以主界面区域近似预览（运行时铺满整个显示框架）。
                     if (!_layerNineSlices.TryGetValue(layer.Id, out var nine))
                     {
                         continue;
@@ -880,7 +880,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
 
     private void RefreshIslandAppearance()
     {
-        // 岛屿占位内容：铺满岛屿尺寸并置于舞台中央，避免固定贴在舞台左上角。
+        // 主界面占位内容：铺满主界面尺寸并置于舞台中央，避免固定贴在舞台左上角。
         Canvas.SetLeft(_island, CanvasMargin);
         Canvas.SetTop(_island, CanvasMargin);
         _island.Width = _islandWidth;
@@ -903,7 +903,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         else
         {
             // 未启用自定义背景时，预览也应尊重宿主明暗主题；否则浅色主题会得到
-            // 深底黑字的低对比度岛屿。
+            // 深底黑字的低对比度主界面。
             color = s.CustomBackgroundEnabled
                 ? color
                 : ThemePalette.IsDarkTheme()
@@ -1016,10 +1016,11 @@ internal sealed class WallpaperLayerCanvas : UserControl
 
     // ============ 交互：选中框与手柄定位 ============
 
-    /// <summary>图层的舞台坐标选中矩形（岛屿坐标 + 边距）。</summary>
+    /// <summary>图层的舞台坐标选中矩形（主界面坐标 + 边距，含旋转后的轴对齐包围盒）。</summary>
     private Rect LayerSelectionRect(WallpaperLayerItem layer)
     {
         var r = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer));
+        r = WallpaperLayerLayout.RotatedBounds(r, layer.Rotation);
         return new Rect(CanvasMargin + r.X, CanvasMargin + r.Y, r.Width, r.Height);
     }
 
@@ -1136,6 +1137,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
             }
 
             var rect = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer));
+            rect = WallpaperLayerLayout.RotatedBounds(rect, layer.Rotation);
             if (rect.Contains(islandPos))
             {
                 return layer;
@@ -1425,7 +1427,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         }
 
         // 拖动整组：参与移动的 = 选中图层 ∪ 同组成员（跳过锁定），
-        // 并把「铺满岛屿」切为「自定义尺寸」，否则锚点偏移被忽略导致拖动无效。
+        // 并把「铺满主界面」切为「自定义尺寸」，否则锚点偏移被忽略导致拖动无效。
         var moving = new List<WallpaperLayerItem>();
         foreach (var sel in SelectedLayers)
         {
@@ -1591,7 +1593,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         return layer;
     }
 
-    /// <summary>把舞台坐标矩形转换为岛屿坐标矩形（舞台原点 = 岛屿左上角 + CanvasMargin）。</summary>
+    /// <summary>把舞台坐标矩形转换为主界面坐标矩形（舞台原点 = 主界面左上角 + CanvasMargin）。</summary>
     private static Rect ToIslandRect(Rect stageRect) =>
         new(stageRect.X - CanvasMargin, stageRect.Y - CanvasMargin, stageRect.Width, stageRect.Height);
 
@@ -1654,7 +1656,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         var h = aspect is > 0 ? _islandHeight * 0.8 : _islandHeight * 0.6;
         layer.Width = w;
         layer.Height = h;
-        // 锚点居中 + 偏移，使图层中心对准拖放点（岛屿坐标）。
+        // 锚点居中 + 偏移，使图层中心对准拖放点（主界面坐标）。
         var islandPos = new Point(stagePos.X - CanvasMargin, stagePos.Y - CanvasMargin);
         ApplyRectOffsets(layer, new Rect(islandPos.X - w / 2, islandPos.Y - h / 2, w, h));
         SyncImageControls();
@@ -1793,7 +1795,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
             return;
         }
 
-        // 铺满岛屿的图层被拖动时自动切换为自定义尺寸（以当前岛屿大小为初始尺寸）。
+        // 铺满主界面的图层被拖动时自动切换为自定义尺寸（以当前主界面大小为初始尺寸）。
         if (layer.SizeMode == WallpaperLayerSizeMode.FillIsland)
         {
             layer.SizeMode = WallpaperLayerSizeMode.Custom;
@@ -2029,7 +2031,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         return angle < 0 ? angle + 360 : angle;
     }
 
-    // ============ 岛屿缩放（预览自适应）============
+    // ============ 主界面缩放（预览自适应）============
 
     private void IslandHandleOnPointerPressed(Border handle, PointerPressedEventArgs e)
     {
@@ -2263,6 +2265,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
             }
 
             var rect = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer));
+            rect = WallpaperLayerLayout.RotatedBounds(rect, layer.Rotation);
             if (rect.Width > 0 && rect.Height > 0)
             {
                 result.Add(rect);
@@ -2273,8 +2276,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
     }
 
     /// <summary>
-    /// 把矩形吸附到岛屿或其它图层的边/中心（匹配同类型参考点：左对左、中对中、右对右），
-    /// 返回吸附后的矩形与参考线。参考线坐标位于岛屿坐标系，调用方负责转换为舞台坐标。
+    /// 把矩形吸附到主界面或其它图层的边/中心（匹配同类型参考点：左对左、中对中、右对右），
+    /// 返回吸附后的矩形与参考线。参考线坐标位于主界面坐标系，调用方负责转换为舞台坐标。
     /// </summary>
     private Rect SnapRect(Rect rect, List<Rect> others,
         bool useLeft, bool useRight, bool useCenterX,
@@ -2398,7 +2401,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         return island ? name : $"{name} · 对齐图层";
     }
 
-    /// <summary>吸附到岛屿左/右/水平中心时，把锚点切换为对应值并清零偏移（实现「右边缘 = 岛屿右边缘」）。</summary>
+    /// <summary>吸附到主界面左/右/水平中心时，把锚点切换为对应值并清零偏移（实现「右边缘 = 主界面右边缘」）。</summary>
     private void ApplyIslandSnapX(WallpaperLayerItem layer, Rect rect)
     {
         const double eps = 0.5;
@@ -2605,7 +2608,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
 
     private sealed record SnapResult(double Shift, double Target, int Kind, bool Island);
 
-    /// <summary>岛屿虚线边界（始终显示，帮助用户理解「锚点相对定位」的参照系）。</summary>
+    /// <summary>主界面虚线边界（始终显示，帮助用户理解「锚点相对定位」的参照系）。</summary>
     private sealed class IslandOutlineOverlay : Control
     {
         public Rect IslandBounds { get; set; }

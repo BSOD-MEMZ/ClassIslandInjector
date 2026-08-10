@@ -162,7 +162,7 @@ public enum WallpaperDisplayMode
 }
 
 /// <summary>
-/// 底图图层的水平锚点：图片的对应参考边/中心对齐岛屿的水平锚点后再偏移。
+/// 底图图层的水平锚点：图片的对应参考边/中心对齐主界面的水平锚点后再偏移。
 /// </summary>
 public enum WallpaperLayerAnchorX
 {
@@ -172,7 +172,7 @@ public enum WallpaperLayerAnchorX
 }
 
 /// <summary>
-/// 底图图层的垂直锚点：图片的对应参考边/中心对齐岛屿的垂直锚点后再偏移。
+/// 底图图层的垂直锚点：图片的对应参考边/中心对齐主界面的垂直锚点后再偏移。
 /// </summary>
 public enum WallpaperLayerAnchorY
 {
@@ -186,7 +186,7 @@ public enum WallpaperLayerAnchorY
 /// </summary>
 public enum WallpaperLayerSizeMode
 {
-    /// <summary>铺满整个岛屿（随岛屿尺寸变化；等同旧版简单模式行为，为默认）。</summary>
+    /// <summary>铺满整个主界面（随主界面尺寸变化；等同旧版简单模式行为，为默认）。</summary>
     FillIsland,
     /// <summary>自定义像素尺寸 + 锚点相对定位 + 旋转。</summary>
     Custom
@@ -199,7 +199,7 @@ public enum WallpaperLayerSmtcMode
 {
     /// <summary>当作普通图片图层处理：可自由位移、缩放、旋转、锚点定位（编辑器默认）。</summary>
     AsImage,
-    /// <summary>默认处理：铺满整个岛屿，仅可调整透明度与显示方式（等同旧版简单模式行为）。</summary>
+    /// <summary>默认处理：铺满整个主界面，仅可调整透明度与显示方式（等同旧版简单模式行为）。</summary>
     Default
 }
 

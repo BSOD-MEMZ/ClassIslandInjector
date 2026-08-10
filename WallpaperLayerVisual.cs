@@ -309,7 +309,9 @@ public sealed class WallpaperLayerVisual : Control
                 var geometry = formatted.BuildGeometry(origin);
                 if (geometry != null)
                 {
-                    context.DrawGeometry(strokeBrush, pen, geometry);
+                    // 只描边不填充（brush=null），再按文字填充色填充——镂空（透明填充）时
+                    // 内部即露出背景，形成真正的空心字；否则描边色会填满字内形成「底色」。
+                    context.DrawGeometry(null, pen, geometry);
                     context.DrawGeometry(brush, null, geometry);
                 }
             }
