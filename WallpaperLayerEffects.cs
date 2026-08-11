@@ -1,0 +1,267 @@
+using Avalonia;
+using Avalonia.Media;
+using Avalonia.Media.Imaging;
+using Avalonia.Platform;
+using System.Runtime.InteropServices;
+
+namespace ClassIslandInjector;
+
+/// <summary>
+/// 底图图层「效果」构建工具：把图层的模糊 / 投影设置翻译为 Avalonia 的 Effect，
+/// 以及把色相 / 饱和度 / 明度设置逐像素应用到位图。
+/// 编辑器画布预览与运行时注入器共用，保证所见即所得。
+/// 注意：Avalonia 11.3 的 Skia 渲染器（Effect 属性）只支持 BlurEffect（高斯模糊）与
+/// DropShadowEffect（投影）两种内建效果；色相 / 饱和度 / 明度需要逐像素重处理位图。
+/// </summary>
+public static class WallpaperLayerEffects
+{
+    /// <summary>构建高斯模糊效果；未启用（半径 ≤ 0）时返回 null。</summary>
+    public static BlurEffect? BuildBlur(WallpaperLayerItem layer)
+    {
+        if (layer.Kind != WallpaperLayerKind.Image || layer.BlurRadius <= 0)
+        {
+            return null;
+        }
+
+        return new BlurEffect { Radius = Math.Clamp(layer.BlurRadius, 0, 200) };
+    }
+
+    /// <summary>构建投影效果；未启用时返回 null。</summary>
+    public static DropShadowEffect? BuildShadow(WallpaperLayerItem layer)
+    {
+        if (layer.Kind != WallpaperLayerKind.Image || !layer.ShadowEnabled)
+        {
+            return null;
+        }
+
+        return new DropShadowEffect
+        {
+            BlurRadius = Math.Clamp(layer.ShadowBlurRadius, 0, 100),
+            OffsetX = Math.Clamp(layer.ShadowOffsetX, -200, 200),
+            OffsetY = Math.Clamp(layer.ShadowOffsetY, -200, 200),
+            Color = ParseColor(layer.ShadowColor, Color.FromArgb(0x99, 0, 0, 0)),
+            Opacity = Math.Clamp(layer.ShadowOpacity, 0, 1)
+        };
+    }
+
+    /// <summary>容错解析颜色；格式非法时回退到默认。</summary>
+    private static Color ParseColor(string text, Color fallback)
+    {
+        try
+        {
+            return Color.Parse(text);
+        }
+        catch (FormatException)
+        {
+            return fallback;
+        }
+    }
+
+    // ============ 色相 / 饱和度 / 明度（逐像素）============
+
+    /// <summary>图层是否启用了色相 / 饱和度 / 明度调整。</summary>
+    public static bool HasHsl(WallpaperLayerItem layer) =>
+        layer.Kind == WallpaperLayerKind.Image &&
+        (Math.Abs(layer.HueShift) > 0.001 ||
+         Math.Abs(layer.SaturationAdjust) > 0.001 ||
+         Math.Abs(layer.LightnessAdjust) > 0.001);
+
+    /// <summary>
+    /// 对位图逐像素应用色相 / 饱和度 / 明度调整（Photoshop 式），返回处理后的新位图；
+    /// 无调整或位图格式不支持时返回 null（调用方继续用原图）。
+    /// 用 GCHandle 钉住托管缓冲取地址读回源像素（全程安全代码，无需 unsafe）。
+    /// </summary>
+    public static Bitmap? ApplyHsl(Bitmap source, WallpaperLayerItem layer)
+    {
+        if (!HasHsl(layer))
+        {
+            return null;
+        }
+
+        var w = source.PixelSize.Width;
+        var h = source.PixelSize.Height;
+        if (w <= 0 || h <= 0)
+        {
+            return null;
+        }
+
+        // Windows/Skia 解码默认 Bgra8888；个别平台可能是 Rgba8888，两种都支持。
+        var format = source.Format;
+        var bgra = format == PixelFormat.Bgra8888;
+        if (!bgra && format != PixelFormat.Rgba8888)
+        {
+            return null;
+        }
+
+        var stride = w * 4;
+        var bytes = new byte[h * stride];
+        var handle = GCHandle.Alloc(bytes, GCHandleType.Pinned);
+        try
+        {
+            source.CopyPixels(new PixelRect(0, 0, w, h), handle.AddrOfPinnedObject(), bytes.Length, stride);
+        }
+        finally
+        {
+            handle.Free();
+        }
+
+        var hue = (layer.HueShift % 360) / 360.0;
+        var sat = 1 + layer.SaturationAdjust / 100.0;
+        var light = layer.LightnessAdjust / 100.0;
+        AdjustPixels(bytes, stride, w, h, bgra, hue, sat, light,
+            source.AlphaFormat == AlphaFormat.Premul);
+
+        var output = new WriteableBitmap(new PixelSize(w, h), source.Dpi, PixelFormat.Bgra8888, AlphaFormat.Premul);
+        using (var ofb = output.Lock())
+        {
+            var outStride = ofb.RowBytes;
+            if (outStride == stride)
+            {
+                Marshal.Copy(bytes, 0, ofb.Address, bytes.Length);
+            }
+            else
+            {
+                var row = w * 4;
+                for (var y = 0; y < h; y++)
+                {
+                    Marshal.Copy(bytes, y * stride, ofb.Address + y * outStride, row);
+                }
+            }
+        }
+
+        return output;
+    }
+
+    /// <summary>就地逐像素调整（Bgra8888 / Rgba8888，正确处理预乘 alpha）。</summary>
+    private static void AdjustPixels(byte[] bytes, int stride, int w, int h, bool bgra,
+        double hue, double sat, double light, bool premul)
+    {
+        var rowPixels = w * 4;
+        var needLight = Math.Abs(light) > 0.001;
+        for (var y = 0; y < h; y++)
+        {
+            var row = y * stride;
+            for (var x = 0; x < rowPixels; x += 4)
+            {
+                var i = row + x;
+                var a = bytes[i + 3];
+                if (a == 0)
+                {
+                    // 全透明像素无需处理。
+                    continue;
+                }
+
+                var b = bytes[i];
+                var g = bytes[i + 1];
+                var r = bytes[i + 2];
+                if (!bgra)
+                {
+                    // Rgba8888：字节序为 R,G,B,A。
+                    (r, b) = (b, r);
+                }
+
+                // 预乘 alpha 先反预乘，避免颜色失真。
+                if (premul && a != 255)
+                {
+                    r = (byte)(r * 255 / a);
+                    g = (byte)(g * 255 / a);
+                    b = (byte)(b * 255 / a);
+                }
+
+                if (r != g || g != b)
+                {
+                    // 彩色像素：完整 RGB -> HSL -> 调整 -> RGB。
+                    double rn = r / 255.0, gn = g / 255.0, bn = b / 255.0;
+                    var max = Math.Max(rn, Math.Max(gn, bn));
+                    var min = Math.Min(rn, Math.Min(gn, bn));
+                    var l = (max + min) / 2.0;
+                    double hh, s;
+                    if (max == min)
+                    {
+                        hh = 0;
+                        s = 0;
+                    }
+                    else
+                    {
+                        var d = max - min;
+                        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+                        hh = max == rn
+                            ? (gn - bn) / d + (gn < bn ? 6 : 0)
+                            : max == gn
+                                ? (bn - rn) / d + 2
+                                : (rn - gn) / d + 4;
+                        hh /= 6;
+                    }
+
+                    hh = (hh + hue) % 1.0;
+                    if (hh < 0)
+                    {
+                        hh += 1;
+                    }
+
+                    s = Math.Clamp(s * sat, 0, 1);
+                    l = Math.Clamp(l + light, 0, 1);
+                    var q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+                    var p = 2 * l - q;
+                    r = (byte)(HueToRgb(p, q, hh + 1.0 / 3.0) * 255);
+                    g = (byte)(HueToRgb(p, q, hh) * 255);
+                    b = (byte)(HueToRgb(p, q, hh - 1.0 / 3.0) * 255);
+                }
+                else if (needLight)
+                {
+                    // 灰色像素：仅受明度影响。
+                    var v = (byte)(Math.Clamp(r / 255.0 + light, 0, 1) * 255);
+                    r = g = b = v;
+                }
+
+                if (premul && a != 255)
+                {
+                    r = (byte)(r * a / 255);
+                    g = (byte)(g * a / 255);
+                    b = (byte)(b * a / 255);
+                }
+
+                if (!bgra)
+                {
+                    (r, b) = (b, r);
+                }
+
+                bytes[i] = b;
+                bytes[i + 1] = g;
+                bytes[i + 2] = r;
+                bytes[i + 3] = a;
+            }
+        }
+    }
+
+    /// <summary>HSL -> RGB 色相分量换算。</summary>
+    private static double HueToRgb(double p, double q, double t)
+    {
+        if (t < 0)
+        {
+            t += 1;
+        }
+
+        if (t > 1)
+        {
+            t -= 1;
+        }
+
+        if (t < 1.0 / 6.0)
+        {
+            return p + (q - p) * 6 * t;
+        }
+
+        if (t < 1.0 / 2.0)
+        {
+            return q;
+        }
+
+        if (t < 2.0 / 3.0)
+        {
+            return p + (q - p) * (2.0 / 3.0 - t) * 6;
+        }
+
+        return p;
+    }
+}

@@ -85,6 +85,24 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         Opacity = 0.75,
         FontSize = 12
     };
+    // 效果（仅图片图层）：高斯模糊 + 投影
+    private readonly EditorSpin _blurRadiusSpin = new(0, 100, 0.5, "0.##");
+    private readonly ToggleSwitch _shadowToggle = new() { OnContent = "开", OffContent = "关" };
+    private readonly EditorSpin _shadowBlurSpin = new(0, 100, 0.5, "0.##");
+    private readonly EditorSpin _shadowOffsetXSpin = new(-100, 100, 1, "0");
+    private readonly EditorSpin _shadowOffsetYSpin = new(-100, 100, 1, "0");
+    private readonly ColorPicker _shadowColorPicker = ColorPicker();
+    private readonly Slider _shadowOpacitySlider = SliderControl(0, 1, 0.05);
+    private Control _blurItem = null!;
+    private Control _shadowItem = null!;
+    private Control _shadowBlurItem = null!;
+    private Control _shadowOffsetXItem = null!;
+    private Control _shadowOffsetYItem = null!;
+    private Control _shadowColorItem = null!;
+    private Control _shadowOpacityItem = null!;
+    /// <summary>「色相 / 饱和度」按钮（打开 Photoshop 式调整窗口，仅图片图层显示）。</summary>
+    private readonly Button _hslButton = new() { Content = "色相 / 饱和度…" };
+    private Control _hslItem = null!;
     // 形状图层检查器
     private readonly ComboBox _shapeTypeBox = new() { MinWidth = 140, Name = "EditorShapeType" };
     private readonly ColorPicker _shapeFillPicker = ColorPicker();
@@ -149,6 +167,10 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private Button _duplicateButton = null!;
     private Button _deleteButton = null!;
     private Button _effectButton = null!;
+    /// <summary>色相 / 饱和度调整窗口（单例由窗口自身管理）。</summary>
+    private HslAdjustWindow? _hslWindow;
+    /// <summary>本次 HSL 调整会话是否已压过撤销（拖动滑块期间只压一次）。</summary>
+    private bool _hslUndoPushed;
     /// <summary>拖拽排序：独立置顶的「幽灵快照」预览窗口（参考「主界面 → 组件」拖拽）。</summary>
     private Window? _dragPreviewWindow;
     private Border? _dragPreviewHost;
@@ -239,6 +261,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             UpdateStatus();
             UpdateGroupButtons();
             UpdateLayerActionButtons();
+            // 选中变化时同步色相 / 饱和度窗口的滑块。
+            _hslWindow?.SyncFromEditor();
         };
         _canvas.IslandChanged += () =>
         {
@@ -475,6 +499,65 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         }
 
         new BackgroundEffectsWindow().Show();
+    }
+
+    /// <summary>打开色相 / 饱和度调整窗口（单例；已打开则聚焦）。</summary>
+    private void OpenHslAdjustWindow()
+    {
+        if (HslAdjustWindow.Current is { } existing)
+        {
+            existing.Activate();
+            _hslWindow = existing;
+            return;
+        }
+
+        // 每次打开作为一次新的调整会话：拖动滑块期间只压一次撤销。
+        _hslUndoPushed = false;
+        var window = new HslAdjustWindow(this);
+        _hslWindow = window;
+        window.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_hslWindow, window))
+            {
+                _hslWindow = null;
+            }
+        };
+        window.Show();
+    }
+
+    /// <summary>当前选中图层中第一个图片图层（HSL 窗口读取 / 同步用；无则 null）。</summary>
+    internal WallpaperLayerItem? FirstSelectedImageLayer =>
+        _canvas.SelectedLayers.FirstOrDefault(l => l.Kind == WallpaperLayerKind.Image);
+
+    /// <summary>
+    /// 把色相 / 饱和度 / 明度应用到选中的图片图层（HSL 窗口拖动滑块实时调用）。
+    /// 会刷新画布预览并标记脏；整次会话只压一次撤销。
+    /// </summary>
+    internal void ApplyHslToSelected(double hue, double sat, double light)
+    {
+        var layers = _canvas.SelectedLayers.Where(l => l.Kind == WallpaperLayerKind.Image).ToList();
+        if (layers.Count == 0)
+        {
+            return;
+        }
+
+        if (!_hslUndoPushed)
+        {
+            PushUndo();
+            _hslUndoPushed = true;
+        }
+
+        _dirty = true;
+        foreach (var layer in layers)
+        {
+            layer.HueShift = hue;
+            layer.SaturationAdjust = sat;
+            layer.LightnessAdjust = light;
+        }
+
+        _canvas.Refresh();
+        RefreshInspector();
+        UpdateStatus();
     }
 
     /// <summary>
@@ -746,6 +829,50 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _sliceRightSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) ApplyToSelected(l => l.SliceRight = _sliceRightSpin.DoubleValue); };
         _sliceBottomSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) ApplyToSelected(l => l.SliceBottom = _sliceBottomSpin.DoubleValue); };
         _editSliceButton.Click += (_, _) => OpenSliceEditor();
+        _blurRadiusSpin.PropertyChanged += (_, e) =>
+        {
+            if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty)
+            {
+                ApplyToSelected(l => { if (l.Kind == WallpaperLayerKind.Image) l.BlurRadius = _blurRadiusSpin.DoubleValue; });
+            }
+        };
+        _shadowToggle.PropertyChanged += (_, e) =>
+        {
+            if (!_updatingInspector && e.Property == ToggleSwitch.IsCheckedProperty)
+            {
+                ApplyToSelected(l => { if (l.Kind == WallpaperLayerKind.Image) l.ShadowEnabled = _shadowToggle.IsChecked == true; });
+            }
+        };
+        _shadowBlurSpin.PropertyChanged += (_, e) =>
+        {
+            if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty)
+            {
+                ApplyToSelected(l => { if (l.Kind == WallpaperLayerKind.Image) l.ShadowBlurRadius = _shadowBlurSpin.DoubleValue; });
+            }
+        };
+        _shadowOffsetXSpin.PropertyChanged += (_, e) =>
+        {
+            if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty)
+            {
+                ApplyToSelected(l => { if (l.Kind == WallpaperLayerKind.Image) l.ShadowOffsetX = _shadowOffsetXSpin.DoubleValue; });
+            }
+        };
+        _shadowOffsetYSpin.PropertyChanged += (_, e) =>
+        {
+            if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty)
+            {
+                ApplyToSelected(l => { if (l.Kind == WallpaperLayerKind.Image) l.ShadowOffsetY = _shadowOffsetYSpin.DoubleValue; });
+            }
+        };
+        _shadowColorPicker.PropertyChanged += (_, e) =>
+        {
+            if (!_updatingInspector && e.Property?.Name == "Color")
+            {
+                ApplyToSelected(l => { if (l.Kind == WallpaperLayerKind.Image) l.ShadowColor = _shadowColorPicker.Color.ToString(); });
+            }
+        };
+        _shadowOpacitySlider.ValueChanged += (_, _) => ApplyToSelected(l => { if (l.Kind == WallpaperLayerKind.Image) l.ShadowOpacity = _shadowOpacitySlider.Value; });
+        _hslButton.Click += (_, _) => OpenHslAdjustWindow();
         _shapeTypeBox.SelectionChanged += (_, _) =>
         {
             // 刷新检查器时的程序化选择不应触发应用或教程推进。
@@ -996,6 +1123,24 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         inspector.Children.Add(_sliceRightItem);
         inspector.Children.Add(_sliceBottomItem);
         inspector.Children.Add(_fullscreenHint);
+        // 效果（仅图片图层）：高斯模糊 + 投影
+        inspector.Children.Add(GroupSubtitle("\uF42F", "效果"));
+        _blurItem = SettingsRow("高斯模糊", _blurRadiusSpin);
+        _shadowItem = SettingsRow("投影", _shadowToggle);
+        _shadowBlurItem = SettingsRow("投影模糊", _shadowBlurSpin);
+        _shadowOffsetXItem = SettingsRow("投影水平偏移", _shadowOffsetXSpin);
+        _shadowOffsetYItem = SettingsRow("投影垂直偏移", _shadowOffsetYSpin);
+        _shadowColorItem = SettingsRow("投影颜色", _shadowColorPicker);
+        _shadowOpacityItem = SettingsRow("投影不透明度", _shadowOpacitySlider);
+        inspector.Children.Add(_blurItem);
+        inspector.Children.Add(_shadowItem);
+        inspector.Children.Add(_shadowBlurItem);
+        inspector.Children.Add(_shadowOffsetXItem);
+        inspector.Children.Add(_shadowOffsetYItem);
+        inspector.Children.Add(_shadowColorItem);
+        inspector.Children.Add(_shadowOpacityItem);
+        _hslItem = SettingsRow("色相 / 饱和度", _hslButton);
+        inspector.Children.Add(_hslItem);
         // 形状图层专属（仅选中形状图层时显示）
         _shapeTypeItem = SettingsRow("形状类型", _shapeTypeBox);
         _shapeCornerRadiusItem = SettingsRow("圆角半径", _shapeCornerRadiusSpin);
@@ -1956,6 +2101,14 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 _sliceRightItem.IsVisible = false;
                 _sliceBottomItem.IsVisible = false;
                 _fullscreenHint.IsVisible = false;
+                _blurItem.IsVisible = false;
+                _shadowItem.IsVisible = false;
+                _shadowBlurItem.IsVisible = false;
+                _shadowOffsetXItem.IsVisible = false;
+                _shadowOffsetYItem.IsVisible = false;
+                _shadowColorItem.IsVisible = false;
+                _shadowOpacityItem.IsVisible = false;
+                _hslItem.IsVisible = false;
                 _fillIslandToggle.IsEnabled = false;
                 _widthSpin.IsEnabled = false;
                 _heightSpin.IsEnabled = false;
@@ -2013,6 +2166,23 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             _fullscreenHint.Text = isFullscreen
                 ? "该图片将铺满整个 ClassIsland 显示框架，运行时隐藏底色、边框与阴影。开启「九宫格切图」后点击「编辑切图」，可在图片上直接框选四条切边防止四角拉伸变形。"
                 : string.Empty;
+            // 效果仅图片图层显示；投影子项仅在启用投影后展开。
+            var isImage = allSameKind && layer.Kind == WallpaperLayerKind.Image;
+            _blurItem.IsVisible = isImage;
+            _shadowItem.IsVisible = isImage;
+            _shadowBlurItem.IsVisible = isImage && layer.ShadowEnabled;
+            _shadowOffsetXItem.IsVisible = isImage && layer.ShadowEnabled;
+            _shadowOffsetYItem.IsVisible = isImage && layer.ShadowEnabled;
+            _shadowColorItem.IsVisible = isImage && layer.ShadowEnabled;
+            _shadowOpacityItem.IsVisible = isImage && layer.ShadowEnabled;
+            _hslItem.IsVisible = isImage;
+            _blurRadiusSpin.DoubleValue = layer.BlurRadius;
+            _shadowToggle.IsChecked = layer.ShadowEnabled;
+            _shadowBlurSpin.DoubleValue = layer.ShadowBlurRadius;
+            _shadowOffsetXSpin.DoubleValue = layer.ShadowOffsetX;
+            _shadowOffsetYSpin.DoubleValue = layer.ShadowOffsetY;
+            _shadowColorPicker.Color = ReadColor(layer.ShadowColor, Color.FromArgb(0x99, 0, 0, 0));
+            _shadowOpacitySlider.Value = layer.ShadowOpacity;
             _shapeTypeItem.IsVisible = isShape;
             // 圆角半径仅圆角矩形、星角/内凹仅五角星显示；属性值在 ShapeType 变化时由读值刷新。
             _shapeCornerRadiusItem.IsVisible = isShape && layer.ShapeType == WallpaperShapeType.RoundedRectangle;

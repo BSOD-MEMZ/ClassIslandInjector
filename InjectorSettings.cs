@@ -328,6 +328,36 @@ public sealed class WallpaperLayerItem
 
     public double SliceRight { get; set; }
 
+    /// <summary>高斯模糊半径（像素）；0 = 不模糊（仅图片图层）。</summary>
+    public double BlurRadius { get; set; }
+
+    /// <summary>是否启用投影（仅图片图层）。</summary>
+    public bool ShadowEnabled { get; set; }
+
+    /// <summary>投影模糊半径（像素）。</summary>
+    public double ShadowBlurRadius { get; set; } = 8;
+
+    /// <summary>投影水平偏移（像素，正向右）。</summary>
+    public double ShadowOffsetX { get; set; } = 3;
+
+    /// <summary>投影垂直偏移（像素，正向下）。</summary>
+    public double ShadowOffsetY { get; set; } = 5;
+
+    /// <summary>投影颜色（含透明度）。</summary>
+    public string ShadowColor { get; set; } = "#99000000";
+
+    /// <summary>投影不透明度（0-1）。</summary>
+    public double ShadowOpacity { get; set; } = 1;
+
+    /// <summary>色相偏移（度，-180 ~ 180；0 = 不调整）。</summary>
+    public double HueShift { get; set; }
+
+    /// <summary>饱和度调整（-100 ~ 100；0 = 不调整）。</summary>
+    public double SaturationAdjust { get; set; }
+
+    /// <summary>明度调整（-100 ~ 100；0 = 不调整）。</summary>
+    public double LightnessAdjust { get; set; }
+
     /// <summary>矢量形状类型（仅 Kind 为 Shape 时生效）。</summary>
     public WallpaperShapeType ShapeType { get; set; } = WallpaperShapeType.Rectangle;
 
@@ -415,6 +445,16 @@ public sealed class WallpaperLayerItem
         SliceBottom = SliceBottom,
         SliceLeft = SliceLeft,
         SliceRight = SliceRight,
+        BlurRadius = BlurRadius,
+        ShadowEnabled = ShadowEnabled,
+        ShadowBlurRadius = ShadowBlurRadius,
+        ShadowOffsetX = ShadowOffsetX,
+        ShadowOffsetY = ShadowOffsetY,
+        ShadowColor = ShadowColor,
+        ShadowOpacity = ShadowOpacity,
+        HueShift = HueShift,
+        SaturationAdjust = SaturationAdjust,
+        LightnessAdjust = LightnessAdjust,
         ShapeType = ShapeType,
         ShapeCornerRadius = ShapeCornerRadius,
         ShapeStarPoints = ShapeStarPoints,

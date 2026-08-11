@@ -176,6 +176,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private readonly Dictionary<string, Bitmap> _fullscreenBitmaps = [];
     /// <summary>全屏图层位图签名（来源|路径，去重避免重复解码）。</summary>
     private readonly Dictionary<string, string> _fullscreenSignatures = [];
+    /// <summary>全屏图层逐像素（色相/饱和度/明度）处理后的位图缓存（键为图层 Id）。</summary>
+    private readonly Dictionary<string, (string Signature, Bitmap Bitmap)> _fullscreenProcessed = [];
 
     /// <summary>底图宿主的渲染模式。</summary>
     private enum WallpaperHostMode
@@ -193,8 +195,12 @@ internal sealed class MainWindowStyleInjector : IDisposable
     {
         public required WallpaperLayerItem Settings { get; set; }
         public required Control Control { get; init; }
-        public Image? ImageControl => Control as Image;
+        /// <summary>位图图层的容器（外层 Border 承载投影效果，内层 Image 承载高斯模糊）。</summary>
+        public Image? ImageControl => Control is Border host ? host.Child as Image : null;
         public Bitmap? Bitmap { get; set; }
+        /// <summary>逐像素（色相/饱和度/明度）处理后的位图；无调整时为 null。</summary>
+        public Bitmap? ProcessedBitmap { get; set; }
+        public string ProcessedSignature { get; set; } = string.Empty;
         public MemoryStream? Stream { get; set; }
         public WallpaperSource LoadedSource { get; set; } = WallpaperSource.None;
         public string LoadedPath { get; set; } = string.Empty;
@@ -1870,7 +1876,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
             if (existing.TryGetValue(layer.Id, out var view))
             {
                 // 防御：图层 Kind 变化（位图 ↔ 形状/文本）时重建对应控件。
-                var kindMismatch = (layer.Kind == WallpaperLayerKind.Image) != (view.Control is Image);
+                var kindMismatch = (layer.Kind == WallpaperLayerKind.Image) != (view.ImageControl != null);
                 if (kindMismatch)
                 {
                     _wallpaperCanvas.Children.Remove(view.Control);
@@ -1890,11 +1896,15 @@ internal sealed class MainWindowStyleInjector : IDisposable
             }
 
             Control control = layer.Kind == WallpaperLayerKind.Image
-                ? new Image
+                ? new Border
                 {
                     IsHitTestVisible = false,
-                    Stretch = Stretch.Fill,
-                    RenderTransformOrigin = RelativePoint.Center
+                    RenderTransformOrigin = RelativePoint.Center,
+                    Child = new Image
+                    {
+                        IsHitTestVisible = false,
+                        Stretch = Stretch.Fill
+                    }
                 }
                 : new WallpaperLayerVisual
                 {
@@ -1909,6 +1919,15 @@ internal sealed class MainWindowStyleInjector : IDisposable
         for (var i = 0; i < _wallpaperLayerViews.Count; i++)
         {
             _wallpaperLayerViews[i].Control.ZIndex = i;
+        }
+
+        // 每次同步（含设置变更）重新断言位图来源，使色相/饱和度/明度改动在运行时即时生效。
+        foreach (var view in _wallpaperLayerViews)
+        {
+            if (view.ImageControl is { } image)
+            {
+                image.Source = DisplayBitmapForView(view);
+            }
         }
     }
 
@@ -1945,9 +1964,17 @@ internal sealed class MainWindowStyleInjector : IDisposable
             control.RenderTransform = new RotateTransform(layer.Rotation);
             control.Opacity = layer.Opacity;
             control.IsVisible = layer.Visible;
-            if (control is Image image)
+            if (control is Border host)
             {
-                image.Stretch = WallpaperLayerLayout.ToStretch(layer.DisplayMode);
+                // 效果：外层容器挂投影，内层图片挂高斯模糊（两效果可同时启用）。
+                host.Effect = WallpaperLayerEffects.BuildShadow(layer);
+                if (host.Child is Image image)
+                {
+                    image.Effect = WallpaperLayerEffects.BuildBlur(layer);
+                    image.Width = rect.Width;
+                    image.Height = rect.Height;
+                    image.Stretch = WallpaperLayerLayout.ToStretch(layer.DisplayMode);
+                }
             }
             else if (control is WallpaperLayerVisual visual)
             {
@@ -2079,7 +2106,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         DisposeLayerBitmap(view);
         view.Bitmap = bitmap;
         view.Stream = stream;
-        view.ImageControl!.Source = bitmap;
+        view.ImageControl!.Source = DisplayBitmapForView(view);
         LayoutWallpaperLayers();
     }
 
@@ -2120,8 +2147,44 @@ internal sealed class MainWindowStyleInjector : IDisposable
     {
         view.Bitmap?.Dispose();
         view.Bitmap = null;
+        view.ProcessedBitmap?.Dispose();
+        view.ProcessedBitmap = null;
+        view.ProcessedSignature = string.Empty;
         view.Stream?.Dispose();
         view.Stream = null;
+    }
+
+    /// <summary>
+    /// 取图层视图当前应显示的位图：启用色相/饱和度/明度时返回逐像素处理后的缓存图，
+    /// 否则返回原图（并清理残留的处理缓存）。按「原图路径 + HSL 值」签名去重。
+    /// </summary>
+    private static Bitmap? DisplayBitmapForView(WallpaperLayerView view)
+    {
+        var layer = view.Settings;
+        var raw = view.Bitmap;
+        if (raw == null)
+        {
+            return null;
+        }
+
+        if (!WallpaperLayerEffects.HasHsl(layer))
+        {
+            view.ProcessedBitmap?.Dispose();
+            view.ProcessedBitmap = null;
+            view.ProcessedSignature = string.Empty;
+            return raw;
+        }
+
+        var signature = $"{layer.Path}|{layer.HueShift}|{layer.SaturationAdjust}|{layer.LightnessAdjust}";
+        if (view.ProcessedBitmap != null && view.ProcessedSignature == signature)
+        {
+            return view.ProcessedBitmap;
+        }
+
+        view.ProcessedBitmap?.Dispose();
+        view.ProcessedBitmap = WallpaperLayerEffects.ApplyHsl(raw, layer);
+        view.ProcessedSignature = signature;
+        return view.ProcessedBitmap ?? raw;
     }
 
     private void DisposeLayerView(WallpaperLayerView view)
@@ -2194,13 +2257,15 @@ internal sealed class MainWindowStyleInjector : IDisposable
                 _fullscreenCanvas.Children.Add(visual);
             }
 
-            visual.Bitmap = GetFullscreenBitmap(layer);
+            visual.Bitmap = DisplayFullscreenBitmap(layer);
             visual.SliceEnabled = layer.SliceEnabled;
             visual.SliceLeft = layer.SliceLeft;
             visual.SliceTop = layer.SliceTop;
             visual.SliceRight = layer.SliceRight;
             visual.SliceBottom = layer.SliceBottom;
             visual.Opacity = layer.Opacity;
+            // 全屏图层只应用高斯模糊（投影在铺满整屏时无意义）。
+            visual.Effect = WallpaperLayerEffects.BuildBlur(layer);
         }
 
         LayoutFullscreenLayers();
@@ -2240,6 +2305,46 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
     }
 
+    /// <summary>
+    /// 取全屏图层当前应显示的位图：启用色相/饱和度/明度时返回逐像素处理后的缓存图，
+    /// 否则返回原图（并清理残留的处理缓存）。按「原图路径 + HSL 值」签名去重。
+    /// </summary>
+    private Bitmap? DisplayFullscreenBitmap(WallpaperLayerItem layer)
+    {
+        var raw = GetFullscreenBitmap(layer);
+        if (raw == null)
+        {
+            return null;
+        }
+
+        if (!WallpaperLayerEffects.HasHsl(layer))
+        {
+            if (_fullscreenProcessed.Remove(layer.Id, out var stale))
+            {
+                stale.Bitmap.Dispose();
+            }
+
+            return raw;
+        }
+
+        var signature = $"{layer.Path}|{layer.HueShift}|{layer.SaturationAdjust}|{layer.LightnessAdjust}";
+        if (_fullscreenProcessed.TryGetValue(layer.Id, out var cached) && cached.Signature == signature)
+        {
+            return cached.Bitmap;
+        }
+
+        // 注意：cached 是值类型元组，缓存未命中时为 default（Bitmap 为 null），
+        // 不能对元组本身用 `is { }` 判空（值类型恒真），必须对 Bitmap 成员判空。
+        if (cached.Bitmap is { } oldBitmap)
+        {
+            oldBitmap.Dispose();
+        }
+
+        var processed = WallpaperLayerEffects.ApplyHsl(raw, layer);
+        _fullscreenProcessed[layer.Id] = (signature, processed ?? raw);
+        return processed ?? raw;
+    }
+
     /// <summary>让全屏渲染控件铺满宿主画布（宿主尺寸变化时由 SizeChanged 触发）。</summary>
     private void LayoutFullscreenLayers()
     {
@@ -2274,6 +2379,12 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
         _fullscreenBitmaps.Clear();
         _fullscreenSignatures.Clear();
+        foreach (var processed in _fullscreenProcessed.Values)
+        {
+            processed.Bitmap.Dispose();
+        }
+
+        _fullscreenProcessed.Clear();
         _fullscreenVisuals.Clear();
         if (_fullscreenCanvas != null)
         {

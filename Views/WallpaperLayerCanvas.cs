@@ -64,6 +64,10 @@ internal sealed class WallpaperLayerCanvas : UserControl
     private readonly Dictionary<string, Image> _layerImages = [];
     private readonly Dictionary<string, WallpaperLayerVisual> _layerVisuals = [];
     private readonly Dictionary<string, WallpaperNineSliceVisual> _layerNineSlices = [];
+    /// <summary>图片图层的容器（外层承载投影效果；内层 Image 承载高斯模糊，二者可同时启用）。</summary>
+    private readonly Dictionary<string, Border> _layerHosts = [];
+    /// <summary>逐像素（色相/饱和度/明度）处理后的位图缓存（签名 = 原图路径 + HSL 值）。</summary>
+    private readonly Dictionary<string, (string Signature, Bitmap Bitmap)> _processedBitmaps = [];
     private readonly Dictionary<string, Bitmap> _bitmaps = [];
     private readonly Dictionary<string, MemoryStream> _streams = [];
     private readonly Dictionary<string, string> _loadedSignatures = [];
@@ -629,6 +633,12 @@ internal sealed class WallpaperLayerCanvas : UserControl
             _loadedSignatures.Remove(staleId);
         }
 
+        foreach (var staleId in _processedBitmaps.Keys.Where(id => !ids.Contains(id)).ToArray())
+        {
+            _processedBitmaps[staleId].Bitmap.Dispose();
+            _processedBitmaps.Remove(staleId);
+        }
+
         foreach (var layer in _layers)
         {
             var signature = SignatureOf(layer);
@@ -727,6 +737,12 @@ internal sealed class WallpaperLayerCanvas : UserControl
             _layerImages.Remove(staleId);
         }
 
+        foreach (var staleId in _layerHosts.Keys.Where(id => !wantedIds.Contains(id)).ToArray())
+        {
+            _stage.Children.Remove(_layerHosts[staleId]);
+            _layerHosts.Remove(staleId);
+        }
+
         foreach (var staleId in _layerVisuals.Keys.Where(id => !wantedIds.Contains(id)).ToArray())
         {
             _stage.Children.Remove(_layerVisuals[staleId]);
@@ -750,6 +766,11 @@ internal sealed class WallpaperLayerCanvas : UserControl
                     _stage.Children.Remove(oldImage);
                 }
 
+                if (_layerHosts.Remove(layer.Id, out var oldHost))
+                {
+                    _stage.Children.Remove(oldHost);
+                }
+
                 if (!_layerNineSlices.TryGetValue(layer.Id, out var nine))
                 {
                     nine = new WallpaperNineSliceVisual
@@ -761,12 +782,14 @@ internal sealed class WallpaperLayerCanvas : UserControl
                     _stage.Children.Add(nine);
                 }
 
-                nine.Bitmap = _bitmaps.TryGetValue(layer.Id, out var bm) ? bm : null;
+                nine.Bitmap = DisplayBitmap(layer);
                 nine.SliceEnabled = layer.SliceEnabled;
                 nine.SliceLeft = layer.SliceLeft;
                 nine.SliceTop = layer.SliceTop;
                 nine.SliceRight = layer.SliceRight;
                 nine.SliceBottom = layer.SliceBottom;
+                // 全屏图层只应用高斯模糊（投影在铺满整屏时无意义）。
+                nine.Effect = WallpaperLayerEffects.BuildBlur(layer);
             }
             else if (layer.Kind == WallpaperLayerKind.Image)
             {
@@ -775,18 +798,25 @@ internal sealed class WallpaperLayerCanvas : UserControl
                     _stage.Children.Remove(oldNine);
                 }
 
-                if (!_layerImages.TryGetValue(layer.Id, out var image))
+                if (!_layerHosts.TryGetValue(layer.Id, out var host))
                 {
-                    image = new Image
+                    host = new Border
                     {
                         IsHitTestVisible = false,
                         RenderTransformOrigin = RelativePoint.Center
                     };
-                    _layerImages[layer.Id] = image;
-                    _stage.Children.Add(image);
+                    _layerHosts[layer.Id] = host;
+                    _stage.Children.Add(host);
                 }
 
-                image.Source = _bitmaps.TryGetValue(layer.Id, out var bm) ? bm : null;
+                if (!_layerImages.TryGetValue(layer.Id, out var image))
+                {
+                    image = new Image { IsHitTestVisible = false, Stretch = Stretch.Fill };
+                    _layerImages[layer.Id] = image;
+                    host.Child = image;
+                }
+
+                image.Source = DisplayBitmap(layer);
             }
             else if (!_layerVisuals.TryGetValue(layer.Id, out var visual))
             {
@@ -799,6 +829,45 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 _stage.Children.Add(visual);
             }
         }
+    }
+
+    /// <summary>
+    /// 取图层当前应显示的位图：启用色相/饱和度/明度时返回逐像素处理后的缓存图，
+    /// 否则返回原图（并清理残留的处理缓存）。按「原图路径 + HSL 值」签名去重。
+    /// </summary>
+    private Bitmap? DisplayBitmap(WallpaperLayerItem layer)
+    {
+        if (!_bitmaps.TryGetValue(layer.Id, out var raw))
+        {
+            return null;
+        }
+
+        if (!WallpaperLayerEffects.HasHsl(layer))
+        {
+            if (_processedBitmaps.Remove(layer.Id, out var stale))
+            {
+                stale.Bitmap.Dispose();
+            }
+
+            return raw;
+        }
+
+        var signature = $"{layer.Path}|{layer.HueShift}|{layer.SaturationAdjust}|{layer.LightnessAdjust}";
+        if (_processedBitmaps.TryGetValue(layer.Id, out var cached) && cached.Signature == signature)
+        {
+            return cached.Bitmap;
+        }
+
+        // 注意：cached 是值类型元组，缓存未命中时为 default（Bitmap 为 null），
+        // 不能对元组本身用 `is { }` 判空（值类型恒真），必须对 Bitmap 成员判空。
+        if (cached.Bitmap is { } oldBitmap)
+        {
+            oldBitmap.Dispose();
+        }
+
+        var processed = WallpaperLayerEffects.ApplyHsl(raw, layer);
+        _processedBitmaps[layer.Id] = (signature, processed ?? raw);
+        return processed ?? raw;
     }
 
     private void LayoutImages()
@@ -832,24 +901,35 @@ internal sealed class WallpaperLayerCanvas : UserControl
                     nine.SliceTop = layer.SliceTop;
                     nine.SliceRight = layer.SliceRight;
                     nine.SliceBottom = layer.SliceBottom;
+                    nine.Effect = WallpaperLayerEffects.BuildBlur(layer);
+                    // 重新断言位图来源（HSL 变化后 Refresh 需更新处理图）。
+                    nine.Bitmap = DisplayBitmap(layer);
                     nine.InvalidateVisual();
                     continue;
                 }
 
-                if (!_layerImages.TryGetValue(layer.Id, out var image))
+                if (!_layerHosts.TryGetValue(layer.Id, out var host) ||
+                    !_layerImages.TryGetValue(layer.Id, out var image))
                 {
                     continue;
                 }
 
+                host.Width = rect.Width;
+                host.Height = rect.Height;
+                Canvas.SetLeft(host, CanvasMargin + rect.X);
+                Canvas.SetTop(host, CanvasMargin + rect.Y);
+                host.RenderTransform = new RotateTransform(layer.Rotation);
+                host.Opacity = layer.Visible ? layer.Opacity : 0;
+                host.IsVisible = layer.Visible;
+                host.ZIndex = imageBase + i;
+                // 效果：外层容器挂投影，内层图片挂高斯模糊（两效果可同时启用）。
+                host.Effect = WallpaperLayerEffects.BuildShadow(layer);
+                // 重新断言位图来源（HSL 变化后 Refresh 需更新处理图）。
+                image.Source = DisplayBitmap(layer);
+                image.Effect = WallpaperLayerEffects.BuildBlur(layer);
                 image.Width = rect.Width;
                 image.Height = rect.Height;
-                Canvas.SetLeft(image, CanvasMargin + rect.X);
-                Canvas.SetTop(image, CanvasMargin + rect.Y);
-                image.RenderTransform = new RotateTransform(layer.Rotation);
-                image.Opacity = layer.Visible ? layer.Opacity : 0;
-                image.IsVisible = layer.Visible;
                 image.Stretch = WallpaperLayerLayout.ToStretch(layer.DisplayMode);
-                image.ZIndex = imageBase + i;
             }
             else if (_layerVisuals.TryGetValue(layer.Id, out var visual))
             {
