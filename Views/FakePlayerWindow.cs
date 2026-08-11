@@ -5,11 +5,13 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Controls.Primitives;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
+using ClassIsland.Core;
 using ClassIsland.Core.Controls;
 using Windows.Media; // MediaPlaybackType
 using Windows.Media.Core;
@@ -22,8 +24,9 @@ namespace ClassIslandInjector.Views;
 /// 示例播放器：教学里演示「动态取色」的假播放器窗口（Fluent 风格）。
 /// 自动扫描插件 Assets/Music 目录作为播放列表，支持上一首/下一首切歌与拖动 seek；
 /// 用 WinRT MediaPlayer 播放，会话注册到系统 SMTC（需进程 AUMID），SmtcWatcher 读到
-/// 专辑封面取色——切歌时封面变化，主界面颜色会跟着切换。静音模式只关闭声音输出。
-/// 所有 WinRT / 文件读取均 try/catch 兜底，失败只写诊断日志，不影响教程流程。
+/// 专辑封面取色——切歌时封面变化，主界面颜色会跟着切换。播放/暂停/切歌绑定到系统
+/// 媒体控件（音量浮出窗/任务栏预览）的按钮，播放时在 ClassIsland 任务栏图标上显示
+/// 进度条。所有 WinRT / 文件读取均 try/catch 兜底，失败只写诊断日志，不影响教程流程。
 /// </summary>
 internal sealed class FakePlayerWindow : MyWindow
 {
@@ -33,7 +36,6 @@ internal sealed class FakePlayerWindow : MyWindow
     /// <summary>播放列表：插件 Assets/Music 下的全部 mp3（按文件名排序）。</summary>
     private static readonly IReadOnlyList<string> Playlist = LoadPlaylist();
 
-    private readonly bool _muted;
     private MediaPlayer? _player;
     private int _index;
     private string _currentTitle = FallbackTitle;
@@ -59,14 +61,8 @@ internal sealed class FakePlayerWindow : MyWindow
     private readonly FluentIcon _playPauseIcon = new() { Glyph = "\uEDB8", FontSize = 18 };
     private readonly Image _coverImage = new() { Stretch = Stretch.UniformToFill, IsVisible = false };
     private readonly Border _coverPlaceholder = new();
-    private readonly TextBlock _statusText = new()
-    {
-        FontSize = 11,
-        Opacity = 0.7,
-        TextWrapping = TextWrapping.Wrap,
-        Text = "准备就绪…"
-    };
     private readonly Slider _seekSlider = new() { Minimum = 0, Maximum = 100, Value = 0, VerticalAlignment = VerticalAlignment.Center };
+    private readonly Slider _volumeSlider = new() { Minimum = 0, Maximum = 100, Value = 60, Width = 90, VerticalAlignment = VerticalAlignment.Center };
     private readonly DispatcherTimer _uiTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     /// <summary>当前歌曲封面引用（随歌曲缓存，供重复推送 SMTC 元数据复用）。</summary>
     private RandomAccessStreamReference? _currentThumbnailRef;
@@ -76,18 +72,41 @@ internal sealed class FakePlayerWindow : MyWindow
     private bool _updatingSeekFromPlayback;
     /// <summary>用户正在拖动滑动条（拖动期间不反向刷新滑动条）。</summary>
     private bool _isSeeking;
+    /// <summary>任务栏进度条（ITaskbarList3），懒初始化。播放时在 ClassIsland 任务栏图标上显示进度。</summary>
+    private static ITaskbarList3? _taskbar;
+    /// <summary>宿主主窗口句柄（进度条挂载目标）。</summary>
+    private static IntPtr _taskbarHwnd;
+    /// <summary>任务栏进度条当前是否可见（避免重复设置）。</summary>
+    private static bool _taskbarProgressVisible;
 
-    public FakePlayerWindow(bool muted)
+    public FakePlayerWindow()
     {
-        _muted = muted;
         Title = "ClassIsland 播放器";
         Width = 440;
         Height = 300;
+        CanResize = false;   // 禁止拖拽边缘调整大小
+        CanMaximize = false; // 禁止最大化（Avalonia Window 属性，隐藏标题栏最大化按钮）
+        // 与 Min/Max 相等：彻底锁死尺寸，连 Aero Snap / Win+↑ 也无法改变窗口大小。
+        MinWidth = 440;
+        MaxWidth = 440;
+        MinHeight = 240;
+        MaxHeight = 240;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         Content = BuildContent();
         Opened += (_, _) => StartPlayback();
         Closed += (_, _) => StopPlayback();
         _uiTimer.Tick += (_, _) => RefreshUi();
+
+        // 音量滑动条 → MediaPlayer.Volume（0~1）。
+        _volumeSlider.PropertyChanged += (_, e) =>
+        {
+            if (e.Property != Slider.ValueProperty || _player == null)
+            {
+                return;
+            }
+
+            _player.Volume = _volumeSlider.Value / 100.0;
+        };
 
         // 用户拖动滑块 → seek；拖动期间暂停程序性刷新以免打架。
         _seekSlider.AddHandler(Thumb.DragStartedEvent, (_, _) => _isSeeking = true);
@@ -166,25 +185,34 @@ internal sealed class FakePlayerWindow : MyWindow
         playPauseButton.Content = _playPauseIcon;
         var nextButton = IconButton("\uEBE5", "下一首（切歌时颜色跟着变）", () => NextSong()); // ic_fluent_next
 
-        var muteBadge = new StackPanel
+        // 音量：扬声器图标 + 音量滑动条。
+        var volumePanel = new StackPanel
         {
             Orientation = Orientation.Horizontal,
             Spacing = 4,
             VerticalAlignment = VerticalAlignment.Center,
-            IsVisible = _muted,
             Children =
             {
-                new FluentIcon { Glyph = "\uF014", FontSize = 14, Opacity = 0.7 }, // ic_fluent_speaker_mute
-                new TextBlock { Text = "静音", FontSize = 11, Opacity = 0.7, VerticalAlignment = VerticalAlignment.Center }
+                new FluentIcon { Glyph = "\uF00C", FontSize = 14, Opacity = 0.7 }, // ic_fluent_speaker_2
+                _volumeSlider
             }
         };
 
-        var buttonsRow = new StackPanel
+        // 底部行：上一首/播放/下一首在左，音量在右（中间留弹性间距）。
+        var bottomRow = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"),
+            ColumnSpacing = 10
+        };
+        var buttonsPanel = new StackPanel
         {
             Orientation = Orientation.Horizontal,
             Spacing = 8,
-            Children = { prevButton, playPauseButton, nextButton, muteBadge, _statusText }
+            Children = { prevButton, playPauseButton, nextButton }
         };
+        bottomRow.Children.Add(buttonsPanel);
+        Grid.SetColumn(volumePanel, 2);
+        bottomRow.Children.Add(volumePanel);
 
         // 进度行：当前时间 - 滑动条（可拖动 seek）- 总时长。
         var progressGrid = new Grid
@@ -213,7 +241,7 @@ internal sealed class FakePlayerWindow : MyWindow
         {
             Margin = new Thickness(24),
             Spacing = 14,
-            Children = { header, progressGrid, buttonsRow }
+            Children = { header, progressGrid, bottomRow }
         };
     }
 
@@ -271,7 +299,30 @@ internal sealed class FakePlayerWindow : MyWindow
             return;
         }
 
-        var player = new MediaPlayer { IsMuted = _muted };
+        var player = new MediaPlayer();
+        // 把播放/暂停/切歌绑定到系统 SMTC：系统媒体控件（音量浮出窗/任务栏预览）的
+        // 按钮直接驱动播放器。用 MediaPlaybackCommandManager 显式把 Next/Previous 声明为
+        // Always 启用并接管点击——比只设 IsNextEnabled/IsPreviousEnabled 更可靠，按钮在
+        // 会话建立前也始终可用（否则系统可能显示为灰色、点了没反应）。
+        var smtc = player.SystemMediaTransportControls;
+        smtc.IsEnabled = true;
+        smtc.IsPlayEnabled = true;
+        smtc.IsPauseEnabled = true;
+        smtc.IsNextEnabled = true;
+        smtc.IsPreviousEnabled = true;
+        var commands = player.CommandManager;
+        commands.NextBehavior.EnablingRule = MediaCommandEnablingRule.Always;
+        commands.PreviousBehavior.EnablingRule = MediaCommandEnablingRule.Always;
+        commands.NextReceived += (_, _) =>
+        {
+            SmtcAlbumColorPicker.LogDiagnostic("示例播放器: SMTC 下一首");
+            Dispatcher.UIThread.Post(NextSong);
+        };
+        commands.PreviousReceived += (_, _) =>
+        {
+            SmtcAlbumColorPicker.LogDiagnostic("示例播放器: SMTC 上一首");
+            Dispatcher.UIThread.Post(PreviousSong);
+        };
         // 显示属性（标题/艺术家/封面）必须在媒体项「已初始化」后再应用 SMTC 才会采纳；
         // MediaOpened（媒体已打开）即初始化完成信号（DisplayUpdater 直推则不依赖此）。
         player.MediaOpened += (_, _) =>
@@ -295,22 +346,21 @@ internal sealed class FakePlayerWindow : MyWindow
             EnsurePlayer();
             if (Playlist.Count == 0)
             {
-                _statusText.Text = "未找到示例歌曲。";
+                SmtcAlbumColorPicker.LogDiagnostic("示例播放器: 未找到示例歌曲");
                 return;
             }
 
-            _ = LoadSongAsync(0);
+            _ = LoadSongAsync(0, autoPlay: false); // 启动不自动播放，等用户点播放
             _uiTimer.Start();
-            SmtcAlbumColorPicker.LogDiagnostic($"示例播放器已启动（{(_muted ? "静音" : "出声")}），SMTC 会话已注册");
+            SmtcAlbumColorPicker.LogDiagnostic("示例播放器已启动（待播放），SMTC 会话已注册");
         }
         catch (Exception ex)
         {
             SmtcAlbumColorPicker.LogDiagnostic($"示例播放器启动失败: {ex}");
-            _statusText.Text = "播放失败，可跳过本步骤。";
         }
     }
 
-    private async Task LoadSongAsync(int index)
+    private async Task LoadSongAsync(int index, bool autoPlay = true)
     {
         var player = _player;
         if (player == null || Playlist.Count == 0)
@@ -332,11 +382,12 @@ internal sealed class FakePlayerWindow : MyWindow
         player.Source = item;
         // 立即经 DisplayUpdater 直推元数据（不依赖 item 初始化）；MediaOpened 时再补一次，定时器持续重推。
         TryPushSmtcMetadata(player, _currentTitle, _currentArtist, _currentThumbnailRef);
-        player.Play();
-        _statusText.Text = _muted
-            ? "静音播放中…（切歌时颜色也会变）"
-            : "正在播放…（点上一首/下一首，颜色会跟着变）";
-        SmtcAlbumColorPicker.LogDiagnostic($"示例播放器切歌: {_currentTitle} - {_currentArtist}");
+        if (autoPlay)
+        {
+            player.Play();
+        }
+
+        SmtcAlbumColorPicker.LogDiagnostic($"示例播放器{(autoPlay ? "切歌" : "载入")}: {_currentTitle} - {_currentArtist}");
     }
 
     private void PreviousSong()
@@ -427,6 +478,7 @@ internal sealed class FakePlayerWindow : MyWindow
             return;
         }
 
+        var playing = session.PlaybackState == MediaPlaybackState.Playing;
         try
         {
             var total = session.NaturalDuration.TotalSeconds;
@@ -450,7 +502,9 @@ internal sealed class FakePlayerWindow : MyWindow
             }
 
             _positionText.Text = FormatTime(position);
-            _playPauseIcon.Glyph = session.PlaybackState == MediaPlaybackState.Playing ? "\uEC90" : "\uEDB8"; // pause/play
+            _playPauseIcon.Glyph = playing ? "\uEC90" : "\uEDB8"; // pause/play
+            // 播放时在 ClassIsland 任务栏图标上显示进度条。
+            UpdateTaskbarProgress(playing, position, total);
         }
         catch
         {
@@ -474,6 +528,7 @@ internal sealed class FakePlayerWindow : MyWindow
     private void StopPlayback()
     {
         _uiTimer.Stop();
+        UpdateTaskbarProgress(false, 0, 0); // 关闭时清除任务栏进度
         if (_player is not { } player)
         {
             return;
@@ -493,12 +548,92 @@ internal sealed class FakePlayerWindow : MyWindow
         _player = null;
     }
 
+    /// <summary>初始化任务栏 COM 对象并缓存宿主主窗口句柄。</summary>
+    private static void EnsureTaskbar()
+    {
+        try
+        {
+            if (_taskbar == null)
+            {
+                _taskbar = (ITaskbarList3)new TaskbarList();
+                _taskbar.HrInit();
+            }
+
+            if (_taskbarHwnd == IntPtr.Zero)
+            {
+                _taskbarHwnd = GetMainWindowHandle();
+            }
+        }
+        catch
+        {
+            _taskbar = null;
+            _taskbarHwnd = IntPtr.Zero;
+        }
+    }
+
+    /// <summary>取宿主主窗口（ClassIsland.MainWindow）句柄，供任务栏进度条挂载。</summary>
+    private static IntPtr GetMainWindowHandle()
+    {
+        try
+        {
+            if (AppBase.Current.MainWindow is { } main)
+            {
+                return main.TryGetPlatformHandle()?.Handle ?? IntPtr.Zero;
+            }
+
+            // 兜底：窗口列表中第一个非播放器窗口。
+            var windows = (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.Windows;
+            var alt = windows?.FirstOrDefault(w => w is not FakePlayerWindow && w.IsVisible);
+            return alt?.TryGetPlatformHandle()?.Handle ?? IntPtr.Zero;
+        }
+        catch
+        {
+            return IntPtr.Zero;
+        }
+    }
+
+    /// <summary>更新任务栏图标进度条：播放中显示正常进度，暂停保留进度，停止/关闭时清除。</summary>
+    private static void UpdateTaskbarProgress(bool playing, double positionSeconds, double totalSeconds)
+    {
+        try
+        {
+            EnsureTaskbar();
+            if (_taskbar == null || _taskbarHwnd == IntPtr.Zero)
+            {
+                return;
+            }
+
+            if (playing && totalSeconds > 0)
+            {
+                _taskbar.SetProgressState(_taskbarHwnd, TaskbarProgressState.Normal);
+                _taskbar.SetProgressValue(_taskbarHwnd, (ulong)(positionSeconds * 1000), (ulong)(totalSeconds * 1000));
+                _taskbarProgressVisible = true;
+            }
+            else if (!playing && positionSeconds > 0 && totalSeconds > 0 && _taskbarProgressVisible)
+            {
+                // 暂停：保留进度并显示「已暂停」状态。
+                _taskbar.SetProgressState(_taskbarHwnd, TaskbarProgressState.Paused);
+            }
+            else if (_taskbarProgressVisible)
+            {
+                _taskbar.SetProgressState(_taskbarHwnd, TaskbarProgressState.NoProgress);
+                _taskbarProgressVisible = false;
+            }
+        }
+        catch
+        {
+            // 任务栏进度失败忽略。
+        }
+    }
+
     /// <summary>
     /// 桌面应用的 WinRT MediaPlayer 只有进程设置了 AppUserModelID（AUMID）才会向系统
-    /// SMTC 注册媒体会话。宿主 ClassIsland 进程未设置过 AUMID，这里在播放前补设一次；
+    /// SMTC 注册媒体会话，且任务栏按钮的 AUMID 与会话一致时，缩略图预览下才会出现
+    /// 媒体控制按钮。宿主 ClassIsland 进程未设置过 AUMID，这里尽早补设（插件初始化时
+    /// 就调用，早于任何窗口创建，保证主窗口/播放器任务栏按钮都继承同一 AUMID）；
     /// 若进程已有 AUMID 则不动，避免覆盖宿主身份。
     /// </summary>
-    private static void EnsureAppUserModelId()
+    public static void EnsureAppUserModelId()
     {
         try
         {
@@ -520,6 +655,34 @@ internal sealed class FakePlayerWindow : MyWindow
 
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     private static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
+
+    // ---- 任务栏进度条（ITaskbarList3）COM 互操作 ----
+
+    [ComImport, Guid("EA1AFB91-9E28-4B86-90E9-9E9F8A5EEFAF"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface ITaskbarList3
+    {
+        void HrInit();
+        void AddTab(IntPtr hwnd);
+        void DeleteTab(IntPtr hwnd);
+        void ActivateTab(IntPtr hwnd);
+        void SetActiveAlt(IntPtr hwnd);
+        void MarkFullscreenWindow(IntPtr hwnd, [MarshalAs(UnmanagedType.Bool)] bool fullscreen);
+        void SetProgressValue(IntPtr hwnd, ulong ullCompleted, ulong ullTotal);
+        void SetProgressState(IntPtr hwnd, TaskbarProgressState tbpFlags);
+        // 其余方法（RegisterTab、ThumbBar* 等）本插件未使用，无需声明。
+    }
+
+    [ComImport, Guid("56FDF344-FD6D-11D0-958A-006097C9A090")]
+    private class TaskbarList { }
+
+    private enum TaskbarProgressState
+    {
+        NoProgress = 0,
+        Indeterminate = 0x1,
+        Normal = 0x2,
+        Error = 0x4,
+        Paused = 0x8
+    }
 
     /// <summary>把歌曲标题/艺术家/封面元数据应用到媒体项（Type=Music 才会被 SMTC 渲染）。</summary>
     private static void TryApplyMetadata(MediaPlayer player, string title, string artist, RandomAccessStreamReference? thumbnail)

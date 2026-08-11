@@ -407,6 +407,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
     /// <summary>「放歌看效果」选择对话框是否正在显示（防重复弹出）。</summary>
     private bool _musicDialogShowing;
+    /// <summary>「放歌看效果」选择对话框实例（点「我看到了」后自动关闭）。</summary>
+    private ContentDialog? _musicDialog;
+    /// <summary>当前打开的示例播放器窗口（点「我看到了」后自动关闭）。</summary>
+    private FakePlayerWindow? _fakePlayerWindow;
 
     /// <summary>抑制教学推进（程序性修改教学控件时置 true，如 expand 回调里的开关复位）。</summary>
     private bool _suppressTutorialPush;
@@ -499,7 +503,19 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         if (tag == null)
         {
             _previousGuardTag = null;
+            // 教程结束/被跳过时兜底关闭播放器与对话框。
+            if (_fakePlayerWindow != null || _musicDialog != null)
+            {
+                CloseFakePlayerAndDialog();
+            }
+
             return;
+        }
+
+        // 离开「放歌看效果」句（用户点了「我看到了」或对话框「跳过」）时关闭播放器与对话框。
+        if (_previousGuardTag == "play-music" && tag != "play-music")
+        {
+            CloseFakePlayerAndDialog();
         }
 
         // 句子刚变成「放歌看效果」时弹一次选择对话框。
@@ -646,7 +662,15 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Close
         };
-        dialog.Closed += (_, _) => _musicDialogShowing = false;
+        dialog.Closed += (_, _) =>
+        {
+            _musicDialogShowing = false;
+            if (_musicDialog == dialog)
+            {
+                _musicDialog = null;
+            }
+        };
+        _musicDialog = dialog;
         // 显式指定设置窗口为宿主：无参 ShowAsync() 会选当前激活的窗口，
         // 而教学期间激活的通常是 ClassIsland 主界面窗口，对话框就会跑错窗口。
         if (TopLevel.GetTopLevel(this) is Window host)
@@ -669,8 +693,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Opacity = 0.85
         });
         panel.Children.Add(MusicOption(dialog, "我自己放歌", "在你的音乐软件里放一首有封面的歌", () => { }));
-        panel.Children.Add(MusicOption(dialog, "播放示例音乐", "用示例播放器播放《Tell Your World》", () => OpenFakePlayer(false)));
-        panel.Children.Add(MusicOption(dialog, "播放示例音乐（静音）", "同上，静音播放不打扰别人", () => OpenFakePlayer(true)));
+        panel.Children.Add(MusicOption(dialog, "播放示例音乐", "用示例播放器播放（可切歌、可拖动进度，切歌时颜色会变）", OpenFakePlayer));
         panel.Children.Add(MusicOption(dialog, "跳过播放音乐", "直接继续教学", HostTutorial.TryStartNextSentence));
         return panel;
     }
@@ -699,10 +722,18 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         return button;
     }
 
-    /// <summary>打开示例播放器播放打包的示例歌曲（muted=true 时静音播放）。</summary>
-    private void OpenFakePlayer(bool muted)
+    /// <summary>打开示例播放器（同一时刻只开一个）。</summary>
+    private void OpenFakePlayer()
     {
-        var window = new FakePlayerWindow(muted);
+        if (_fakePlayerWindow != null)
+        {
+            _fakePlayerWindow.Activate();
+            return;
+        }
+
+        var window = new FakePlayerWindow();
+        window.Closed += (_, _) => _fakePlayerWindow = null;
+        _fakePlayerWindow = window;
         if (TopLevel.GetTopLevel(this) is Window owner)
         {
             window.Show(owner);
@@ -711,6 +742,16 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         {
             window.Show();
         }
+    }
+
+    /// <summary>关闭「放歌」选择对话框与示例播放器（用户点「我看到了」/教程离开放歌句时）。</summary>
+    private void CloseFakePlayerAndDialog()
+    {
+        _musicDialog?.Hide();
+        _musicDialog = null;
+        _musicDialogShowing = false;
+        _fakePlayerWindow?.Close();
+        _fakePlayerWindow = null;
     }
 
     private Control BuildContent()
