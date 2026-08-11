@@ -41,36 +41,40 @@ internal static class InjectorRuntime
     /// <summary>
     /// 注册插件教程到宿主教学中心：首次运行把默认教程 JSON 复制到配置目录
     /// （用户可自行编辑），之后读取配置目录副本，通过反射注册到宿主教程系统。
-    /// 教程加载失败不影响插件其余功能。
+    /// 会遍历 Defaults/Tutorials 下的全部教程文件；多个教程文件共享同一个
+    /// 教程组 Id，由 HostTutorial 合并进同一个分组。教程加载失败不影响插件其余功能。
     /// </summary>
     private static void InitializeTutorial(string configDirectory, string pluginDirectory)
     {
         try
         {
-            const string fileName = "injector.wallpaperEditor.json";
-            var tutorialDir = Path.Combine(configDirectory, "Tutorials");
-            var tutorialFile = Path.Combine(tutorialDir, fileName);
-            if (!File.Exists(tutorialFile))
+            var packagedDir = Path.Combine(pluginDirectory, "Defaults", "Tutorials");
+            if (!Directory.Exists(packagedDir))
             {
-                var packaged = Path.Combine(pluginDirectory, "Defaults", "Tutorials", fileName);
-                if (!File.Exists(packaged))
-                {
-                    return;
-                }
-
-                Directory.CreateDirectory(tutorialDir);
-                File.Copy(packaged, tutorialFile);
+                return;
             }
 
+            var tutorialDir = Path.Combine(configDirectory, "Tutorials");
             // 教程模板用 {stickerUri} 占位符引用 PJSK 贴纸（随插件部署在 Assets/Stickers 下）、
             // 用 {assetsUri} 引用插件 Assets 目录（如教程 Banner），
             // 注册时替换为插件实际目录的 file:// URI，确保本地可加载。
             var stickerDir = Path.Combine(pluginDirectory, "Assets", "Stickers");
             var assetsUri = new Uri(Path.Combine(pluginDirectory, "Assets")).AbsoluteUri.TrimEnd('/');
-            var json = File.ReadAllText(tutorialFile)
-                .Replace("{stickerUri}", new Uri(stickerDir).AbsoluteUri.TrimEnd('/'))
-                .Replace("{assetsUri}", assetsUri);
-            HostTutorial.RegisterGroupFromJson(json);
+            foreach (var fileName in Directory.GetFiles(packagedDir, "*.json"))
+            {
+                var name = Path.GetFileName(fileName);
+                var tutorialFile = Path.Combine(tutorialDir, name);
+                if (!File.Exists(tutorialFile))
+                {
+                    Directory.CreateDirectory(tutorialDir);
+                    File.Copy(fileName, tutorialFile);
+                }
+
+                var json = File.ReadAllText(tutorialFile)
+                    .Replace("{stickerUri}", new Uri(stickerDir).AbsoluteUri.TrimEnd('/'))
+                    .Replace("{assetsUri}", assetsUri);
+                HostTutorial.RegisterGroupFromJson(json);
+            }
         }
         catch
         {

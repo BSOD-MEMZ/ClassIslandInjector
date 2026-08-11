@@ -23,7 +23,9 @@ internal static class HostTutorial
 
     /// <summary>
     /// 把教程组 JSON 反序列化为宿主的 TutorialGroup 并注册到
-    /// ITutorialService.RegisteredTutorialGroups（同名教程组跳过，避免重复注册）。
+    /// ITutorialService.RegisteredTutorialGroups。多个教程 JSON 可共用同一个
+    /// 组 Id：已存在同 Id 分组时，把本次的教程条目合并进该分组（教学中心里
+    /// 同一插件的教程聚为一组），否则新增分组。
     /// 失败时把异常写入 <see cref="ErrorLogPath"/> 便于排查。
     /// </summary>
     public static void RegisterGroupFromJson(string json)
@@ -56,11 +58,19 @@ internal static class HostTutorial
             var groupId = TutorialGroupType.GetProperty("Id")?.GetValue(group) as string;
             foreach (var existing in enumerable)
             {
-                var id = existing?.GetType().GetProperty("Id")?.GetValue(existing) as string;
-                if (id == groupId)
+                if (existing == null)
                 {
-                    return;
+                    continue;
                 }
+
+                var id = existing.GetType().GetProperty("Id")?.GetValue(existing) as string;
+                if (id != groupId)
+                {
+                    continue;
+                }
+
+                MergeTutorialsInto(existing, group);
+                return;
             }
 
             groups.GetType().GetMethod("Add")?.Invoke(groups, [group]);
@@ -68,6 +78,63 @@ internal static class HostTutorial
         catch (Exception e)
         {
             Log(e.ToString());
+        }
+    }
+
+    /// <summary>把 source 组里的教程条目逐个追加到 target 组的 Tutorials 集合。</summary>
+    private static void MergeTutorialsInto(object target, object source)
+    {
+        var targetTutorials = target.GetType().GetProperty("Tutorials")?.GetValue(target);
+        var sourceTutorials = source.GetType().GetProperty("Tutorials")?.GetValue(source);
+        var add = targetTutorials?.GetType().GetMethod("Add");
+        if (add == null || sourceTutorials is not System.Collections.IEnumerable enumerable)
+        {
+            return;
+        }
+
+        foreach (var tutorial in enumerable)
+        {
+            add.Invoke(targetTutorials, [tutorial]);
+        }
+    }
+
+    /// <summary>查询指定教程路径（TutorialId/ParagraphId）是否已完成。</summary>
+    public static bool GetIsTutorialCompleted(string path)
+    {
+        try
+        {
+            if (TutorialServiceType == null || IAppHostType == null)
+            {
+                return false;
+            }
+
+            var tryGetService = IAppHostType.GetMethod("TryGetService", BindingFlags.Public | BindingFlags.Static);
+            var service = tryGetService?.MakeGenericMethod(TutorialServiceType).Invoke(null, null);
+            return service?.GetType().GetMethod("GetIsTutorialCompleted")?.Invoke(service, [path]) is true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>当前是否有教程正在进行。</summary>
+    public static bool IsTutorialRunning()
+    {
+        try
+        {
+            if (TutorialServiceType == null || IAppHostType == null)
+            {
+                return false;
+            }
+
+            var tryGetService = IAppHostType.GetMethod("TryGetService", BindingFlags.Public | BindingFlags.Static);
+            var service = tryGetService?.MakeGenericMethod(TutorialServiceType).Invoke(null, null);
+            return service?.GetType().GetProperty("IsTutorialRunning")?.GetValue(service) is true;
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -87,6 +154,15 @@ internal static class HostTutorial
     public static void PushToNextSentence()
     {
         InvokeOnService("PushToNextSentence", [null]);
+    }
+
+    /// <summary>
+    /// 无条件推进到下一句（不受 WaitForNextCommand 限制）。
+    /// 用于非等待句（如「放歌看效果」的按钮句）需要代码主动推进的场景（跳过播放）。
+    /// </summary>
+    public static void TryStartNextSentence()
+    {
+        InvokeOnService("TryStartNextSentence", []);
     }
 
     /// <summary>读取当前教程句的 Tag（无教程进行时返回 null）。</summary>

@@ -84,6 +84,12 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private InfoBar? _pluginUpdateInfoBar;
     private readonly Spin _albumColorPollingInterval = Spinner(0.5, 120, 0.5);
     private readonly Spin _albumColorTransition = Spinner(0, 10, 0.1);
+    /// <summary>SMTC 教学：教程定位/展开的分组（Name 供 TargetSelector 使用）。</summary>
+    private SettingsExpander _smtcDynamicGroup = null!;
+    private SettingsExpander _backgroundGroup = null!;
+    private SettingsExpander _shadowGroup = null!;
+    private SettingsExpander _borderGroup = null!;
+    private SettingsExpander _wallpaperGroup = null!;
     private readonly ToggleSwitch _gradient = Toggle();
     private readonly ColorPicker _gradientEndColor = ColorPicker();
     private readonly ComboBox _gradientDirection = Combo(GradientDirections);
@@ -385,10 +391,326 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _disableVersionCheck.PropertyChanged += (_, _) => UpdatePluginUpdateInfoBar(_contractTableList.SelectedItem as ContractIndexEntry);
         _disableDegradationCheck.PropertyChanged += (_, _) => RefreshHealthInfoBar();
         LoadFromSettings();
+        RefreshSmtcTutorialInfoBar();
         // 对照表被应用/切换后刷新本页状态（顶部降级提示、当前对照表、下拉选中）。
         ContractCatalogService.CatalogChanged += (_, _) => Dispatcher.UIThread.Post(RefreshContractUi);
         // 用户切换下拉选择时，按该对照表的最低插件版本要求刷新「插件版本过低」提示。
         _contractTableList.SelectionChanged += (_, _) => UpdatePluginUpdateInfoBar(_contractTableList.SelectedItem as ContractIndexEntry);
+        WireSmtcTutorial();
+    }
+
+    /// <summary>SMTC 教学路径（教程 Id / 起始段落），改 JSON 里的教程 Id 时务必同步修改。</summary>
+    private const string SmtcTutorialPath = "classislandInjector.tutorials.smtc/prologue";
+
+    /// <summary>「SMTC 动态取色」进阶教学入口 InfoBar（未完成时显示，点击按钮开始教学）。</summary>
+    private InfoBar _smtcTutorialInfoBar = null!;
+
+    /// <summary>「放歌看效果」选择对话框是否正在显示（防重复弹出）。</summary>
+    private bool _musicDialogShowing;
+
+    /// <summary>抑制教学推进（程序性修改教学控件时置 true，如 expand 回调里的开关复位）。</summary>
+    private bool _suppressTutorialPush;
+
+    /// <summary>教学句 Tag → 目标控件：句子一出现就自动滚到可视区（滚动守卫）。</summary>
+    private readonly Dictionary<string, Control> _tutorialTargets = [];
+
+    /// <summary>滚动守卫定时器：教程进行时周期性把当前句的目标滚进视野。</summary>
+    private DispatcherTimer? _tutorialGuardTimer;
+
+    /// <summary>
+    /// 挂接 SMTC 教学的推进点：不自动开始（进阶教学，由设置页顶部 InfoBar 手动进入），
+    /// 用户按教学指示操作对应控件时按 Tag 推进（改这里/JSON 里的 Tag 时务必两边同步）。
+    /// 流程：莫奈取色（主题色）→ 背景动态取色 → 放歌看效果 → 暂停恢复/过渡 → 阴影/边框。
+    /// </summary>
+    private void WireSmtcTutorial()
+    {
+        // 教程句 Tag → 目标控件：句子一出现就自动滚到可视区。
+        // 滚动守卫在教程期间每 250ms 检查当前句 Tag，把对应目标 BringIntoView；
+        // 这样无论句子是靠 push 还是按钮推进，目标都始终在视野内，用户无需手动滚动
+        // （设置页无 TutorialBarrier，但 ModalTarget 的聚光灯会拦截滚轮，因此必须自动滚）。
+        _tutorialTargets["toggle-theme"] = _dynamicThemeColor;
+        _tutorialTargets["expand-bg"] = _backgroundGroup;
+        _tutorialTargets["toggle-bg-dynamic"] = _dynamicBackgroundColor;
+        _tutorialTargets["toggle-revert"] = _revertColorsWhenPaused;
+        _tutorialTargets["transition"] = _albumColorTransition;
+        _tutorialTargets["expand-shadow"] = _shadowGroup;
+        _tutorialTargets["toggle-shadow"] = _dynamicShadowColor;
+        _tutorialTargets["expand-border"] = _borderGroup;
+        _tutorialTargets["toggle-border"] = _dynamicBorderColor;
+        _tutorialTargets["smtc-tip"] = _smtcDynamicGroup;
+        _tutorialTargets["wallpaper-tip"] = _wallpaperGroup;
+
+        _tutorialGuardTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+        _tutorialGuardTimer.Tick += (_, _) => ScrollCurrentTutorialTarget();
+        _tutorialGuardTimer.Start();
+
+        // 第一步：莫奈取色（动态主题色）。
+        WireTutorialToggle(_dynamicThemeColor, "toggle-theme");
+
+        // 第二步：展开「底色填充」，为背景动态取色做准备。
+        WireTutorialExpander(_backgroundGroup, "expand-bg", () =>
+        {
+            // 让组内「动态专辑封面取色」可点：打开底色填充；
+            // 若该开关之前已开启则先复位为关，保证用户总是从「关 → 开」操作一遍，
+            // 避免已开启时用户点一下反而关掉、教学无法推进（卡住）。
+            _suppressTutorialPush = true;
+            try
+            {
+                _customBackground.IsChecked = true;
+                _dynamicBackgroundColor.IsChecked = false;
+            }
+            finally
+            {
+                _suppressTutorialPush = false;
+            }
+        });
+        // 「放歌看效果」句由滚动守卫检测到后弹出播放器选择对话框（见 ScrollCurrentTutorialTarget）。
+        WireTutorialToggle(_dynamicBackgroundColor, "toggle-bg-dynamic");
+
+        // 暂停恢复 / 过渡时长。
+        WireTutorialToggle(_revertColorsWhenPaused, "toggle-revert");
+        _albumColorTransition.PropertyChanged += (_, e) =>
+        {
+            if (e.Property != NumericUpDown.ValueProperty || _suppressLivePreview)
+            {
+                return;
+            }
+
+            HostTutorial.PushToNextSentenceByTag("transition");
+        };
+
+        // 阴影 / 边框：先展开分组，再打开组内的「动态取色」。
+        WireTutorialExpander(_shadowGroup, "expand-shadow", () => _shadow.IsChecked = true);
+        WireTutorialToggle(_dynamicShadowColor, "toggle-shadow");
+        WireTutorialExpander(_borderGroup, "expand-border", () => _border.IsChecked = true);
+        WireTutorialToggle(_dynamicBorderColor, "toggle-border");
+    }
+
+    /// <summary>上一次滚动守卫看到的句子 Tag（用于只在句子刚切换时触发一次对话框）。</summary>
+    private string? _previousGuardTag;
+
+    /// <summary>
+    /// 滚动守卫：把当前教学句的目标控件滚动到可视区域（无目标/无教学时无操作），
+    /// 并在刚进入「放歌看效果」句时弹一次播放器选择对话框（用户取消后不重复弹）。
+    /// </summary>
+    private void ScrollCurrentTutorialTarget()
+    {
+        var tag = HostTutorial.GetCurrentSentenceTag();
+        if (tag == null)
+        {
+            _previousGuardTag = null;
+            return;
+        }
+
+        // 句子刚变成「放歌看效果」时弹一次选择对话框。
+        if (tag == "play-music" && _previousGuardTag != "play-music")
+        {
+            ShowMusicChoiceDialog();
+        }
+
+        _previousGuardTag = tag;
+
+        if (_tutorialTargets.TryGetValue(tag, out var target))
+        {
+            try
+            {
+                target.BringIntoView();
+            }
+            catch
+            {
+                // 控件已卸载等异常情况忽略。
+            }
+        }
+    }
+
+    /// <summary>
+    /// 开始 SMTC 进阶教学（设置页顶部 InfoBar 的「开始教学」按钮触发）：
+    /// 先把教学要操作的开关全部复位为关（保证每个「打开 xxx」步骤都从关 → 开操作一遍），
+    /// 再启动未完成的教程，并把「动态取色」组展开滚到视野内。
+    /// 已有教程在进行中或教程已完成时不执行任何操作。
+    /// </summary>
+    private void StartSmtcTutorial()
+    {
+        if (HostTutorial.IsTutorialRunning() || HostTutorial.GetIsTutorialCompleted(SmtcTutorialPath))
+        {
+            return;
+        }
+
+        _suppressTutorialPush = true;
+        try
+        {
+            _dynamicThemeColor.IsChecked = false;
+            _revertColorsWhenPaused.IsChecked = false;
+            _dynamicBackgroundColor.IsChecked = false;
+            _dynamicShadowColor.IsChecked = false;
+            _dynamicBorderColor.IsChecked = false;
+        }
+        finally
+        {
+            _suppressTutorialPush = false;
+        }
+
+        HostTutorial.BeginNotCompletedTutorials(SmtcTutorialPath);
+        // 把「动态取色」组展开并滚到视野内，让教学气泡能指到它的设置项。
+        _smtcDynamicGroup.IsExpanded = true;
+        BringIntoViewLater(_smtcDynamicGroup);
+        RefreshSmtcTutorialInfoBar();
+    }
+
+    /// <summary>刷新 SMTC 教学入口提示：系统支持 SMTC 且教程未完成时显示。</summary>
+    private void RefreshSmtcTutorialInfoBar()
+    {
+        if (_smtcTutorialInfoBar == null)
+        {
+            return;
+        }
+
+        _smtcTutorialInfoBar.IsOpen =
+            SystemCapabilities.SmtcAvailable && !HostTutorial.GetIsTutorialCompleted(SmtcTutorialPath);
+    }
+
+    /// <summary>
+    /// 用户把开关切到「开」时按 Tag 推进当前教学句。
+    /// 只在开启时推进：教学指示都是「打开 xxx」，若用户误关则不推进，
+    /// 避免已开启的用户关掉开关后下一步效果无法演示。
+    /// </summary>
+    private void WireTutorialToggle(ToggleSwitch toggle, string tag, Action? after = null)
+    {
+        toggle.PropertyChanged += (_, e) =>
+        {
+            if (e.Property != ToggleSwitch.IsCheckedProperty || _suppressLivePreview || _suppressTutorialPush || toggle.IsChecked != true)
+            {
+                return;
+            }
+
+            HostTutorial.PushToNextSentenceByTag(tag);
+            after?.Invoke();
+        };
+    }
+
+    /// <summary>用户展开分组时按 Tag 推进当前教学句。</summary>
+    private void WireTutorialExpander(SettingsExpander expander, string tag, Action? after = null)
+    {
+        expander.PropertyChanged += (_, e) =>
+        {
+            if (e.Property != SettingsExpander.IsExpandedProperty || !expander.IsExpanded || _suppressLivePreview || _suppressTutorialPush)
+            {
+                return;
+            }
+
+            HostTutorial.PushToNextSentenceByTag(tag);
+            after?.Invoke();
+        };
+    }
+
+    /// <summary>延迟把目标控件滚动到可视区域（等分组展开后的布局完成）。</summary>
+    private static void BringIntoViewLater(Control target)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+            timer.Tick += (_, _) =>
+            {
+                timer.Stop();
+                try
+                {
+                    target.BringIntoView();
+                }
+                catch
+                {
+                    // 控件已卸载等异常情况忽略。
+                }
+            };
+            timer.Start();
+        });
+    }
+
+    /// <summary>
+    /// 「放歌看效果」步骤：弹出示例播放器选择对话框，让用户选择
+    /// 自己放歌 / 播放示例音乐 / 播放示例音乐（静音）/ 跳过播放。
+    /// 仅当教程正停在放歌句（play-music）时弹出，避免误触发。
+    /// </summary>
+    private void ShowMusicChoiceDialog()
+    {
+        if (_musicDialogShowing || HostTutorial.GetCurrentSentenceTag() != "play-music")
+        {
+            return;
+        }
+
+        _musicDialogShowing = true;
+        ContentDialog? dialog = null;
+        dialog = new ContentDialog
+        {
+            Title = "放首歌试试效果",
+            Content = BuildMusicChoicePanel(dialog),
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Close
+        };
+        dialog.Closed += (_, _) => _musicDialogShowing = false;
+        // 显式指定设置窗口为宿主：无参 ShowAsync() 会选当前激活的窗口，
+        // 而教学期间激活的通常是 ClassIsland 主界面窗口，对话框就会跑错窗口。
+        if (TopLevel.GetTopLevel(this) is Window host)
+        {
+            _ = dialog.ShowAsync(host);
+        }
+        else
+        {
+            _ = dialog.ShowAsync();
+        }
+    }
+
+    private Control BuildMusicChoicePanel(ContentDialog? dialog)
+    {
+        var panel = new StackPanel { Spacing = 10 };
+        panel.Children.Add(new TextBlock
+        {
+            Text = "大部分音乐播放器和浏览器都支持这个功能，不用特定软件。挑一种方式放歌：",
+            TextWrapping = TextWrapping.Wrap,
+            Opacity = 0.85
+        });
+        panel.Children.Add(MusicOption(dialog, "我自己放歌", "在你的音乐软件里放一首有封面的歌", () => { }));
+        panel.Children.Add(MusicOption(dialog, "播放示例音乐", "用示例播放器播放《Tell Your World》", () => OpenFakePlayer(false)));
+        panel.Children.Add(MusicOption(dialog, "播放示例音乐（静音）", "同上，静音播放不打扰别人", () => OpenFakePlayer(true)));
+        panel.Children.Add(MusicOption(dialog, "跳过播放音乐", "直接继续教学", HostTutorial.TryStartNextSentence));
+        return panel;
+    }
+
+    private static Button MusicOption(ContentDialog? dialog, string title, string description, Action action)
+    {
+        var button = new Button
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Content = new StackPanel
+            {
+                Spacing = 2,
+                Children =
+                {
+                    new TextBlock { Text = title, FontWeight = FontWeight.SemiBold },
+                    new TextBlock { Text = description, FontSize = 12, Opacity = 0.7, TextWrapping = TextWrapping.Wrap }
+                }
+            }
+        };
+        button.Click += (_, _) =>
+        {
+            dialog?.Hide();
+            action();
+        };
+        return button;
+    }
+
+    /// <summary>打开示例播放器播放打包的示例歌曲（muted=true 时静音播放）。</summary>
+    private void OpenFakePlayer(bool muted)
+    {
+        var window = new FakePlayerWindow(muted);
+        if (TopLevel.GetTopLevel(this) is Window owner)
+        {
+            window.Show(owner);
+        }
+        else
+        {
+            window.Show();
+        }
     }
 
     private Control BuildContent()
@@ -459,6 +781,18 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
         panel.Children.Add(Setting("\uEDC7", "运行时注入", "启用后由插件接管主界面根节点的视觉效果。", _enabled));
 
+        // SMTC 进阶教学入口：不自动弹出，未完成时用 InfoBar 提示用户可查看。
+        _smtcTutorialInfoBar = new InfoBar
+        {
+            Severity = InfoBarSeverity.Informational,
+            Title = "进阶教学：SMTC 动态取色",
+            Message = "让主界面的颜色跟着正在播放的音乐变，属于比较进阶的玩法。点击「开始教学」查看完整配置流程（会先把相关开关复位为关）。",
+            IsOpen = false,
+            IsClosable = true,
+            ActionButton = Button("开始教学", StartSmtcTutorial)
+        };
+        panel.Children.Add(_smtcTutorialInfoBar);
+
         AddSection(panel, "\uF42F", "用户预设");
         panel.Children.Add(Setting("\uF42F", "保存当前为预设", "把插件当前全部设置项保存为一个命名预设（同名覆盖）", PresetSaveFooter()));
         panel.Children.Add(Setting("\uF42F", "套用 / 删除预设", "套用会把全部设置项替换为该预设保存时的状态。", PresetManageFooter()));
@@ -466,14 +800,16 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
         AddSection(panel, "\uE51F", "背景");
         var backgroundColorItem = Item("背景色", "支持透明度的主界面背景颜色。", _backgroundColor);
-        var backgroundGroup = SwitchableGroup("\uE520", "底色填充", "关闭时保留 ClassIsland 自身的背景颜色。", _customBackground,
+        _backgroundGroup = SwitchableGroup("\uE520", "底色填充", "关闭时保留 ClassIsland 自身的背景颜色。", _customBackground,
             backgroundColorItem,
             Item("动态专辑封面取色", "读取当前 SMTC 专辑封面，并使用 Material You（Monet）算法自动提取主题色。", _dynamicBackgroundColor),
             Item("线性渐变", "开启后会使用渐变终止色。", _gradient),
             Item("渐变方向", "线性渐变从起始色到终止色的方向。", _gradientDirection, _gradient),
             Item("渐变终止色", "线性渐变背景的结束颜色。", _gradientEndColor, _gradient));
+        _backgroundGroup.Name = "BackgroundGroup";
+        _dynamicBackgroundColor.Name = "BackgroundDynamicToggle";
         EnabledWhenManualColor(backgroundColorItem, _customBackground, _dynamicBackgroundColor);
-        panel.Children.Add(backgroundGroup);
+        panel.Children.Add(_backgroundGroup);
         var textureSizeItem = Item("纹理大小", "单个纹理单元的大小（像素）；动态频谱不使用该项。", _backgroundTextureSize);
         var spectrumSensitivityItem = Item("频谱灵敏度", "动态频谱柱条的放大倍率（越大跳动越剧烈）。", _backgroundTextureSpectrumSensitivity);
         var spectrumBarsItem = Item("频谱柱条数", "主界面约 400 像素宽时的柱条数；主界面变宽时柱条自动增多、变窄时自动减少，柱条宽度保持恒定。", _backgroundTextureSpectrumBars);
@@ -506,7 +842,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             ActionButton = Button("恢复简单模式", DisableWallpaperDesigner)
         };
         panel.Children.Add(_wallpaperModeInfoBar);
-        var wallpaperGroup = SwitchableGroup("\uF42D", "背景图片", "为 ClassIsland 主界面添加背景图片", _wallpaperEnabled,
+        _wallpaperGroup = SwitchableGroup("\uF42D", "背景图片", "为 ClassIsland 主界面添加背景图片", _wallpaperEnabled,
             Item("编辑模式", "想象一下我们把 Photoshop 搬到 ClassIsland！试试全新专家模式！", _wallpaperModeBox),
             _wallpaperEditorItem = Item("打开图层编辑器", "给设计大师的超级编辑器", Button("打开编辑器", OpenWallpaperLayerEditor)),
             _wallpaperSourceItem = Item("图片来源", "选择底图的来源。", _wallpaperSource),
@@ -518,6 +854,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             _wallpaperOffsetYItem = Item("垂直偏移", "底图的垂直偏移（相对图片高度，-0.5 到 0.5）", _wallpaperOffsetY),
             _wallpaperBlurItem = Item("模糊", "对底图应用高斯模糊（0 为关闭）", _wallpaperBlur),
             _wallpaperSlideshowItem = wallpaperSlideshowItem);
+        _wallpaperGroup.Name = "WallpaperGroup";
+        _wallpaperSource.Name = "WallpaperSource";
         // 图片来源决定「图片/文件夹」与「幻灯片间隔」行的显隐；编辑模式切换时整体显隐
         // 由 UpdateWallpaperModeVisibility 统一处理。
         _wallpaperSource.SelectionChanged += (_, _) => UpdateWallpaperModeVisibility();
@@ -535,31 +873,42 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
             UpdateWallpaperModeVisibility();
         };
-        panel.Children.Add(wallpaperGroup);
+        panel.Children.Add(_wallpaperGroup);
         UpdateWallpaperModeVisibility();
-        panel.Children.Add(Group("\uE51E", "动态取色", "从音乐软件或浏览器获取 SMTC 信息，并进行莫奈取色",
+        _smtcDynamicGroup = Group("\uE51E", "动态取色", "从音乐软件或浏览器获取 SMTC 信息，并进行莫奈取色",
             Item("暂停/停止时恢复原色", "媒体暂停或停止播放时，从专辑取色平滑恢复为原始颜色，恢复播放后再跟随专辑。", _revertColorsWhenPaused),
             Item("动态修改主题色", "从当前专辑封面取色并动态修改 ClassIsland 全局主题强调色。", _dynamicThemeColor),
             Item("兜底刷新间隔", "事件驱动失效时的兜底刷新间隔（秒）。", _albumColorPollingInterval),
             Item("颜色过渡时长", "专辑颜色变化时，背景、边框、阴影平滑过渡到新颜色的时长（秒），0 为立即切换。", _albumColorTransition),
-            Item("这是什么？", "了解 SMTC 与动态取色是如何工作的。", Button("查看工作原理", ShowSmtcExplanation))));
+            Item("这是什么？", "了解 SMTC 与动态取色是如何工作的。", Button("查看工作原理", ShowSmtcExplanation)));
+        _smtcDynamicGroup.Name = "SmtcDynamicGroup";
+        _revertColorsWhenPaused.Name = "SmtcRevertPausedToggle";
+        _dynamicThemeColor.Name = "SmtcThemeColorToggle";
+        _albumColorTransition.Name = "SmtcTransitionSpin";
+        panel.Children.Add(_smtcDynamicGroup);
 
         AddSection(panel, "\uE254", "边框与阴影");
         var shadowColorItem = Item("阴影颜色", "支持透明度的阴影颜色。", _shadowColor);
-        panel.Children.Add(SwitchableGroup("\uE472", "阴影", "为 ClassIsland 添加投影效果。", _shadow,
+        _shadowGroup = SwitchableGroup("\uE472", "阴影", "为 ClassIsland 添加投影效果。", _shadow,
             Item("动态取色", "阴影色调跟随专辑封面莫奈取色。", _dynamicShadowColor),
             shadowColorItem,
             Item("阴影模糊", "控制投影的柔和程度。", _shadowBlur),
             Item("阴影水平偏移", "控制投影向左或向右偏移。", _shadowOffsetX),
             Item("阴影垂直偏移", "控制投影向上或向下偏移。", _shadowOffsetY),
-            Item("阴影不透明度", "控制投影的深浅。", _shadowOpacity)));
+            Item("阴影不透明度", "控制投影的深浅。", _shadowOpacity));
+        _shadowGroup.Name = "ShadowGroup";
+        _dynamicShadowColor.Name = "ShadowDynamicToggle";
         EnabledWhenManualColor(shadowColorItem, _shadow, _dynamicShadowColor);
+        panel.Children.Add(_shadowGroup);
         var borderColorItem = Item("边框颜色", "支持透明度的边框颜色。", _borderColor);
-        panel.Children.Add(SwitchableGroup("\uE254", "边框", "为 ClassIsland 添加细边框。", _border,
+        _borderGroup = SwitchableGroup("\uE254", "边框", "为 ClassIsland 添加细边框。", _border,
             Item("动态取色", "边框色调跟随专辑封面莫奈取色。", _dynamicBorderColor),
             borderColorItem,
-            Item("边框线宽", "控制边框的粗细。", _borderThickness)));
+            Item("边框线宽", "控制边框的粗细。", _borderThickness));
+        _borderGroup.Name = "BorderGroup";
+        _dynamicBorderColor.Name = "BorderDynamicToggle";
         EnabledWhenManualColor(borderColorItem, _border, _dynamicBorderColor);
+        panel.Children.Add(_borderGroup);
 
         AddSection(panel, "\uE82B", "动画");
         panel.Children.Add(SwitchableGroup("\uEDB9", "持续动画", "打开后才会使用下方的循环动画设置。", _animationEnabled,

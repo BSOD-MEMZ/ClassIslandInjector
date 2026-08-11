@@ -1,0 +1,340 @@
+{
+  "Id": "classislandInjector.tutorials",
+  "Title": "ClassIslandInjector",
+  "Description": "ClassIslandInjector 插件的使用教程。",
+  "Tutorials": [
+    {
+      "Id": "classislandInjector.tutorials.smtc",
+      "Title": "SMTC 动态取色入门",
+      "Description": "演唱会前夜，初音未来与桃井爱莉教你给舞台调色（ooc致歉）",
+      "Ordinary": 0,
+      "Banner": "{assetsUri}/TutorialBanner.webp",
+      "Paragraphs": [
+        {
+          "Id": "prologue",
+          "Title": "演出前夜",
+          "TopLevelClassName": "ClassIsland.Views.SettingsWindowNew",
+          "InitializeActions": [],
+          "Content": [
+            {
+              "Title": "",
+              "Content": "——明天就是演唱会了。舞台的氛围色要跟着每一首歌的封面变，不然整场演出的效果都会大打折扣。今晚必须把它调好。",
+              "IconExpression": "",
+              "UseLightDismiss": true,
+              "RightButtonText": "",
+              "LeftButtonText": ""
+            },
+            {
+              "Title": "初音未来",
+              "Content": "嗨～ 我是初音未来！明天就要登台了，舞台的颜色还没定下来，就由我和爱莉来把它调好！",
+              "IconExpression": "bitmap({stickerUri}/miku_welcome.png)",
+              "UseLightDismiss": true,
+              "RightButtonText": "",
+              "LeftButtonText": ""
+            },
+            {
+              "Title": "桃井爱莉",
+              "Content": "我是桃井爱莉。灯光颜色跟着专辑封面走，这是舞台效果的基本功。……要上舞台就别想偷懒，认真调。",
+              "IconExpression": "bitmap({stickerUri}/Airi_01.png)",
+              "UseLightDismiss": true,
+              "RightButtonText": "",
+              "LeftButtonText": ""
+            },
+            {
+              "Title": "准备好了吗？",
+              "Content": "好～那就开始吧！",
+              "IconExpression": "bitmap({stickerUri}/miku_happy.png)",
+              "UseLightDismiss": false,
+              "RightButtonText": "开始",
+              "RightButtonActions": [
+                {
+                  "Kind": 3
+                }
+              ],
+              "LeftButtonText": ""
+            }
+          ],
+          "IsBarrierEnabled": true
+        },
+        {
+          "Id": "act1",
+          "Title": "舞台效果原理",
+          "TopLevelClassName": "ClassIsland.Views.SettingsWindowNew",
+          "InitializeActions": [],
+          "Content": [
+            {
+              "Title": "",
+              "Content": "——先说原理。放歌的时候，系统会向播放器要当前歌曲的专辑封面，再用莫奈取色算法从封面里提取主题色，舞台的灯光就会跟着它变。",
+              "IconExpression": "",
+              "UseLightDismiss": true,
+              "RightButtonText": "",
+              "LeftButtonText": ""
+            },
+            {
+              "Title": "初音未来",
+              "Content": "舞台的背景、边框、阴影，还有整个界面的强调色，都能跟着专辑封面变哦！",
+              "IconExpression": "bitmap({stickerUri}/miku_happy.png)",
+              "UseLightDismiss": true,
+              "RightButtonText": "",
+              "LeftButtonText": ""
+            },
+            {
+              "Title": "桃井爱莉",
+              "Content": "放心，大部分音乐播放器和浏览器都支持这个功能，不用特定软件。只要系统是 Windows 10 1809 以上就行。",
+              "IconExpression": "bitmap({stickerUri}/Airi_04.png)",
+              "UseLightDismiss": true,
+              "RightButtonText": "",
+              "LeftButtonText": ""
+            },
+            {
+              "Title": "初音未来",
+              "Content": "相关设置都集中在「动态取色」这一栏。走，过去看看！",
+              "IconExpression": "bitmap({stickerUri}/miku_thumbup.png)",
+              "UseLightDismiss": false,
+              "RightButtonText": "去看看",
+              "RightButtonActions": [
+                {
+                  "Kind": 1
+                }
+              ],
+              "LeftButtonText": ""
+            }
+          ],
+          "IsBarrierEnabled": true
+        },
+        {
+          "Id": "act2",
+          "Title": "动手调色 · 舞台灯色",
+          "TopLevelClassName": "ClassIsland.Views.SettingsWindowNew",
+          "InitializeActions": [],
+          "Content": [
+            {
+              "Title": "动态取色",
+              "Content": "这里就是「动态取色」，舞台灯光相关的设置都在这。我们一项一项来。",
+              "IconExpression": "bitmap({stickerUri}/miku_happy.png)",
+              "TargetSelector": "#SmtcDynamicGroup",
+              "HighlightTarget": true,
+              "PlacementMode": 1,
+              "PointToTarget": true,
+              "Tag": "smtc-tip",
+              "UseLightDismiss": false,
+              "RightButtonText": "下一步",
+              "RightButtonActions": [
+                {
+                  "Kind": 1
+                }
+              ],
+              "LeftButtonText": ""
+            },
+            {
+              "Title": "第一步 · 莫奈取色",
+              "Content": "先打开「动态修改主题色」——莫奈取色的第一步，它决定舞台整体的强调色。",
+              "IconExpression": "bitmap({stickerUri}/Airi_13.png)",
+              "TargetSelector": "#SmtcThemeColorToggle",
+              "HighlightTarget": true,
+              "PlacementMode": 1,
+              "PointToTarget": true,
+              "WaitForNextCommand": true,
+              "UseLightDismiss": false,
+              "Tag": "toggle-theme",
+              "RightButtonText": "",
+              "LeftButtonText": ""
+            },
+            {
+              "Title": "第二步 · 背景动态取色",
+              "Content": "只看强调色还不够直观。要让舞台真正跟着歌变，还得让背景也参与取色。展开「底色填充」。",
+              "IconExpression": "bitmap({stickerUri}/miku_happy.png)",
+              "TargetSelector": "#BackgroundGroup",
+              "HighlightTarget": true,
+              "PlacementMode": 1,
+              "PointToTarget": true,
+              "WaitForNextCommand": true,
+              "UseLightDismiss": false,
+              "Tag": "expand-bg",
+              "RightButtonText": "",
+              "LeftButtonText": ""
+            },
+            {
+              "Title": "第三步 · 动态专辑封面取色",
+              "Content": "底色填充已经帮你打开了！再打开「动态专辑封面取色」，背景色就会直接从专辑封面取。",
+              "IconExpression": "bitmap({stickerUri}/miku_happy.png)",
+              "TargetSelector": "#BackgroundDynamicToggle",
+              "HighlightTarget": true,
+              "PlacementMode": 1,
+              "PointToTarget": true,
+              "WaitForNextCommand": true,
+              "UseLightDismiss": false,
+              "Tag": "toggle-bg-dynamic",
+              "RightButtonText": "",
+              "LeftButtonText": ""
+            },
+            {
+              "Title": "第四步 · 放歌看效果",
+              "Content": "现在放一首歌，舞台的颜色就会跟着专辑封面变；在示例播放器里切歌，颜色也会跟着切换！大部分音乐播放器和浏览器都支持这个功能。",
+              "IconExpression": "bitmap({stickerUri}/miku_happy.png)",
+              "Tag": "play-music",
+              "UseLightDismiss": false,
+              "RightButtonText": "我看到了",
+              "RightButtonActions": [
+                {
+                  "Kind": 1
+                }
+              ],
+              "LeftButtonText": ""
+            },
+            {
+              "Title": "第五步 · 暂停恢复",
+              "Content": "接着打开「暂停/停止时恢复原色」。中场休息的时候，舞台总不能还亮着上一首歌的颜色吧。",
+              "IconExpression": "bitmap({stickerUri}/Airi_08.png)",
+              "TargetSelector": "#SmtcRevertPausedToggle",
+              "HighlightTarget": true,
+              "PlacementMode": 1,
+              "PointToTarget": true,
+              "WaitForNextCommand": true,
+              "UseLightDismiss": false,
+              "Tag": "toggle-revert",
+              "RightButtonText": "",
+              "LeftButtonText": ""
+            },
+            {
+              "Title": "第六步 · 过渡时长",
+              "Content": "再把「颜色过渡时长」调大一点，0.5 秒左右。切歌的时候灯光平滑过渡，观众看着才舒服。",
+              "IconExpression": "bitmap({stickerUri}/Airi_13.png)",
+              "TargetSelector": "#SmtcTransitionSpin",
+              "HighlightTarget": true,
+              "PlacementMode": 1,
+              "PointToTarget": true,
+              "WaitForNextCommand": true,
+              "UseLightDismiss": false,
+              "Tag": "transition",
+              "RightButtonText": "",
+              "LeftButtonText": ""
+            }
+          ],
+          "IsBarrierEnabled": true
+        },
+        {
+          "Id": "act3",
+          "Title": "动手调色 · 联动组件",
+          "TopLevelClassName": "ClassIsland.Views.SettingsWindowNew",
+          "InitializeActions": [],
+          "Content": [
+            {
+              "Title": "桃井爱莉",
+              "Content": "舞台的投影也要跟着变。往下一点，展开「阴影」组。",
+              "IconExpression": "bitmap({stickerUri}/Airi_08.png)",
+              "TargetSelector": "#ShadowGroup",
+              "HighlightTarget": true,
+              "PlacementMode": 1,
+              "PointToTarget": true,
+              "WaitForNextCommand": true,
+              "UseLightDismiss": false,
+              "Tag": "expand-shadow",
+              "RightButtonText": "",
+              "LeftButtonText": ""
+            },
+            {
+              "Title": "初音未来",
+              "Content": "阴影也帮你打开了！点开「动态取色」，连影子都会跟着专辑变色！",
+              "IconExpression": "bitmap({stickerUri}/miku_happy.png)",
+              "TargetSelector": "#ShadowDynamicToggle",
+              "HighlightTarget": true,
+              "PlacementMode": 1,
+              "PointToTarget": true,
+              "WaitForNextCommand": true,
+              "UseLightDismiss": false,
+              "Tag": "toggle-shadow",
+              "RightButtonText": "",
+              "LeftButtonText": ""
+            },
+            {
+              "Title": "桃井爱莉",
+              "Content": "最后是边框。展开「边框」组。",
+              "IconExpression": "bitmap({stickerUri}/Airi_13.png)",
+              "TargetSelector": "#BorderGroup",
+              "HighlightTarget": true,
+              "PlacementMode": 1,
+              "PointToTarget": true,
+              "WaitForNextCommand": true,
+              "UseLightDismiss": false,
+              "Tag": "expand-border",
+              "RightButtonText": "",
+              "LeftButtonText": ""
+            },
+            {
+              "Title": "初音未来",
+              "Content": "边框也帮你打开了！点开「动态取色」，整个舞台的灯光就都齐了！",
+              "IconExpression": "bitmap({stickerUri}/miku_thumbup.png)",
+              "TargetSelector": "#BorderDynamicToggle",
+              "HighlightTarget": true,
+              "PlacementMode": 1,
+              "PointToTarget": true,
+              "WaitForNextCommand": true,
+              "UseLightDismiss": false,
+              "Tag": "toggle-border",
+              "RightButtonText": "",
+              "LeftButtonText": ""
+            },
+            {
+              "Title": "更多玩法 · 专辑封面底图",
+              "Content": "还有一个更直接的：展开「背景图片」组，把「图片来源」换成「SMTC 专辑封面」，舞台背景直接就是正在播的专辑封面！感兴趣的话可以自己试试。",
+              "IconExpression": "bitmap({stickerUri}/miku_happy.png)",
+              "TargetSelector": "#WallpaperGroup",
+              "HighlightTarget": true,
+              "PlacementMode": 1,
+              "PointToTarget": true,
+              "Tag": "wallpaper-tip",
+              "UseLightDismiss": false,
+              "RightButtonText": "下一步",
+              "RightButtonActions": [
+                {
+                  "Kind": 1
+                }
+              ],
+              "LeftButtonText": ""
+            }
+          ],
+          "IsBarrierEnabled": true
+        },
+        {
+          "Id": "epilogue",
+          "Title": "彩排结束",
+          "TopLevelClassName": "ClassIsland.Views.SettingsWindowNew",
+          "InitializeActions": [],
+          "Content": [
+            {
+              "Title": "",
+              "Content": "——到这里，舞台的氛围色就能完整跟着歌走了。",
+              "IconExpression": "",
+              "UseLightDismiss": true,
+              "RightButtonText": "",
+              "LeftButtonText": ""
+            },
+            {
+              "Title": "桃井爱莉",
+              "Content": "……嗯，这下总算像样了。明天就让观众看看，跟着歌变的舞台有多漂亮。……做得不错，我姑且夸你一句好了。",
+              "IconExpression": "bitmap({stickerUri}/Airi_17.png)",
+              "UseLightDismiss": true,
+              "RightButtonText": "",
+              "LeftButtonText": ""
+            },
+            {
+              "Title": "初音未来",
+              "Content": "嘿嘿，谢谢爱莉！你也多放几首不同封面的歌试试，舞台会变得超级多彩的！明天演出加油，拜拜☆～",
+              "IconExpression": "bitmap({stickerUri}/miku_bye.png)",
+              "UseLightDismiss": false,
+              "RightButtonText": "再见",
+              "RightButtonActions": [
+                {
+                  "Kind": 6
+                }
+              ],
+              "LeftButtonText": ""
+            }
+          ],
+          "IsBarrierEnabled": true
+        }
+      ]
+    }
+  ]
+}

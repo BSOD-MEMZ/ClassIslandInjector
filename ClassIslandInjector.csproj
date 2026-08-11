@@ -25,7 +25,7 @@
     <None Update="README.md" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="icon.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Defaults\Overrides.axaml" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="Defaults\Tutorials\injector.wallpaperEditor.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Defaults\Tutorials\**\*.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Defaults\contract-catalog.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Defaults\contract-index.sample.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\Firework.png" CopyToOutputDirectory="PreserveNewest" />
@@ -35,6 +35,7 @@
     <Content Include="Assets\album.jpg" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\editorbackground.jpg" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\TutorialBanner.webp" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\Music\**\*.mp3" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\Stickers\**\*.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
