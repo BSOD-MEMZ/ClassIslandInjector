@@ -8,7 +8,7 @@
       "Title": "底图编辑器入门",
       "Description": "Miku和Airi带你学会底图编辑器（ooc致歉）",
       "Ordinary": 0,
-      "Banner": "{assetsUri}/TutorialBanner.webp",
+      "Banner": "{assetsUri}/EditorTutorialBanner.webp",
       "Paragraphs": [
         {
           "Id": "prologue",
@@ -86,6 +86,7 @@
               "Content": "左侧是工具栏：移动、选择、缩放、形状、文本、抓手。",
               "IconExpression": "bitmap({stickerUri}/Airi_04.png)",
               "TargetSelector": "#EditorToolBar",
+              "HighlightTarget": true,
               "PlacementMode": 1,
               "PointToTarget": true,
               "UseLightDismiss": false,
@@ -97,6 +98,7 @@
               "Content": "右下角是图层面板。图层越靠上，显示得越靠前。拖动手柄可以调整顺序。",
               "IconExpression": "bitmap({stickerUri}/miku_happy.png)",
               "TargetSelector": "#EditorLayerPanel",
+              "HighlightTarget": true,
               "PlacementMode": 0,
               "PointToTarget": true,
               "UseLightDismiss": false,

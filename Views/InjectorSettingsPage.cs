@@ -87,6 +87,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     /// <summary>SMTC 教学：教程定位/展开的分组（Name 供 TargetSelector 使用）。</summary>
     private SettingsExpander _smtcDynamicGroup = null!;
     private SettingsExpander _backgroundGroup = null!;
+    private SettingsExpander _textureGroup = null!;
     private SettingsExpander _shadowGroup = null!;
     private SettingsExpander _borderGroup = null!;
     private SettingsExpander _wallpaperGroup = null!;
@@ -424,7 +425,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     /// <summary>
     /// 挂接 SMTC 教学的推进点：不自动开始（进阶教学，由设置页顶部 InfoBar 手动进入），
     /// 用户按教学指示操作对应控件时按 Tag 推进（改这里/JSON 里的 Tag 时务必两边同步）。
-    /// 流程：莫奈取色（主题色）→ 背景动态取色 → 放歌看效果 → 暂停恢复/过渡 → 阴影/边框。
+    /// 流程：莫奈取色（主题色）→ 背景动态取色 → 放歌看效果 → 动态频谱彩蛋 → 暂停恢复/过渡 → 阴影/边框。
     /// </summary>
     private void WireSmtcTutorial()
     {
@@ -443,6 +444,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _tutorialTargets["toggle-border"] = _dynamicBorderColor;
         _tutorialTargets["smtc-tip"] = _smtcDynamicGroup;
         _tutorialTargets["wallpaper-tip"] = _wallpaperGroup;
+        _tutorialTargets["expand-texture"] = _textureGroup;
+        _tutorialTargets["set-spectrum"] = _backgroundTextureType;
 
         _tutorialGuardTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         _tutorialGuardTimer.Tick += (_, _) => ScrollCurrentTutorialTarget();
@@ -488,6 +491,37 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         WireTutorialToggle(_dynamicShadowColor, "toggle-shadow");
         WireTutorialExpander(_borderGroup, "expand-border", () => _border.IsChecked = true);
         WireTutorialToggle(_dynamicBorderColor, "toggle-border");
+
+        // 动态频谱彩蛋：展开「底纹纹理」并自动打开开关（若已是频谱则重置为网格线，
+        // 保证用户总是亲手把「纹理图案」改成「动态频谱」），再选「动态频谱」推进。
+        WireTutorialExpander(_textureGroup, "expand-texture", () =>
+        {
+            _suppressTutorialPush = true;
+            try
+            {
+                _backgroundTextureEnabled.IsChecked = true;
+                if (Selected(_backgroundTextureType, BackgroundTexture.None) == BackgroundTexture.Spectrum)
+                {
+                    Select(_backgroundTextureType, BackgroundTextures, BackgroundTexture.Grid);
+                }
+            }
+            finally
+            {
+                _suppressTutorialPush = false;
+            }
+        });
+        _backgroundTextureType.SelectionChanged += (_, _) =>
+        {
+            if (_suppressLivePreview || _suppressTutorialPush)
+            {
+                return;
+            }
+
+            if (Selected(_backgroundTextureType, BackgroundTexture.None) == BackgroundTexture.Spectrum)
+            {
+                HostTutorial.PushToNextSentenceByTag("set-spectrum");
+            }
+        };
     }
 
     /// <summary>上一次滚动守卫看到的句子 Tag（用于只在句子刚切换时触发一次对话框）。</summary>
@@ -512,8 +546,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             return;
         }
 
-        // 离开「放歌看效果」句（用户点了「我看到了」或对话框「跳过」）时关闭播放器与对话框。
-        if (_previousGuardTag == "play-music" && tag != "play-music")
+        // 离开「放歌/频谱」步骤块（放歌看效果 → 展开底纹 → 选动态频谱）时才关闭播放器与
+        // 对话框；块内保持播放器开着，让动态频谱能实时看到歌声跳动的效果。
+        if (IsMusicBlockTag(_previousGuardTag) && !IsMusicBlockTag(tag))
         {
             CloseFakePlayerAndDialog();
         }
@@ -538,6 +573,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             }
         }
     }
+
+    /// <summary>是否属于「放歌/频谱」教学步骤块（块内保持示例播放器打开，让频谱实时演示）。</summary>
+    private static bool IsMusicBlockTag(string? tag) =>
+        tag is "play-music" or "expand-texture" or "set-spectrum";
 
     /// <summary>
     /// 开始 SMTC 进阶教学（设置页顶部 InfoBar 的「开始教学」按钮触发）：
@@ -693,7 +732,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Opacity = 0.85
         });
         panel.Children.Add(MusicOption(dialog, "我自己放歌", "在你的音乐软件里放一首有封面的歌", () => { }));
-        panel.Children.Add(MusicOption(dialog, "播放示例音乐", "用示例播放器播放（可切歌、可拖动进度，切歌时颜色会变）", OpenFakePlayer));
+        panel.Children.Add(MusicOption(dialog, "播放示例音乐", "用 ClassIsland 音乐播放器播放一些音乐片段", OpenFakePlayer));
         panel.Children.Add(MusicOption(dialog, "跳过播放音乐", "直接继续教学", HostTutorial.TryStartNextSentence));
         return panel;
     }
@@ -827,7 +866,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         {
             Severity = InfoBarSeverity.Informational,
             Title = "进阶教学：SMTC 动态取色",
-            Message = "让主界面的颜色跟着正在播放的音乐变，属于比较进阶的玩法。点击「开始教学」查看完整配置流程（会先把相关开关复位为关）。",
+            Message = "让主界面的颜色跟着正在播放的音乐变，想试一试吗？",
             IsOpen = false,
             IsClosable = true,
             ActionButton = Button("开始教学", StartSmtcTutorial)
@@ -856,14 +895,18 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         var spectrumBarsItem = Item("频谱柱条数", "主界面约 400 像素宽时的柱条数；主界面变宽时柱条自动增多、变窄时自动减少，柱条宽度保持恒定。", _backgroundTextureSpectrumBars);
         var spectrumMirroredItem = Item("双面对称", "同时向上和向下绘制镜像频谱。", _backgroundTextureSpectrumMirrored);
         var spectrumAutoWidthItem = Item("自动匹配宽度", "开启后柱条数随主界面宽度自动增减（柱宽恒定）；关闭时使用固定柱条数，柱条随主界面拉伸。", _backgroundTextureSpectrumAutoWidth);
-        panel.Children.Add(SwitchableGroup("\uE92B", "底纹纹理", "在底色之上叠加可平铺的纹理图案；选择「动态频谱」可实时展示系统声音输出的频谱。", _backgroundTextureEnabled,
+        _textureGroup = SwitchableGroup("\uE92B", "底纹纹理", "在底色之上叠加可平铺的纹理图案；选择「动态频谱」可实时展示系统声音输出的频谱。", _backgroundTextureEnabled,
             Item("纹理图案", "选择填充纹理的类型。", _backgroundTextureType),
             Item("纹理颜色", "支持透明度的纹理线条颜色。", _backgroundTextureColor),
             textureSizeItem,
             spectrumSensitivityItem,
             spectrumBarsItem,
             spectrumMirroredItem,
-            spectrumAutoWidthItem));
+            spectrumAutoWidthItem);
+        _textureGroup.Name = "TextureGroup";
+        _backgroundTextureType.Name = "BackgroundTextureType";
+        _backgroundTextureEnabled.Name = "BackgroundTextureEnabled";
+        panel.Children.Add(_textureGroup);
         AutoSelectOnEnable(_backgroundTextureEnabled, _backgroundTextureType, BackgroundTextures);
         // 动态频谱不使用纹理单元大小：选中频谱时禁用该项。
         EnabledWhenNotAny(textureSizeItem, _backgroundTextureType, _backgroundTextureEnabled, BackgroundTexture.Spectrum);
@@ -1506,6 +1549,14 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _status.Text = "已请求重载样式表；若样式表存在语法错误，ClassIsland 会保留稳定运行状态。";
     }
 
+    /// <summary>
+    /// 以设置窗口为宿主弹出 ContentDialog。无参 ShowAsync() 会选当前激活的窗口，
+    /// 而设置页打开时激活的常是 ClassIsland 主界面，对话框会挂到主界面窗口上
+    /// （确认框卡在主界面、点不到），因此必须显式指定宿主。
+    /// </summary>
+    private Task<ContentDialogResult> ShowDialogAsync(ContentDialog dialog) =>
+        TopLevel.GetTopLevel(this) is Window host ? dialog.ShowAsync(host) : dialog.ShowAsync();
+
     /// <summary>重启 ClassIsland（确认后经宿主公开 API AppBase.Current.Restart 拉起新进程并退出）。</summary>
     private async void RestartClassIsland()
     {
@@ -1519,7 +1570,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             DefaultButton = ContentDialogButton.Close
         };
 
-        var result = await dialog.ShowAsync();
+        var result = await ShowDialogAsync(dialog);
         if (result != ContentDialogResult.Primary)
         {
             return;
@@ -1575,7 +1626,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             CloseButtonText = "知道了",
             DefaultButton = ContentDialogButton.Close
         };
-        await dialog.ShowAsync();
+        await ShowDialogAsync(dialog);
     }
 
     /// <summary>说明对话框用的段落（header 为小标题加粗，body 为正文）。</summary>
@@ -1623,7 +1674,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             DefaultButton = ContentDialogButton.Close
         };
 
-        var result = await dialog.ShowAsync();
+        var result = await ShowDialogAsync(dialog);
         if (result != ContentDialogResult.Primary)
         {
             return;
@@ -1925,7 +1976,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Primary
         };
-        var result = await dialog.ShowAsync();
+        // 宿主用正在关闭的编辑器窗口，而不是设置页/主界面。
+        var result = sender is Window closingWindow
+            ? await dialog.ShowAsync(closingWindow)
+            : await ShowDialogAsync(dialog);
         if (result == ContentDialogResult.Primary)
         {
             SaveEditor();

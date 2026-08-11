@@ -543,7 +543,7 @@ public sealed class InjectorSettings
     private double _wallpaperBlurRadius;
     private List<WallpaperLayerItem> _wallpaperLayers = [];
     private WallpaperLayerZOrder _wallpaperZOrder = WallpaperLayerZOrder.BehindBackground;
-    private bool _wallpaperDesignerEnabled;
+    private bool _wallpaperDesignerEnabled = true; // 全新安装默认启用专家模式（图层编辑器），老配置已有值则保持原样
     private bool _wallpaperCheckerFollowTheme = true;
     private string _wallpaperCheckerColor1 = "#2D2F34";
     private string _wallpaperCheckerColor2 = "#26282D";

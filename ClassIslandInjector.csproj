@@ -34,7 +34,8 @@
     <Content Include="Assets\explode.gif" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\album.jpg" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\editorbackground.jpg" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="Assets\TutorialBanner.webp" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\SMTCTutorialBanner.webp" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\EditorTutorialBanner.webp" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\Music\**\*.mp3" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\Stickers\**\*.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

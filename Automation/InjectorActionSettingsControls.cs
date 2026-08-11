@@ -299,7 +299,10 @@ public sealed class SwitchPresetActionSettingsControl : ActionSettingsControlBas
             CloseButtonText = "取消",
             DefaultButton = FluentAvalonia.UI.Controls.ContentDialogButton.Primary
         };
-        var result = await dialog.ShowAsync();
+        // 以承载本控件的窗口为宿主：无参 ShowAsync() 会挂到当前激活窗口（可能是主界面）。
+        var result = await (TopLevel.GetTopLevel(this) is Window host
+            ? dialog.ShowAsync(host)
+            : dialog.ShowAsync());
         if (result != FluentAvalonia.UI.Controls.ContentDialogResult.Primary)
         {
             return null;
