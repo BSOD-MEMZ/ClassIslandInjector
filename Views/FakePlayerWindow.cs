@@ -54,8 +54,8 @@ internal sealed class FakePlayerWindow : MyWindow
         TextTrimming = TextTrimming.CharacterEllipsis,
         Text = FallbackArtist
     };
-    private readonly TextBlock _positionText = new() { FontSize = 11, Opacity = 0.6, Text = "0:00" };
-    private readonly TextBlock _durationText = new() { FontSize = 11, Opacity = 0.6, Text = "0:00" };
+    private readonly TextBlock _positionText = new() { FontSize = 11, Opacity = 0.6, Text = "0:00", MinWidth = 34, VerticalAlignment = VerticalAlignment.Center };
+    private readonly TextBlock _durationText = new() { FontSize = 11, Opacity = 0.6, Text = "0:00", MinWidth = 34, TextAlignment = TextAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
     private readonly FluentIcon _playPauseIcon = new() { Glyph = "\uEDB8", FontSize = 18 };
     private readonly Image _coverImage = new() { Stretch = Stretch.UniformToFill, IsVisible = false };
     private readonly Border _coverPlaceholder = new();
@@ -66,8 +66,12 @@ internal sealed class FakePlayerWindow : MyWindow
         TextWrapping = TextWrapping.Wrap,
         Text = "准备就绪…"
     };
-    private readonly Slider _seekSlider = new() { Minimum = 0, Maximum = 100, Value = 0 };
+    private readonly Slider _seekSlider = new() { Minimum = 0, Maximum = 100, Value = 0, VerticalAlignment = VerticalAlignment.Center };
     private readonly DispatcherTimer _uiTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
+    /// <summary>当前歌曲封面引用（随歌曲缓存，供重复推送 SMTC 元数据复用）。</summary>
+    private RandomAccessStreamReference? _currentThumbnailRef;
+    /// <summary>UI 刷新计数（周期性重推 SMTC 元数据用）。</summary>
+    private int _uiTick;
     /// <summary>程序性更新滑动条时置 true（防止触发 seek）。</summary>
     private bool _updatingSeekFromPlayback;
     /// <summary>用户正在拖动滑动条（拖动期间不反向刷新滑动条）。</summary>
@@ -76,7 +80,7 @@ internal sealed class FakePlayerWindow : MyWindow
     public FakePlayerWindow(bool muted)
     {
         _muted = muted;
-        Title = "示例播放器";
+        Title = "ClassIsland 播放器";
         Width = 440;
         Height = 300;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
@@ -270,9 +274,11 @@ internal sealed class FakePlayerWindow : MyWindow
         var player = new MediaPlayer { IsMuted = _muted };
         // 显示属性（标题/艺术家/封面）必须在媒体项「已初始化」后再应用 SMTC 才会采纳；
         // MediaOpened（媒体已打开）即初始化完成信号（DisplayUpdater 直推则不依赖此）。
-        player.MediaOpened += async (_, _) =>
+        player.MediaOpened += (_, _) =>
         {
-            await TryApplyMetadataAsync(player, _currentTitle, _currentArtist, _currentCover);
+            TryApplyMetadata(player, _currentTitle, _currentArtist, _currentThumbnailRef);
+            // 系统会在媒体打开后把会话元数据重置为空，这里补推一次，并由定时器持续重推。
+            TryPushSmtcMetadata(player, _currentTitle, _currentArtist, _currentThumbnailRef);
             SmtcAlbumColorPicker.LogDiagnostic($"示例播放器: 媒体已打开，显示属性已应用（{_currentTitle}）");
         };
         // 一首放完自动切下一首，让用户体验颜色切换。
@@ -316,6 +322,7 @@ internal sealed class FakePlayerWindow : MyWindow
         var file = Playlist[_index];
         (_currentTitle, _currentArtist) = DeriveTitleArtist(file);
         _currentCover = TryReadAlbumArt(file) ?? TryReadFallbackArt();
+        _currentThumbnailRef = _currentCover is { Length: > 0 } ? await CreateThumbnailReferenceAsync(_currentCover) : null;
         _titleText.Text = _currentTitle;
         _artistText.Text = _currentArtist;
         UpdateCover(_currentCover);
@@ -323,8 +330,8 @@ internal sealed class FakePlayerWindow : MyWindow
 
         var item = new MediaPlaybackItem(MediaSource.CreateFromUri(new Uri(file)));
         player.Source = item;
-        // 立即经 DisplayUpdater 直推元数据（不依赖 item 初始化）；MediaOpened 时再补 ApplyDisplayProperties。
-        await TryPushSmtcMetadataAsync(player, _currentTitle, _currentArtist, _currentCover);
+        // 立即经 DisplayUpdater 直推元数据（不依赖 item 初始化）；MediaOpened 时再补一次，定时器持续重推。
+        TryPushSmtcMetadata(player, _currentTitle, _currentArtist, _currentThumbnailRef);
         player.Play();
         _statusText.Text = _muted
             ? "静音播放中…（切歌时颜色也会变）"
@@ -449,6 +456,13 @@ internal sealed class FakePlayerWindow : MyWindow
         {
             // 会话读取失败忽略。
         }
+
+        // 每 ~2 秒重推一次 SMTC 元数据：系统会在媒体打开后把会话元数据重置为空，
+        // 定时重推保证标题/封面在播放全程存活（快照去重，不会重复取色）。
+        if (++_uiTick % 4 == 0 && _player != null)
+        {
+            TryPushSmtcMetadata(_player, _currentTitle, _currentArtist, _currentThumbnailRef);
+        }
     }
 
     private static string FormatTime(double seconds)
@@ -508,7 +522,7 @@ internal sealed class FakePlayerWindow : MyWindow
     private static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
 
     /// <summary>把歌曲标题/艺术家/封面元数据应用到媒体项（Type=Music 才会被 SMTC 渲染）。</summary>
-    private static async Task TryApplyMetadataAsync(MediaPlayer player, string title, string artist, byte[]? cover)
+    private static void TryApplyMetadata(MediaPlayer player, string title, string artist, RandomAccessStreamReference? thumbnail)
     {
         try
         {
@@ -521,9 +535,9 @@ internal sealed class FakePlayerWindow : MyWindow
             props.Type = MediaPlaybackType.Music;
             props.MusicProperties.Title = title;
             props.MusicProperties.Artist = artist;
-            if (cover is { Length: > 0 })
+            if (thumbnail != null)
             {
-                props.Thumbnail = await CreateThumbnailReferenceAsync(cover);
+                props.Thumbnail = thumbnail;
             }
 
             item.ApplyDisplayProperties(props);
@@ -536,9 +550,10 @@ internal sealed class FakePlayerWindow : MyWindow
 
     /// <summary>
     /// 通过 MediaPlayer.SystemMediaTransportControls 直接向系统 SMTC 推送元数据
-    /// （桌面应用向 SMTC 展示媒体信息的经典做法，与 MediaPlaybackItem 显示属性双保险）。
+    /// （桌面应用向 SMTC 展示媒体信息的经典做法，与 MediaPlaybackItem 显示属性双保险；
+    /// 系统会在媒体打开后重置会话元数据，因此定时器会周期性重推）。
     /// </summary>
-    private static async Task TryPushSmtcMetadataAsync(MediaPlayer player, string title, string artist, byte[]? cover)
+    private static void TryPushSmtcMetadata(MediaPlayer player, string title, string artist, RandomAccessStreamReference? thumbnail)
     {
         try
         {
@@ -548,9 +563,9 @@ internal sealed class FakePlayerWindow : MyWindow
             updater.Type = MediaPlaybackType.Music;
             updater.MusicProperties.Title = title;
             updater.MusicProperties.Artist = artist;
-            if (cover is { Length: > 0 })
+            if (thumbnail != null)
             {
-                updater.Thumbnail = await CreateThumbnailReferenceAsync(cover);
+                updater.Thumbnail = thumbnail;
             }
 
             updater.Update();
