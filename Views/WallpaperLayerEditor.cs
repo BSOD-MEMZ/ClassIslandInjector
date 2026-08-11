@@ -7,6 +7,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform.Storage;
+using Avalonia.Threading;
 using ClassIsland.Core.Controls;
 using FluentAvalonia.UI.Controls;
 
@@ -85,7 +86,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         FontSize = 12
     };
     // 形状图层检查器
-    private readonly ComboBox _shapeTypeBox = new() { MinWidth = 140 };
+    private readonly ComboBox _shapeTypeBox = new() { MinWidth = 140, Name = "EditorShapeType" };
     private readonly ColorPicker _shapeFillPicker = ColorPicker();
     private readonly ColorPicker _shapeStrokePicker = ColorPicker();
     private readonly EditorSpin _shapeStrokeSpin = new(0, 40, 0.25, "0.##");
@@ -178,6 +179,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             islandSize?.Height > 0 ? islandSize.Value.Height : DefaultIslandHeight);
         _canvas.ZOrder = InjectorRuntime.Settings.WallpaperZOrder;
         _canvas.Layers = _layers;
+        // 供宿主教程 TargetSelector 定位（#EditorCanvas）。
+        _canvas.Name = "EditorCanvas";
 
         WireCanvas();
         BuildContent();
@@ -194,6 +197,22 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 Current = null;
             }
         };
+        Opened += OnOpened;
+    }
+
+    /// <summary>窗口显示后触发未完成的「底图编辑器入门」教程（只播一次，完成后不再自动出现）。</summary>
+    private void OnOpened(object? sender, EventArgs e)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            HostTutorial.BeginNotCompletedTutorials("classislandInjector.tutorials.wallpaperEditor/prologue");
+        }, DispatcherPriority.Background);
+    }
+
+    /// <summary>按标签向前推动教程（仅当教程正停在该标签的等待句时生效）。</summary>
+    private static void TutorialServicePush(string tag)
+    {
+        HostTutorial.PushToNextSentenceByTag(tag);
     }
 
     private void WireCanvas()
@@ -208,7 +227,11 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             RefreshLayerList();
             RefreshInspector();
             UpdateStatus();
+            // 推进教程的「拖动手柄调整位置」等待句（非该句时自动忽略）。
+            TutorialServicePush("move");
         };
+        _canvas.ShapeCreated += () => TutorialServicePush("shape");
+        _canvas.TextCreated += () => TutorialServicePush("text");
         _canvas.SelectionChanged += () =>
         {
             RefreshLayerList();
@@ -221,6 +244,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         {
             RefreshInspector();
             UpdateStatus();
+            // 推进教程的「拖动主界面边缘」等待句（非该句时自动忽略）。
+            TutorialServicePush("resize");
         };
         _canvas.ImagesChanged += RefreshLayerList;
         _canvas.DeleteRequested += DeleteLayer;
@@ -239,12 +264,18 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _ungroupButton = CommandButton("\uE931", "取消组合", "把选中图层从所在组中拆出（Ctrl+Shift+G）", _canvas.UngroupSelection);
         _groupButton.IsEnabled = false;
         _ungroupButton.IsEnabled = false;
+        var addImageButton = CommandButton("\uE9B4", "添加图片图层", "选择一张图片作为新的底图图层", AddImageLayer);
+        // 供教程 TargetSelector 定位（#EditorAddImage）。
+        addImageButton.Name = "EditorAddImage";
+        var saveButton = CommandButton("\uEEB5", "保存并应用", "保存图层并应用到主界面", Save);
+        // 供教程 TargetSelector 定位（#EditorSave）。
+        saveButton.Name = "EditorSave";
         var commandBar = new CommandBar
         {
             DefaultLabelPosition = CommandBarDefaultLabelPosition.Right,
             PrimaryCommands =
             {
-                CommandButton("\uE9B4", "添加图片图层", "选择一张图片作为新的底图图层", AddImageLayer),
+                addImageButton,
                 new CommandBarSeparator(),
                 _undoButton,
                 _redoButton,
@@ -254,7 +285,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 new CommandBarSeparator(),
                 CommandButton("\uE62F", "重置主界面尺寸", "把主界面预览尺寸恢复为 ClassIsland 实际尺寸", ResetIslandSize),
                 CommandButton("\uE92A", "棋盘格配色", "设置画布背景棋盘格：跟随主题自动按深浅色选择，或自定义两种颜色", OpenCheckerboardSettings),
-                CommandButton("\uEEB5", "保存并应用", "保存图层并应用到主界面", Save)
+                saveButton
             }
         };
 
@@ -273,6 +304,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 Content = inspector
             }
         };
+        // 供教程 TargetSelector 定位（#EditorInspector）。
+        inspectorPanel.Name = "EditorInspector";
         // 下：图层面板（固定在底部，无边框）：图层列表（可滚动）+ 底部固定操作按钮行。
         var layerActions = BuildLayerActions();
         var layerPanel = new Border
@@ -295,6 +328,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 }
             }
         };
+        // 供教程 TargetSelector 定位（#EditorLayerPanel）。
+        layerPanel.Name = "EditorLayerPanel";
         Grid.SetRow(layerActions, 1);
         // 上下区之间的水平分割手柄（高度与横向间隙一致）。
         var rowSplitter = new GridSplitter
@@ -322,6 +357,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             Background = ThemePalette.PanelBackground(),
             Child = BuildToolBar()
         };
+        // 供教程 TargetSelector 定位（#EditorToolBar）。
+        toolbar.Name = "EditorToolBar";
         var stageHost = new Border
         {
             ClipToBounds = true,
@@ -542,6 +579,17 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0)
         };
+        // 供教程 TargetSelector 定位形状工具按钮（#EditorShapeTool）。
+        if (tool == WallpaperEditorTool.Shape)
+        {
+            button.Name = "EditorShapeTool";
+        }
+        // 供教程 TargetSelector 定位文本工具按钮（#EditorTextTool）。
+        if (tool == WallpaperEditorTool.Text)
+        {
+            button.Name = "EditorTextTool";
+        }
+
         ToolTip.SetTip(button, tip);
         button.Click += (_, _) =>
         {
@@ -698,13 +746,24 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _sliceRightSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) ApplyToSelected(l => l.SliceRight = _sliceRightSpin.DoubleValue); };
         _sliceBottomSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) ApplyToSelected(l => l.SliceBottom = _sliceBottomSpin.DoubleValue); };
         _editSliceButton.Click += (_, _) => OpenSliceEditor();
-        _shapeTypeBox.SelectionChanged += (_, _) => ApplyToSelected(l =>
+        _shapeTypeBox.SelectionChanged += (_, _) =>
         {
-            if (l.Kind == WallpaperLayerKind.Shape)
+            // 刷新检查器时的程序化选择不应触发应用或教程推进。
+            if (_updatingInspector)
             {
-                l.ShapeType = Selected(_shapeTypeBox, WallpaperShapeType.Rectangle);
+                return;
             }
-        });
+
+            ApplyToSelected(l =>
+            {
+                if (l.Kind == WallpaperLayerKind.Shape)
+                {
+                    l.ShapeType = Selected(_shapeTypeBox, WallpaperShapeType.Rectangle);
+                }
+            });
+            // 推进教程的「选择形状类型」等待句（非该句时自动忽略）。
+            TutorialServicePush("shape-type");
+        };
         _shapeFillPicker.PropertyChanged += (_, e) =>
         {
             if (!_updatingInspector && e.Property?.Name == "Color")
@@ -1131,6 +1190,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _dirty = false;
         _statusText.Text = $"已保存并应用：共 {_layers.Count} 个图片图层 · 层级「{DisplayZOrder(_canvas.ZOrder)}」。";
         UpdateUndoRedoState();
+        // 向前推动教程的「保存」等待句。
+        TutorialServicePush("save");
     }
 
     /// <summary>按撤销/重做栈同步命令栏按钮状态。</summary>
@@ -1161,7 +1222,52 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
 
     private async void AddImageLayer()
     {
+        // 仅在教学引导（教程正停在「添加图片」句）时询问图片来源（从文件 / 示例图）；
+        // 平时与以前一样，直接打开文件选择器。
+        if (HostTutorial.GetCurrentSentenceTag() == "add-image")
+        {
+            await AskImageSourceAsync();
+            return;
+        }
+
+        await PickImageFromFileAsync(TopLevel.GetTopLevel(this));
+    }
+
+    /// <summary>教学引导中：让用户选择图片来源（从文件选择 / 使用示例图片 / 取消）。</summary>
+    private async Task AskImageSourceAsync()
+    {
         var topLevel = TopLevel.GetTopLevel(this);
+        if (topLevel == null)
+        {
+            return;
+        }
+
+        // 让用户明确选择图片来源：从文件选择，或使用内置示例图片（取消则不添加）。
+        var dialog = new ContentDialog
+        {
+            Title = "添加图片图层",
+            Content = "选择一张图片文件作为新的底图图层，或使用一张内置的示例图片。",
+            PrimaryButtonText = "从文件选择",
+            SecondaryButtonText = "使用示例图片",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary
+        };
+        var result = await dialog.ShowAsync(topLevel);
+        switch (result)
+        {
+            case ContentDialogResult.Primary:
+                await PickImageFromFileAsync(topLevel);
+                break;
+            case ContentDialogResult.Secondary:
+                AddLayerFromPath(Path.Combine(InjectorRuntime.PluginDirectory, "Assets", "editorbackground.jpg"));
+                break;
+            // None（取消）：不添加。
+        }
+    }
+
+    /// <summary>打开系统文件选择器挑选底图图片；取消则不添加。</summary>
+    private async Task PickImageFromFileAsync(TopLevel? topLevel)
+    {
         if (topLevel?.StorageProvider is not { } provider)
         {
             return;
@@ -1177,17 +1283,16 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 FilePickerFileTypes.All
             ]
         });
-        if (files.Count == 0)
+        var path = files.Count > 0 ? files[0].TryGetLocalPath() : null;
+        if (!string.IsNullOrEmpty(path))
         {
-            return;
+            AddLayerFromPath(path);
         }
+    }
 
-        var path = files[0].TryGetLocalPath();
-        if (string.IsNullOrEmpty(path))
-        {
-            return;
-        }
-
+    /// <summary>按本地路径创建一张图片图层并选中（添加成功后会推进教程的 add-image 句）。</summary>
+    private void AddLayerFromPath(string path)
+    {
         PushUndo();
         _layers.Add(new WallpaperLayerItem
         {
@@ -1204,9 +1309,11 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         RefreshLayerList();
         RefreshInspector();
         UpdateStatus();
+        // 向前推动教程的「添加图片」等待句。
+        TutorialServicePush("add-image");
     }
 
-    /// <summary>添加一个 SMTC 专辑封面图层（无播放时画布显示占位封面 album.png）。</summary>
+    /// <summary>添加一个 SMTC 专辑封面图层（无播放时画布显示占位封面 album.jpg）。</summary>
     private void AddSmtcLayer()
     {
         PushUndo();
@@ -1751,9 +1858,27 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
 
     private void ToggleIslandUnlock()
     {
-        _canvas.IslandUnlocked = !_canvas.IslandUnlocked;
+        var newState = !_canvas.IslandUnlocked;
+        _canvas.IslandUnlocked = newState;
         RefreshLayerList();
         UpdateStatus();
+        // 教程推进：区分「正常解锁」与「已解锁用户先锁回去再解锁」两种分支，
+        // 保证已解锁时教程不会卡在后续的拖动步骤上。
+        var tag = HostTutorial.GetCurrentSentenceTag();
+        if (newState)
+        {
+            // 点击后处于解锁状态：解锁完成，推进对应等待句（unlock 或 unlock-reset）。
+            if (tag is "unlock" or "unlock-reset")
+            {
+                TutorialServicePush(tag);
+            }
+        }
+        else if (tag == "unlock")
+        {
+            // 点击后处于锁定状态：用户把原本已解锁的主界面锁回去了。
+            // 跳到「吃惊 + 重新解锁」分支句，让用户再解锁一次。
+            HostTutorial.PushToNextSentence();
+        }
     }
 
     private void ToggleLayerVisibility(WallpaperLayerItem layer)

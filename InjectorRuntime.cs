@@ -16,6 +16,9 @@ internal static class InjectorRuntime
 
     public static string ConfigDirectory { get; private set; } = string.Empty;
 
+    /// <summary>插件安装目录（含 Assets/Stickers 等随插件部署的资源）。</summary>
+    public static string PluginDirectory { get; private set; } = string.Empty;
+
     /// <summary>
     /// 用户预设列表发生变化（新增/删除）时触发，供 UI 与自动化设置控件刷新下拉列表。
     /// </summary>
@@ -24,12 +27,55 @@ internal static class InjectorRuntime
     public static void Initialize(string configDirectory, string pluginDirectory)
     {
         ConfigDirectory = configDirectory;
+        PluginDirectory = pluginDirectory;
         Settings = InjectorSettingsStore.Load(configDirectory, pluginDirectory);
         _presets = InjectorPresetStore.Load(configDirectory);
         SmtcAlbumColorPicker.SetLogPath(Path.Combine(configDirectory, "album-color.log"));
         Settings.Changed += OnSettingsChanged;
         ContractCatalogService.Initialize(configDirectory);
+        HostTutorial.ErrorLogPath = Path.Combine(configDirectory, "tutorial-error.log");
+        InitializeTutorial(configDirectory, pluginDirectory);
         _injector = new MainWindowStyleInjector(Settings);
+    }
+
+    /// <summary>
+    /// 注册插件教程到宿主教学中心：首次运行把默认教程 JSON 复制到配置目录
+    /// （用户可自行编辑），之后读取配置目录副本，通过反射注册到宿主教程系统。
+    /// 教程加载失败不影响插件其余功能。
+    /// </summary>
+    private static void InitializeTutorial(string configDirectory, string pluginDirectory)
+    {
+        try
+        {
+            const string fileName = "injector.wallpaperEditor.json";
+            var tutorialDir = Path.Combine(configDirectory, "Tutorials");
+            var tutorialFile = Path.Combine(tutorialDir, fileName);
+            if (!File.Exists(tutorialFile))
+            {
+                var packaged = Path.Combine(pluginDirectory, "Defaults", "Tutorials", fileName);
+                if (!File.Exists(packaged))
+                {
+                    return;
+                }
+
+                Directory.CreateDirectory(tutorialDir);
+                File.Copy(packaged, tutorialFile);
+            }
+
+            // 教程模板用 {stickerUri} 占位符引用 PJSK 贴纸（随插件部署在 Assets/Stickers 下）、
+            // 用 {assetsUri} 引用插件 Assets 目录（如教程 Banner），
+            // 注册时替换为插件实际目录的 file:// URI，确保本地可加载。
+            var stickerDir = Path.Combine(pluginDirectory, "Assets", "Stickers");
+            var assetsUri = new Uri(Path.Combine(pluginDirectory, "Assets")).AbsoluteUri.TrimEnd('/');
+            var json = File.ReadAllText(tutorialFile)
+                .Replace("{stickerUri}", new Uri(stickerDir).AbsoluteUri.TrimEnd('/'))
+                .Replace("{assetsUri}", assetsUri);
+            HostTutorial.RegisterGroupFromJson(json);
+        }
+        catch
+        {
+            // 教程加载失败不影响插件其余功能。
+        }
     }
 
     public static void Attach()

@@ -138,6 +138,10 @@ internal sealed class WallpaperLayerCanvas : UserControl
     public event Action? IslandChanged;
     public event Action? ImagesChanged;
     public event Action<WallpaperLayerItem>? DeleteRequested;
+    /// <summary>形状工具拖拽绘制完成后触发（供教程等外部推进流程）。</summary>
+    public event Action? ShapeCreated;
+    /// <summary>文本工具创建文本框完成后触发（供教程等外部推进流程）。</summary>
+    public event Action? TextCreated;
     /// <summary>工具切换（供窗口左侧工具栏同步选中态）。</summary>
     public event Action<WallpaperEditorTool>? ToolChanged;
 
@@ -703,7 +707,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         {
             // 编辑器内用占位专辑封面预览；运行时由 SMTC 事件推送真实封面。
             var dir = Path.GetDirectoryName(typeof(WallpaperLayerCanvas).Assembly.Location);
-            return dir == null ? null : Path.Combine(dir, "Assets", "album.png");
+            return dir == null ? null : Path.Combine(dir, "Assets", "album.jpg");
         }
 
         return null;
@@ -1545,6 +1549,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
 
         Refresh();
         SwitchTool(WallpaperEditorTool.Move);
+        ShapeCreated?.Invoke();
         Edited?.Invoke();
     }
 
@@ -1573,6 +1578,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         Select(layer.Id);
         Refresh();
         SwitchTool(WallpaperEditorTool.Move);
+        TextCreated?.Invoke();
         Edited?.Invoke();
     }
     private WallpaperLayerItem CreateShapeLayer(Rect rect)

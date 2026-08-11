@@ -2054,10 +2054,10 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
     }
 
-    /// <summary>SMTC 图层的占位封面路径（插件 Assets/album.png）。</summary>
+    /// <summary>SMTC 图层的占位封面路径（插件 Assets/album.jpg）。</summary>
     private static string? SmtcPlaceholderPath() =>
         Path.GetDirectoryName(typeof(MainWindowStyleInjector).Assembly.Location) is { } dir
-            ? Path.Combine(dir, "Assets", "album.png")
+            ? Path.Combine(dir, "Assets", "album.jpg")
             : null;
 
     /// <summary>为 SMTC 图层加载占位专辑封面（无真实封面时显示）。</summary>
