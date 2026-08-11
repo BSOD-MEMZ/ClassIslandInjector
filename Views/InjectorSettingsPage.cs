@@ -222,8 +222,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     /// <summary>背景图片编辑模式：基础模式 = 简单单图设置；专家模式 = Photoshop 风格图层编辑器。</summary>
     private static readonly Choice<bool>[] WallpaperModes =
     [
-        new(false, "基础模式（简单设置）"),
-        new(true, "专家模式（图层编辑器）"),
+        new(false, "基础模式"),
+        new(true, "专家模式"),
     ];
 
     private static readonly Choice<WallpaperSource>[] WallpaperSources =
@@ -499,7 +499,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _wallpaperModeInfoBar = new InfoBar
         {
             Severity = InfoBarSeverity.Informational,
-            Title = "专家模式",
+            Title = "已启用专家模式！",
             Message = string.Empty,
             IsOpen = false,
             IsClosable = false,
@@ -507,9 +507,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         };
         panel.Children.Add(_wallpaperModeInfoBar);
         var wallpaperGroup = SwitchableGroup("\uF42D", "背景图片", "为 ClassIsland 主界面添加背景图片", _wallpaperEnabled,
-            Item("编辑模式", "", _wallpaperModeBox),
-            _wallpaperEditorItem = Item("打开图层编辑器", "", Button("打开编辑器", OpenWallpaperLayerEditor)),
-            _wallpaperSourceItem = Item("图片来源", "选择底图的来源（专家模式启用时被忽略）。", _wallpaperSource),
+            Item("编辑模式", "想象一下我们把 Photoshop 搬到 ClassIsland！试试全新专家模式！", _wallpaperModeBox),
+            _wallpaperEditorItem = Item("打开图层编辑器", "给设计大师的超级编辑器", Button("打开编辑器", OpenWallpaperLayerEditor)),
+            _wallpaperSourceItem = Item("图片来源", "选择底图的来源。", _wallpaperSource),
             _wallpaperPathItem = wallpaperPathItem,
             _wallpaperOpacityItem = Item("图片不透明度", "底图的整体透明度。", _wallpaperOpacity),
             _wallpaperDisplayModeItem = Item("显示方式", "图片在主界面内的显示方式。", _wallpaperDisplayMode),
@@ -539,7 +539,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         UpdateWallpaperModeVisibility();
         panel.Children.Add(Group("\uE51E", "动态取色", "从音乐软件或浏览器获取 SMTC 信息，并进行莫奈取色",
             Item("暂停/停止时恢复原色", "媒体暂停或停止播放时，从专辑取色平滑恢复为原始颜色，恢复播放后再跟随专辑。", _revertColorsWhenPaused),
-            Item("动态修改主题色", "从当前专辑封面取色并动态修改 ClassIsland 全局主题强调色（作用于整个应用）；暂停/停止时若开启「暂停恢复原色」则恢复为宿主配置的主题色。", _dynamicThemeColor),
+            Item("动态修改主题色", "从当前专辑封面取色并动态修改 ClassIsland 全局主题强调色。", _dynamicThemeColor),
             Item("兜底刷新间隔", "事件驱动失效时的兜底刷新间隔（秒）。", _albumColorPollingInterval),
             Item("颜色过渡时长", "专辑颜色变化时，背景、边框、阴影平滑过渡到新颜色的时长（秒），0 为立即切换。", _albumColorTransition),
             Item("这是什么？", "了解 SMTC 与动态取色是如何工作的。", Button("查看工作原理", ShowSmtcExplanation))));
@@ -736,7 +736,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         UpdateContractCurrent();
         panel.Children.Add(Setting("\uE761", "当前状态", "ClassIsland 宿主版本与当前生效的对照表。", _contractCurrent));
         panel.Children.Add(Setting("\uE761", "可用对照表", "刷新后连接到 xxtsoft，列出所有可用对照表。", ContractTableFooter()));
-        panel.Children.Add(Setting("\uE905", "查看 xxtsoft 服务状态", "打开插件网站，检查服务是否在线。", LinkButton("打开 xxtsoft.top", "https://xxtsoft.top")));
+        panel.Children.Add(Setting("\uE905", "查看 xxtsoft 服务状态", "检查服务是否在线。", LinkButton("打开 xxtsoft.top", "https://xxtsoft.top")));
         panel.Children.Add(_contractStatus);
 
         AddSection(panel, "\uE2C8", "调试");
