@@ -155,9 +155,33 @@ internal sealed class WallpaperLayerCanvas : UserControl
     private byte[]? _strokeBytes;
     private WriteableBitmap? _strokeBitmap;
     private Point _strokeLast;
+    /// <summary>笔锋：当前平滑后的笔刷半径（随绘制速度变化：慢→粗、快→细）。</summary>
+    private double _strokeRadius;
+    /// <summary>笔锋：上一次指针事件时间戳（毫秒，用于计算移动速度）。</summary>
+    private ulong _strokeLastTimestamp;
+    private Color _activeColor = Colors.White;
     /// <summary>当前取色 / 默认颜色（新建形状、文本、画笔都用它；吸管取色后更新）。</summary>
-    public Color ActiveColor { get; set; } = Colors.White;
-    /// <summary>画笔 / 橡皮擦大小（像素）。</summary>
+    public Color ActiveColor
+    {
+        get => _activeColor;
+        set
+        {
+            if (_activeColor == value)
+            {
+                return;
+            }
+
+            _activeColor = value;
+            // 画笔颜色变化时立即刷新笔尖预览圆（让用户一眼看出当前墨色 / 是否透明无墨）。
+            if ((_tool is WallpaperEditorTool.Brush or WallpaperEditorTool.Eraser) && _brushCursor.IsVisible)
+            {
+                UpdateBrushCursor(_brushCursorPos);
+            }
+        }
+    }
+    /// <summary>笔尖预览圆上次所在位置（舞台坐标），供画笔颜色变化时原位刷新。</summary>
+    private Point _brushCursorPos;
+    /// <summary>画笔 / 橡皮擦大小（屏幕 DIP）。</summary>
     public double BrushSize { get; set; } = 8;
     /// <summary>浮动工具条是否已显示（用于首次显示后按真实尺寸重定位）。</summary>
     private bool _floatToolbarShown;
@@ -513,11 +537,12 @@ internal sealed class WallpaperLayerCanvas : UserControl
     }
 
     /// <summary>
-    /// 更新画笔 / 橡皮擦笔尖预览圆：按选中图片图层的显示比例把笔刷半径
-    /// （位图像素）换算成舞台像素并跟随指针；非画笔工具时隐藏。
+    /// 更新画笔 / 橡皮擦笔尖预览圆：颜色跟随当前画笔颜色（透明墨用红色标记提醒），
+    /// 半径 = BrushSize/2 DIP（屏幕尺寸恒定，与真实笔迹一致）；非画笔工具时隐藏。
     /// </summary>
     private void UpdateBrushCursor(Point stagePos)
     {
+        _brushCursorPos = stagePos;
         if (_tool is not (WallpaperEditorTool.Brush or WallpaperEditorTool.Eraser))
         {
             _brushCursor.IsVisible = false;
@@ -525,21 +550,30 @@ internal sealed class WallpaperLayerCanvas : UserControl
         }
 
         var layer = SelectedLayer;
-        var scale = 1.0;
-        if (layer != null && _bitmaps.TryGetValue(layer.Id, out var bmp) &&
-            bmp.PixelSize.Width > 0 && bmp.PixelSize.Height > 0)
+        if (layer == null || layer.Kind != WallpaperLayerKind.Image ||
+            layer.FullscreenExtend || _lockedIds.Contains(layer.Id))
         {
-            var rect = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer));
-            scale = layer.DisplayMode switch
-            {
-                WallpaperDisplayMode.Stretch => rect.Width / bmp.PixelSize.Width,
-                WallpaperDisplayMode.Fit => Math.Min(rect.Width / bmp.PixelSize.Width, rect.Height / bmp.PixelSize.Height),
-                WallpaperDisplayMode.Fill => Math.Max(rect.Width / bmp.PixelSize.Width, rect.Height / bmp.PixelSize.Height),
-                _ => 1
-            };
+            // 没有可绘制的图片图层时隐藏笔尖预览，提示用户先去图层面板选中图层。
+            _brushCursor.IsVisible = false;
+            return;
         }
 
-        var radius = Math.Max(2, BrushSize / 2 * scale);
+        var color = ActiveColor;
+        if (color.A == 0)
+        {
+            // 画笔是透明色（没有墨）：用醒目的红色标记提醒，避免用户误以为有笔迹。
+            _brushCursor.BorderBrush = new SolidColorBrush(Color.FromArgb(220, 255, 59, 48));
+            _brushCursor.Background = new SolidColorBrush(Color.FromArgb(28, 255, 59, 48));
+        }
+        else
+        {
+            // 光标颜色跟随当前画笔颜色，透明度按画笔实际透明度（保证至少可见）。
+            var borderA = (byte)Math.Max((int)180, (int)color.A);
+            _brushCursor.BorderBrush = new SolidColorBrush(Color.FromArgb(borderA, color.R, color.G, color.B));
+            _brushCursor.Background = new SolidColorBrush(Color.FromArgb((byte)(color.A / 6), color.R, color.G, color.B));
+        }
+
+        var radius = Math.Max(2, BrushSize / 2);
         _brushCursor.Width = radius * 2;
         _brushCursor.Height = radius * 2;
         Canvas.SetLeft(_brushCursor, stagePos.X - radius);
@@ -1481,7 +1515,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 e.Handled = true;
                 break;
             case DragKind.Stroke:
-                UpdateStroke(_drag, e.GetPosition(_stage));
+                UpdateStroke(_drag, e.GetPosition(_stage), (ulong)e.Timestamp);
                 e.Handled = true;
                 break;
             case DragKind.Eyedrop:
@@ -1522,10 +1556,19 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 e.Handled = true;
                 break;
             case DragKind.Stroke:
-                FinishStroke();
-                _drag = null;
-                e.Pointer.Capture(null);
-                e.Handled = true;
+                // 用 finally 保证即使 FinishStroke 内部异常也一定清掉 _drag，否则下一次
+                // 按下会被 `_drag != null` 守卫挡住，出现「只能看到光标但画不出笔迹」。
+                try
+                {
+                    FinishStroke();
+                }
+                finally
+                {
+                    _drag = null;
+                    e.Pointer.Capture(null);
+                    e.Handled = true;
+                }
+
                 break;
             case DragKind.Eyedrop:
                 FinishEyedrop(_drag, e.GetPosition(_stage));
@@ -1556,6 +1599,14 @@ internal sealed class WallpaperLayerCanvas : UserControl
             // 画笔中途失去捕获（如弹出系统菜单 / 触摸被系统手势打断）：丢弃本次笔画，恢复原图。
             _drag = null;
             CancelStroke();
+        }
+        else if (_drag != null)
+        {
+            // 其它手势被系统打断（触摸收不到 Released）时也统一清掉，
+            // 避免 _drag 残留挡住后续所有工具的按下。
+            _drag = null;
+            _guideOverlay.Clear();
+            _marqueeRect.IsVisible = false;
         }
     }
 
@@ -1867,6 +1918,9 @@ internal sealed class WallpaperLayerCanvas : UserControl
         if (layer == null || layer.Kind != WallpaperLayerKind.Image ||
             layer.FullscreenExtend || _lockedIds.Contains(layer.Id))
         {
+            CanvasDebugLog($"BeginStroke 未开始：SelectedLayer={(layer?.Id ?? "null")} " +
+                           $"Kind={layer?.Kind} Fullscreen={layer?.FullscreenExtend} " +
+                           $"Locked={layer != null && _lockedIds.Contains(layer.Id)}");
             return;
         }
 
@@ -1915,13 +1969,16 @@ internal sealed class WallpaperLayerCanvas : UserControl
         _strokeBitmap = working;
         _strokeLayer = layer;
         _strokeLast = MapStrokePoint(layer, raw, pos);
+        // 笔锋：起笔半径取基准的 35%（细笔尖），随后随速度平滑变粗。
+        _strokeRadius = Math.Max(0.5, BrushRadiusFor(layer, w, h) * 0.35);
+        _strokeLastTimestamp = (ulong)e.Timestamp;
         _drag = new DragState { Kind = DragKind.Stroke, Layer = layer, StartPointer = pos };
         e.Pointer.Capture(_stage);
         e.Handled = true;
     }
 
     /// <summary>画笔 / 橡皮擦拖拽：把指针映射到位图像素，画一条圆头线段并实时显示。</summary>
-    private void UpdateStroke(DragState drag, Point pointer)
+    private void UpdateStroke(DragState drag, Point pointer, ulong timestamp)
     {
         var layer = drag.Layer;
         if (layer == null || _strokeBytes == null || _strokeBitmap == null)
@@ -1940,10 +1997,19 @@ internal sealed class WallpaperLayerCanvas : UserControl
         var w = raw.PixelSize.Width;
         var h = raw.PixelSize.Height;
         var stride = w * 4;
-        var radius = Math.Max(0.5, BrushSize / 2);
+        var radius = BrushRadiusFor(layer, w, h);
         var erasing = _tool == WallpaperEditorTool.Eraser;
+        // 笔锋：按指针移动速度调整本段笔宽（慢→粗、快→细），平滑过渡避免突变。
+        var nowTs = timestamp;
+        var dt = nowTs > _strokeLastTimestamp ? (double)(nowTs - _strokeLastTimestamp) : 1.0;
+        var dist = Math.Sqrt((p.X - last.X) * (p.X - last.X) + (p.Y - last.Y) * (p.Y - last.Y));
+        var speed = dist / dt;
+        var targetRadius = radius * Math.Clamp(1.35 - speed * 0.18, 0.45, 1.0);
+        _strokeRadius += (targetRadius - _strokeRadius) * 0.35;
+        _strokeLastTimestamp = nowTs;
+        var drawRadius = Math.Max(0.5, _strokeRadius);
         WallpaperLayerEffects.DrawStroke(_strokeBytes, stride, w, h,
-            last.X, last.Y, p.X, p.Y, radius, ActiveColor, erasing);
+            last.X, last.Y, p.X, p.Y, drawRadius, ActiveColor, erasing);
         _strokeLast = p;
 
         // 只把本次笔画的脏矩形区域拷回工作位图：大图整幅 Marshal.Copy 每次移动都要拷
@@ -1965,9 +2031,12 @@ internal sealed class WallpaperLayerCanvas : UserControl
             }
         }
 
-        if (_layerImages.TryGetValue(layer.Id, out var image) && !ReferenceEquals(image.Source, _strokeBitmap))
+        if (_layerImages.TryGetValue(layer.Id, out var image))
         {
+            // 每段都重设 Source 并强制重绘，确保触摸高频移动时笔迹实时可见（不依赖
+            // WriteableBitmap 的 Invalidated 事件是否被 Image 订阅）。
             image.Source = _strokeBitmap;
+            image.InvalidateVisual();
         }
     }
 
@@ -1978,6 +2047,33 @@ internal sealed class WallpaperLayerCanvas : UserControl
         var local = new Point(stagePos.X - (rect.X + CanvasMargin), stagePos.Y - (rect.Y + CanvasMargin));
         return WallpaperLayerLayout.LocalPointToBitmapPoint(layer, local,
             raw.PixelSize.Width, raw.PixelSize.Height, rect.Width, rect.Height);
+    }
+
+    /// <summary>图层位图像素与舞台（DIP）的换算：1 DIP = 多少位图像素（按显示方式映射）。</summary>
+    private static double BitmapPixelsPerDip(WallpaperLayerItem layer, double bmpW, double bmpH, double rectW, double rectH)
+    {
+        if (rectW <= 0 || rectH <= 0 || bmpW <= 0 || bmpH <= 0)
+        {
+            return 1;
+        }
+
+        return layer.DisplayMode switch
+        {
+            WallpaperDisplayMode.Stretch => bmpW / rectW,
+            WallpaperDisplayMode.Fit => Math.Max(bmpW / rectW, bmpH / rectH),
+            WallpaperDisplayMode.Fill => Math.Min(bmpW / rectW, bmpH / rectH),
+            _ => 1
+        };
+    }
+
+    /// <summary>
+    /// 当前笔刷在位图像素中的半径：换算保证屏幕尺寸恒等于 BrushSize/2 DIP，
+    /// 与笔尖预览圆一致，且在高分辨率 / 不同显示方式的图层上不会忽大忽小。
+    /// </summary>
+    private double BrushRadiusFor(WallpaperLayerItem layer, double bmpW, double bmpH)
+    {
+        var rect = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer));
+        return Math.Max(0.5, BrushSize / 2 * BitmapPixelsPerDip(layer, bmpW, bmpH, rect.Width, rect.Height));
     }
 
     /// <summary>画笔 / 橡皮擦释放：把绘制结果存为新 PNG 并重新指向图层，随后刷新。</summary>
@@ -2006,6 +2102,11 @@ internal sealed class WallpaperLayerCanvas : UserControl
             Layers = _layers;
             Refresh();
             Edited?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            // 保存 / 重载失败绝不能把 _drag 卡住（否则后续无法再画），记录日志便于定位。
+            CanvasDebugLog($"FinishStroke 失败: {ex}");
         }
         finally
         {

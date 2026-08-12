@@ -532,8 +532,11 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     /// </summary>
     private void AddBlankLayer()
     {
-        var w = (int)Math.Max(1, _canvas.IslandWidth);
-        var h = (int)Math.Max(1, _canvas.IslandHeight);
+        // 位图按显示器缩放（DPI）创建，保证画出来的笔迹在屏幕上 1:1 清晰，
+        // 不会因为「位图分辨率 = DIP 尺寸」而被系统放大变糊。
+        var dpr = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1.0;
+        var w = (int)Math.Max(1, Math.Round(_canvas.IslandWidth * dpr));
+        var h = (int)Math.Max(1, Math.Round(_canvas.IslandHeight * dpr));
         var id = Guid.NewGuid().ToString("N");
         var dir = Path.Combine(InjectorRuntime.ConfigDirectory, "layers");
         Directory.CreateDirectory(dir);
@@ -559,8 +562,10 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             Path = path,
             DisplayMode = WallpaperDisplayMode.Stretch,
             SizeMode = WallpaperLayerSizeMode.Custom,
-            Width = w,
-            Height = h,
+            // 图层显示尺寸保持 DIP（与主界面一致），位图分辨率更高（dpr 倍），
+            // 画笔按 BrushRadiusFor 换算后屏幕大小不变、笔迹更清晰。
+            Width = _canvas.IslandWidth,
+            Height = _canvas.IslandHeight,
             AnchorX = WallpaperLayerAnchorX.Center,
             AnchorY = WallpaperLayerAnchorY.Center
         };
