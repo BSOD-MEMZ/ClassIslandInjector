@@ -31,6 +31,8 @@ body:
     id: expected-effect
     attributes:
       label: 期望效果
-      description: 如果你真能实现这个功能，那我会看到……
+      description: 如果你真能实现这个功能，那你会看到……
+      placeholder: |
+        如果你真能实现这个功能，那我会看到……
     validations:
       required: true

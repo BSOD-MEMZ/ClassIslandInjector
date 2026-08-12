@@ -47,7 +47,7 @@ body:
       label: 诊断信息
       description: |
         日志存在 `data\Config\Plugins\classisland.injector\` 目录内，但不是所有异常都能被成功记录，如果你实在找不到诊断信息，可以不填这里。
-      render: plaintext
+      render: text
     validations:
       required: false
 
