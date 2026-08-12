@@ -85,24 +85,28 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         Opacity = 0.75,
         FontSize = 12
     };
-    // 效果（仅图片图层）：高斯模糊 + 投影
-    private readonly EditorSpin _blurRadiusSpin = new(0, 100, 0.5, "0.##");
+    // 效果（仅图片图层）：投影（高斯模糊 / 色相饱和度等改由顶部命令栏的滤镜窗口调整）
     private readonly ToggleSwitch _shadowToggle = new() { OnContent = "开", OffContent = "关" };
     private readonly EditorSpin _shadowBlurSpin = new(0, 100, 0.5, "0.##");
     private readonly EditorSpin _shadowOffsetXSpin = new(-100, 100, 1, "0");
     private readonly EditorSpin _shadowOffsetYSpin = new(-100, 100, 1, "0");
     private readonly ColorPicker _shadowColorPicker = ColorPicker();
     private readonly Slider _shadowOpacitySlider = SliderControl(0, 1, 0.05);
-    private Control _blurItem = null!;
     private Control _shadowItem = null!;
     private Control _shadowBlurItem = null!;
     private Control _shadowOffsetXItem = null!;
     private Control _shadowOffsetYItem = null!;
     private Control _shadowColorItem = null!;
     private Control _shadowOpacityItem = null!;
-    /// <summary>「色相 / 饱和度」按钮（打开 Photoshop 式调整窗口，仅图片图层显示）。</summary>
-    private readonly Button _hslButton = new() { Content = "色相 / 饱和度…" };
-    private Control _hslItem = null!;
+    // 画笔 / 橡皮擦设置（对应工具激活时显示）
+    private readonly ColorPicker _brushColorPicker = ColorPicker();
+    private readonly Slider _brushSizeSlider = SliderControl(1, 100, 1);
+    private Control _brushColorItem = null!;
+    private Control _brushSizeItem = null!;
+    /// <summary>命令栏滤镜按钮（仅选中图片图层时可用）。</summary>
+    private CommandBarButton _hslFilterButton = null!;
+    private CommandBarButton _brightnessFilterButton = null!;
+    private CommandBarButton _blurFilterButton = null!;
     // 形状图层检查器
     private readonly ComboBox _shapeTypeBox = new() { MinWidth = 140, Name = "EditorShapeType" };
     private readonly ColorPicker _shapeFillPicker = ColorPicker();
@@ -164,13 +168,13 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private CommandBarButton _ungroupButton = null!;
     /// <summary>图层面板操作按钮（按选中状态启停；效果仅背景可用）。</summary>
     private Button _newLayerButton = null!;
+    /// <summary>图层面板「新建空白图层」按钮（始终可用）。</summary>
+    private Button _newBlankLayerButton = null!;
     private Button _duplicateButton = null!;
     private Button _deleteButton = null!;
     private Button _effectButton = null!;
-    /// <summary>色相 / 饱和度调整窗口（单例由窗口自身管理）。</summary>
-    private HslAdjustWindow? _hslWindow;
-    /// <summary>本次 HSL 调整会话是否已压过撤销（拖动滑块期间只压一次）。</summary>
-    private bool _hslUndoPushed;
+    /// <summary>图层面板「栅格化」按钮（形状 / 文本图层选中时可用）。</summary>
+    private Button _rasterizeButton = null!;
     /// <summary>拖拽排序：独立置顶的「幽灵快照」预览窗口（参考「主界面 → 组件」拖拽）。</summary>
     private Window? _dragPreviewWindow;
     private Border? _dragPreviewHost;
@@ -209,6 +213,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         RefreshLayerList();
         RefreshInspector();
         UpdateStatus();
+        // 编辑器级快捷键（撤销 / 重做、PS 式滤镜快捷键）；画布未处理的按键会冒泡到这里。
+        KeyDown += EditorWindowOnKeyDown;
         Closing += OnClosingConfirm;
         // 单例跟踪：新窗口打开时覆盖 Current，关闭时若仍是本窗口则清空。
         Current = this;
@@ -261,8 +267,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             UpdateStatus();
             UpdateGroupButtons();
             UpdateLayerActionButtons();
-            // 选中变化时同步色相 / 饱和度窗口的滑块。
-            _hslWindow?.SyncFromEditor();
+            // 选中变化时同步各滤镜窗口的数值。
+            SyncFilterWindows();
         };
         _canvas.IslandChanged += () =>
         {
@@ -273,7 +279,13 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         };
         _canvas.ImagesChanged += RefreshLayerList;
         _canvas.DeleteRequested += DeleteLayer;
-        _canvas.ToolChanged += _ => UpdateToolBarSelection();
+        _canvas.RasterizeRequested += RasterizeSelected;
+        _canvas.ToolChanged += _ =>
+        {
+            UpdateToolBarSelection();
+            // 切换工具后刷新检查器，显示 / 隐藏「画笔」设置。
+            RefreshInspector();
+        };
     }
 
     private void BuildContent()
@@ -294,6 +306,9 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         var saveButton = CommandButton("\uEEB5", "保存并应用", "保存图层并应用到主界面", Save);
         // 供教程 TargetSelector 定位（#EditorSave）。
         saveButton.Name = "EditorSave";
+        _hslFilterButton = CommandButton("\uE51E", "色相 / 饱和度", "打开滤镜窗口：逐像素调整选中图片图层的色相、饱和度与明度（含滤镜预设）", OpenHslAdjustWindow);
+        _brightnessFilterButton = CommandButton("\uE2BC", "亮度 / 对比度", "打开滤镜窗口：逐像素调整选中图片图层的亮度与对比度（含滤镜预设）", OpenBrightnessContrastWindow);
+        _blurFilterButton = CommandButton("\uE20B", "高斯模糊", "打开滤镜窗口：调整选中图片图层的高斯模糊半径", OpenBlurAdjustWindow);
         var commandBar = new CommandBar
         {
             DefaultLabelPosition = CommandBarDefaultLabelPosition.Right,
@@ -309,6 +324,10 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 new CommandBarSeparator(),
                 CommandButton("\uE62F", "重置主界面尺寸", "把主界面预览尺寸恢复为 ClassIsland 实际尺寸", ResetIslandSize),
                 CommandButton("\uE92A", "棋盘格配色", "设置画布背景棋盘格：跟随主题自动按深浅色选择，或自定义两种颜色", OpenCheckerboardSettings),
+                new CommandBarSeparator(),
+                _hslFilterButton,
+                _brightnessFilterButton,
+                _blurFilterButton,
                 saveButton
             }
         };
@@ -449,6 +468,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private Control BuildLayerActions()
     {
         var panel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        _newBlankLayerButton = LayerIconButton("\uE010", "新建空白图层（透明，可用画笔 / 橡皮擦绘制）", AddBlankLayer);
         _newLayerButton = LayerIconButton("\uE9B4", "新建图层（选择一张图片）", AddImageLayer);
         _duplicateButton = LayerIconButton("\uE58B", "复制图层（Ctrl+J）", () => _canvas.DuplicateSelection());
         _deleteButton = LayerIconButton("\uE61D", "删除图层", () =>
@@ -460,9 +480,12 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             }
         });
         _effectButton = LayerIconButton("\uF42F", "效果选项（只作用于 ClassIsland 背景，需先点击背景行）", OpenBackgroundEffects);
+        _rasterizeButton = LayerIconButton("\uE928", "栅格化图层（Ctrl+Shift+R）：把选中的形状 / 文本图层渲染成位图，之后当作图片图层处理（不可再编辑矢量）", RasterizeSelected);
+        panel.Children.Add(_newBlankLayerButton);
         panel.Children.Add(_newLayerButton);
         panel.Children.Add(_duplicateButton);
         panel.Children.Add(_deleteButton);
+        panel.Children.Add(_rasterizeButton);
         panel.Children.Add(_effectButton);
         return panel;
     }
@@ -480,13 +503,172 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         return button;
     }
 
-    /// <summary>按当前选中状态同步图层面板操作按钮：复制/删除仅选中图层可用；效果仅背景（无选中）可用。</summary>
+    /// <summary>按当前选中状态同步图层面板操作按钮：复制/删除仅选中图层可用；栅格化仅选中形状/文本图层可用；效果仅背景（无选中）可用。命令栏滤镜按钮仅选中图片图层时可用。</summary>
     private void UpdateLayerActionButtons()
     {
         var hasSelection = _canvas.SelectedLayer != null;
+        var hasVector = _canvas.SelectedLayers.Any(l => l.Kind != WallpaperLayerKind.Image);
+        var hasImageLayer = _canvas.SelectedLayers.Any(l => l.Kind == WallpaperLayerKind.Image);
         _duplicateButton.IsEnabled = hasSelection;
         _deleteButton.IsEnabled = hasSelection;
+        _rasterizeButton.IsEnabled = hasVector;
         _effectButton.IsEnabled = !hasSelection;
+        _hslFilterButton.IsEnabled = hasImageLayer;
+        _brightnessFilterButton.IsEnabled = hasImageLayer;
+        _blurFilterButton.IsEnabled = hasImageLayer;
+    }
+
+    /// <summary>
+    /// 新建空白（透明）图片图层：尺寸与主界面一致，导出为 PNG 后作为本地图片图层，
+    /// 可用画笔 / 橡皮擦在其上绘制。
+    /// </summary>
+    private void AddBlankLayer()
+    {
+        var w = (int)Math.Max(1, _canvas.IslandWidth);
+        var h = (int)Math.Max(1, _canvas.IslandHeight);
+        var id = Guid.NewGuid().ToString("N");
+        var dir = Path.Combine(InjectorRuntime.ConfigDirectory, "layers");
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, $"{id}.png");
+        try
+        {
+            // WriteableBitmap 默认清零（全透明）。
+            using var bmp = new WriteableBitmap(new PixelSize(w, h), new Vector(96, 96));
+            using var fs = File.Create(path);
+            bmp.Save(fs);
+        }
+        catch
+        {
+            return;
+        }
+
+        var layer = new WallpaperLayerItem
+        {
+            Id = id,
+            Name = $"空白图层 {_layers.Count + 1}",
+            Kind = WallpaperLayerKind.Image,
+            Source = WallpaperSource.LocalImage,
+            Path = path,
+            DisplayMode = WallpaperDisplayMode.Stretch,
+            SizeMode = WallpaperLayerSizeMode.Custom,
+            Width = w,
+            Height = h,
+            AnchorX = WallpaperLayerAnchorX.Center,
+            AnchorY = WallpaperLayerAnchorY.Center
+        };
+        PushUndo();
+        _layers.Add(layer);
+        _dirty = true;
+        _canvas.Layers = _layers;
+        _canvas.Select(layer.Id);
+        RefreshLayerList();
+        RefreshInspector();
+        UpdateStatus();
+    }
+
+    /// <summary>
+    /// 栅格化选中的形状 / 文本图层：把矢量内容渲染成 PNG 位图，转为图片图层
+    /// （保留尺寸 / 位置 / 旋转等变换，此后按位图处理，不能再编辑矢量）。
+    /// 首次弹出警告（可勾选「不再提示」）。
+    /// </summary>
+    private async void RasterizeSelected()
+    {
+        var layers = _canvas.SelectedLayers.Where(l => l.Kind != WallpaperLayerKind.Image).ToList();
+        if (layers.Count == 0)
+        {
+            return;
+        }
+
+        if (!InjectorRuntime.Settings.RasterizeWarningDismissed)
+        {
+            var dismiss = new CheckBox { Content = "以后不再提示" };
+            var topLevel = TopLevel.GetTopLevel(this);
+            if (topLevel == null)
+            {
+                return;
+            }
+
+            var dialog = new ContentDialog
+            {
+                Title = "栅格化图层",
+                Content = new StackPanel
+                {
+                    Spacing = 8,
+                    Children =
+                    {
+                        new TextBlock { TextWrapping = TextWrapping.Wrap, Text = $"栅格化后将被渲染成位图，从此当作图片图层处理，不能再编辑矢量。" },
+                        dismiss
+                    }
+                },
+                PrimaryButtonText = "栅格化",
+                CloseButtonText = "取消",
+                DefaultButton = ContentDialogButton.Close
+            };
+            var result = await dialog.ShowAsync(topLevel);
+            if (result != ContentDialogResult.Primary)
+            {
+                return;
+            }
+
+            if (dismiss.IsChecked == true)
+            {
+                var settings = InjectorRuntime.Settings;
+                settings.BeginUpdate();
+                settings.RasterizeWarningDismissed = true;
+                settings.EndUpdate();
+                InjectorRuntime.SaveAndApply();
+            }
+        }
+
+        PushUndo();
+        foreach (var layer in layers)
+        {
+            RasterizeLayer(layer);
+        }
+
+        _dirty = true;
+        // 触发 RefreshImages + SyncImageControls，按新 Path 加载位图。
+        _canvas.Layers = _layers;
+        RefreshLayerList();
+        RefreshInspector();
+        UpdateStatus();
+    }
+
+    /// <summary>把单个矢量图层渲染成 PNG 并转为图片图层；失败时保持原图层不变。</summary>
+    private void RasterizeLayer(WallpaperLayerItem layer)
+    {
+        var w = layer.Width > 0 ? layer.Width : _canvas.IslandWidth;
+        var h = layer.Height > 0 ? layer.Height : _canvas.IslandHeight;
+        if (w < 1 || h < 1)
+        {
+            return;
+        }
+
+        try
+        {
+            var visual = new WallpaperLayerVisual { Layer = layer, Width = w, Height = h };
+            visual.Measure(new Size(w, h));
+            visual.Arrange(new Rect(0, 0, w, h));
+            using var rtb = new RenderTargetBitmap(new PixelSize((int)Math.Ceiling(w), (int)Math.Ceiling(h)));
+            rtb.Render(visual);
+            var dir = Path.Combine(InjectorRuntime.ConfigDirectory, "rasterized");
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, $"{layer.Id}.png");
+            using (var fs = File.Create(path))
+            {
+                rtb.Save(fs);
+            }
+
+            layer.Kind = WallpaperLayerKind.Image;
+            layer.Source = WallpaperSource.LocalImage;
+            layer.Path = path;
+            layer.DisplayMode = WallpaperDisplayMode.Stretch;
+            layer.SmtcMode = WallpaperLayerSmtcMode.AsImage;
+        }
+        catch
+        {
+            // 栅格化失败（渲染 / 写文件异常）时保持原矢量图层不变。
+        }
     }
 
     /// <summary>打开背景效果窗口（单例；已打开则聚焦）。</summary>
@@ -501,63 +683,126 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         new BackgroundEffectsWindow().Show();
     }
 
-    /// <summary>打开色相 / 饱和度调整窗口（单例；已打开则聚焦）。</summary>
+    // ============ 图层滤镜窗口（色相/饱和度、亮度/对比度、高斯模糊）============
+
+    /// <summary>当前选中图层中第一个图片图层（滤镜窗口读取 / 同步用；无则 null）。</summary>
+    internal WallpaperLayerItem? FirstSelectedImageLayer =>
+        _canvas.SelectedLayers.FirstOrDefault(l => l.Kind == WallpaperLayerKind.Image);
+
+    /// <summary>当前选中的全部图片图层。</summary>
+    internal IEnumerable<WallpaperLayerItem> SelectedImageLayers =>
+        _canvas.SelectedLayers.Where(l => l.Kind == WallpaperLayerKind.Image);
+
+    /// <summary>滤镜窗口预览改动前压一次撤销（整次会话只压一次，由窗口跟踪）。</summary>
+    internal void PushLayerFilterUndo() => PushUndo();
+
+    /// <summary>把滤镜预览应用到选中的图片图层并刷新画布（标记脏，等待确定才最终提交）。</summary>
+    internal void ApplyLayerFilter(Action apply)
+    {
+        apply();
+        _dirty = true;
+        _canvas.Refresh();
+        RefreshInspector();
+        UpdateStatus();
+    }
+
+    /// <summary>滤镜「确定」后：标记脏并刷新（值已由窗口写入图层）。</summary>
+    internal void CommitLayerFilter()
+    {
+        _dirty = true;
+        _canvas.Refresh();
+        RefreshInspector();
+        UpdateStatus();
+    }
+
+    /// <summary>滤镜「取消 / 关闭恢复快照」后：只刷新画布，不标记脏。</summary>
+    internal void RefreshAfterLayerFilter()
+    {
+        _canvas.Refresh();
+        RefreshInspector();
+        UpdateStatus();
+    }
+
+    /// <summary>同步所有已打开的滤镜窗口（选中变化时调用）。</summary>
+    private void SyncFilterWindows()
+    {
+        HslAdjustWindow.Current?.SyncFromEditor();
+        BrightnessContrastWindow.Current?.SyncFromEditor();
+        BlurAdjustWindow.Current?.SyncFromEditor();
+    }
+
+    /// <summary>打开色相 / 饱和度窗口（单例；已打开则聚焦）。</summary>
     private void OpenHslAdjustWindow()
     {
         if (HslAdjustWindow.Current is { } existing)
         {
             existing.Activate();
-            _hslWindow = existing;
             return;
         }
 
-        // 每次打开作为一次新的调整会话：拖动滑块期间只压一次撤销。
-        _hslUndoPushed = false;
-        var window = new HslAdjustWindow(this);
-        _hslWindow = window;
-        window.Closed += (_, _) =>
-        {
-            if (ReferenceEquals(_hslWindow, window))
-            {
-                _hslWindow = null;
-            }
-        };
-        window.Show();
+        new HslAdjustWindow(this).Show();
     }
 
-    /// <summary>当前选中图层中第一个图片图层（HSL 窗口读取 / 同步用；无则 null）。</summary>
-    internal WallpaperLayerItem? FirstSelectedImageLayer =>
-        _canvas.SelectedLayers.FirstOrDefault(l => l.Kind == WallpaperLayerKind.Image);
-
-    /// <summary>
-    /// 把色相 / 饱和度 / 明度应用到选中的图片图层（HSL 窗口拖动滑块实时调用）。
-    /// 会刷新画布预览并标记脏；整次会话只压一次撤销。
-    /// </summary>
-    internal void ApplyHslToSelected(double hue, double sat, double light)
+    /// <summary>打开亮度 / 对比度窗口（单例；已打开则聚焦）。</summary>
+    private void OpenBrightnessContrastWindow()
     {
-        var layers = _canvas.SelectedLayers.Where(l => l.Kind == WallpaperLayerKind.Image).ToList();
-        if (layers.Count == 0)
+        if (BrightnessContrastWindow.Current is { } existing)
+        {
+            existing.Activate();
+            return;
+        }
+
+        new BrightnessContrastWindow(this).Show();
+    }
+
+    /// <summary>打开高斯模糊窗口（单例；已打开则聚焦）。</summary>
+    private void OpenBlurAdjustWindow()
+    {
+        if (BlurAdjustWindow.Current is { } existing)
+        {
+            existing.Activate();
+            return;
+        }
+
+        new BlurAdjustWindow(this).Show();
+    }
+
+    /// <summary>窗口级快捷键：撤销 / 重做与 PS 式滤镜快捷键（画布未处理的键冒泡到这里）。</summary>
+    private void EditorWindowOnKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (!e.KeyModifiers.HasFlag(KeyModifiers.Control))
         {
             return;
         }
 
-        if (!_hslUndoPushed)
+        switch (e.Key)
         {
-            PushUndo();
-            _hslUndoPushed = true;
+            case Key.Z when e.KeyModifiers.HasFlag(KeyModifiers.Shift):
+                // Ctrl+Shift+Z：重做（Photoshop 同款）。
+                Redo();
+                e.Handled = true;
+                break;
+            case Key.Z:
+                // Ctrl+Z：撤销。
+                Undo();
+                e.Handled = true;
+                break;
+            case Key.Y:
+                // Ctrl+Y：重做。
+                Redo();
+                e.Handled = true;
+                break;
+            case Key.U:
+                // Ctrl+U：色相 / 饱和度（Photoshop 同款）。
+                OpenHslAdjustWindow();
+                e.Handled = true;
+                break;
+            case Key.M:
+                // Ctrl+M：亮度 / 对比度（Photoshop 的曲线 / 色调调整的实用替代）。
+                OpenBrightnessContrastWindow();
+                e.Handled = true;
+                break;
         }
-
-        _dirty = true;
-        foreach (var layer in layers)
-        {
-            layer.HueShift = hue;
-            layer.SaturationAdjust = sat;
-            layer.LightnessAdjust = light;
-        }
-
-        _canvas.Refresh();
-        RefreshInspector();
-        UpdateStatus();
     }
 
     /// <summary>
@@ -644,6 +889,9 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         panel.Children.Add(ToolButton(WallpaperEditorTool.Hand, "\uE941", "抓手工具（H）：按住拖动平移画布，查看画布任意区域"));
         panel.Children.Add(ToolButton(WallpaperEditorTool.Select, "\uE5BF", "选择工具（S）：点击只选中图层，不拖拽"));
         panel.Children.Add(ToolButton(WallpaperEditorTool.Zoom, "\uF4D1", "缩放工具（Z）：单击放大 / Alt+单击缩小 / 拖拽框选放大；Ctrl + / Ctrl - 也可缩放"));
+        panel.Children.Add(ToolButton(WallpaperEditorTool.Crop, "\uE59B", "裁剪工具（C）：在图片图层上拖拽框选要保留的区域，松手即裁剪（裁剪后切回移动工具）"));
+        panel.Children.Add(ToolButton(WallpaperEditorTool.Brush, "\uEC4A", "画笔工具（B）：在图片图层上按住拖动绘制（右侧可调颜色 / 大小）"));
+        panel.Children.Add(ToolButton(WallpaperEditorTool.Eraser, "\uE7FF", "橡皮擦工具（E）：擦除图片图层的像素（变为透明）"));
         panel.Children.Add(ToolButton(WallpaperEditorTool.Shape, "\uE775", "形状工具（U）：拖拽绘制矩形；创建后可在右侧修改形状类型"));
         panel.Children.Add(ToolButton(WallpaperEditorTool.Text, "\uF1BE", "文本工具（T）：点击插入文本框图层"));
         panel.Children.Add(new Separator { Margin = new Thickness(2, 5) });
@@ -729,7 +977,10 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         [WallpaperEditorTool.Select] = ("\uE5BE", "\uE5BF"),
         [WallpaperEditorTool.Zoom] = ("\uF4D0", "\uF4D1"),
         [WallpaperEditorTool.Shape] = ("\uE774", "\uE775"),
-        [WallpaperEditorTool.Text] = ("\uF1BD", "\uF1BE")
+        [WallpaperEditorTool.Text] = ("\uF1BD", "\uF1BE"),
+        [WallpaperEditorTool.Crop] = ("\uE59A", "\uE59B"),
+        [WallpaperEditorTool.Brush] = ("\uEC49", "\uEC4A"),
+        [WallpaperEditorTool.Eraser] = ("\uE7FE", "\uE7FF")
     };
 
     private StackPanel BuildInspector()
@@ -829,13 +1080,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _sliceRightSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) ApplyToSelected(l => l.SliceRight = _sliceRightSpin.DoubleValue); };
         _sliceBottomSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) ApplyToSelected(l => l.SliceBottom = _sliceBottomSpin.DoubleValue); };
         _editSliceButton.Click += (_, _) => OpenSliceEditor();
-        _blurRadiusSpin.PropertyChanged += (_, e) =>
-        {
-            if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty)
-            {
-                ApplyToSelected(l => { if (l.Kind == WallpaperLayerKind.Image) l.BlurRadius = _blurRadiusSpin.DoubleValue; });
-            }
-        };
         _shadowToggle.PropertyChanged += (_, e) =>
         {
             if (!_updatingInspector && e.Property == ToggleSwitch.IsCheckedProperty)
@@ -872,7 +1116,20 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             }
         };
         _shadowOpacitySlider.ValueChanged += (_, _) => ApplyToSelected(l => { if (l.Kind == WallpaperLayerKind.Image) l.ShadowOpacity = _shadowOpacitySlider.Value; });
-        _hslButton.Click += (_, _) => OpenHslAdjustWindow();
+        _brushColorPicker.PropertyChanged += (_, e) =>
+        {
+            if (!_updatingInspector && e.Property?.Name == "Color")
+            {
+                _canvas.BrushColor = _brushColorPicker.Color;
+            }
+        };
+        _brushSizeSlider.ValueChanged += (_, _) =>
+        {
+            if (!_updatingInspector)
+            {
+                _canvas.BrushSize = _brushSizeSlider.Value;
+            }
+        };
         _shapeTypeBox.SelectionChanged += (_, _) =>
         {
             // 刷新检查器时的程序化选择不应触发应用或教程推进。
@@ -1123,24 +1380,26 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         inspector.Children.Add(_sliceRightItem);
         inspector.Children.Add(_sliceBottomItem);
         inspector.Children.Add(_fullscreenHint);
-        // 效果（仅图片图层）：高斯模糊 + 投影
+        // 效果（仅图片图层）：投影（高斯模糊 / 色相饱和度 / 亮度对比度改由顶部命令栏的滤镜窗口调整）
         inspector.Children.Add(GroupSubtitle("\uF42F", "效果"));
-        _blurItem = SettingsRow("高斯模糊", _blurRadiusSpin);
         _shadowItem = SettingsRow("投影", _shadowToggle);
         _shadowBlurItem = SettingsRow("投影模糊", _shadowBlurSpin);
         _shadowOffsetXItem = SettingsRow("投影水平偏移", _shadowOffsetXSpin);
         _shadowOffsetYItem = SettingsRow("投影垂直偏移", _shadowOffsetYSpin);
         _shadowColorItem = SettingsRow("投影颜色", _shadowColorPicker);
         _shadowOpacityItem = SettingsRow("投影不透明度", _shadowOpacitySlider);
-        inspector.Children.Add(_blurItem);
         inspector.Children.Add(_shadowItem);
         inspector.Children.Add(_shadowBlurItem);
         inspector.Children.Add(_shadowOffsetXItem);
         inspector.Children.Add(_shadowOffsetYItem);
         inspector.Children.Add(_shadowColorItem);
         inspector.Children.Add(_shadowOpacityItem);
-        _hslItem = SettingsRow("色相 / 饱和度", _hslButton);
-        inspector.Children.Add(_hslItem);
+        // 画笔 / 橡皮擦设置（对应工具激活时显示）
+        _brushColorItem = SettingsRow("画笔颜色", _brushColorPicker);
+        _brushSizeItem = SettingsRow("画笔大小", _brushSizeSlider);
+        inspector.Children.Add(GroupSubtitle("\uEC49", "画笔"));
+        inspector.Children.Add(_brushColorItem);
+        inspector.Children.Add(_brushSizeItem);
         // 形状图层专属（仅选中形状图层时显示）
         _shapeTypeItem = SettingsRow("形状类型", _shapeTypeBox);
         _shapeCornerRadiusItem = SettingsRow("圆角半径", _shapeCornerRadiusSpin);
@@ -2084,6 +2343,12 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _updatingInspector = true;
         try
         {
+            // 画笔 / 橡皮擦设置：仅对应工具激活时显示（与图层选中无关）。
+            var brushActive = _canvas.Tool is WallpaperEditorTool.Brush or WallpaperEditorTool.Eraser;
+            _brushColorItem.IsVisible = brushActive;
+            _brushSizeItem.IsVisible = brushActive;
+            _brushColorPicker.Color = _canvas.BrushColor;
+            _brushSizeSlider.Value = _canvas.BrushSize;
             var layer = _canvas.SelectedLayer;
             if (layer == null)
             {
@@ -2101,14 +2366,12 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 _sliceRightItem.IsVisible = false;
                 _sliceBottomItem.IsVisible = false;
                 _fullscreenHint.IsVisible = false;
-                _blurItem.IsVisible = false;
                 _shadowItem.IsVisible = false;
                 _shadowBlurItem.IsVisible = false;
                 _shadowOffsetXItem.IsVisible = false;
                 _shadowOffsetYItem.IsVisible = false;
                 _shadowColorItem.IsVisible = false;
                 _shadowOpacityItem.IsVisible = false;
-                _hslItem.IsVisible = false;
                 _fillIslandToggle.IsEnabled = false;
                 _widthSpin.IsEnabled = false;
                 _heightSpin.IsEnabled = false;
@@ -2168,15 +2431,12 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 : string.Empty;
             // 效果仅图片图层显示；投影子项仅在启用投影后展开。
             var isImage = allSameKind && layer.Kind == WallpaperLayerKind.Image;
-            _blurItem.IsVisible = isImage;
             _shadowItem.IsVisible = isImage;
             _shadowBlurItem.IsVisible = isImage && layer.ShadowEnabled;
             _shadowOffsetXItem.IsVisible = isImage && layer.ShadowEnabled;
             _shadowOffsetYItem.IsVisible = isImage && layer.ShadowEnabled;
             _shadowColorItem.IsVisible = isImage && layer.ShadowEnabled;
             _shadowOpacityItem.IsVisible = isImage && layer.ShadowEnabled;
-            _hslItem.IsVisible = isImage;
-            _blurRadiusSpin.DoubleValue = layer.BlurRadius;
             _shadowToggle.IsChecked = layer.ShadowEnabled;
             _shadowBlurSpin.DoubleValue = layer.ShadowBlurRadius;
             _shadowOffsetXSpin.DoubleValue = layer.ShadowOffsetX;

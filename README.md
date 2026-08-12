@@ -78,7 +78,7 @@
 
 ## 开源许可与版权
 
-本项目基于 [MIT 许可证](./LICENSE)（Copyright (c) 2026 xxt8582753）开源。本插件仅以二进制方式引用下列开源库，不修改其源码；各库的完整版权声明与许可文本见其各自仓库。
+本项目基于 [MIT 许可证](./LICENSE) 开源。
 
 ### 直接依赖的开源库
 
@@ -89,29 +89,13 @@
 | NAudio.Wasapi | 2.2.1 | 音频频谱捕获（动态频谱纹理） | MIT |
 | System.Drawing.Common | 8.0.25 | GIF 逐帧解码、屏幕抓取 | MIT |
 
-### 随宿主使用（不随插件分发）的开源库
-
-| 库 | 版本 | 用途 | 许可证 |
-|---|---|---|---|
-| Avalonia | 11.3.17 | UI 框架（宿主提供） | MIT |
-| FluentAvalonia | 2.4.1 | FAUI 控件库（宿主提供） | MIT |
-| SkiaSharp | — | 渲染后端（宿主提供） | MIT |
-| ClassIsland / ClassIsland.Core | 2.x | 宿主本体（宿主提供） | MIT |
-| Fluent System Icons | — | 界面图标字体（FluentSystemIcons-Resizable） | MIT |
 
 ### 引用的外部资源
 
-- **Windows.Media.Control（SMTC）**：调用 Windows 系统媒体会话（WinRT）API，获取正在播放的媒体信息、播放状态与专辑封面（需要 Windows 10 1809 及以上）。
+- **Windows.Media.Control（SMTC）**：调用 Windows 系统媒体会话（WinRT）API，获取正在播放的媒体信息、播放状态与专辑封面。
 - **Fluent System Icons**（Microsoft）：界面图标，MIT 许可证。
-- **sekai-stickers 贴纸库**（[TheOriginalAyaka/sekai-stickers](https://github.com/TheOriginalAyaka/sekai-stickers)）：编辑器「添加贴纸」功能按需从该仓库在线拉取贴纸列表与缩略图（缓存到本地配置目录，不随插件分发）。贴纸为社区粉丝自制，仅供个人使用，相关角色形象版权归原版权方（SEGA / Colorful Palette / Craft Egg）所有。
+- **sekai-stickers 贴纸库**（[TheOriginalAyaka/sekai-stickers](https://github.com/TheOriginalAyaka/sekai-stickers)）：编辑器「添加贴纸」功能按需从该仓库在线拉取贴纸列表与缩略图（缓存到本地配置目录，不随插件分发）。贴纸为社区粉丝自制，仅供个人使用，相关角色形象版权归原版权方（SEGA / Colorful Palette）所有。
 
 ### 自带素材
 
 - `Assets/` 目录下的示例图片、教程横幅与演示音效为本插件自带素材，随插件分发，仅用于功能演示与内置教程。
-
----
-
-## 说明
-
-- 项目开源托管在 GitHub，遵循开源许可证。
-- 插件面向 ClassIsland 2.x，仅做外观美化，不修改、不篡改 ClassIsland 本体。

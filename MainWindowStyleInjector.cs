@@ -2155,8 +2155,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
     }
 
     /// <summary>
-    /// 取图层视图当前应显示的位图：启用色相/饱和度/明度时返回逐像素处理后的缓存图，
-    /// 否则返回原图（并清理残留的处理缓存）。按「原图路径 + HSL 值」签名去重。
+    /// 取图层视图当前应显示的位图：启用裁剪 / 颜色调整时返回处理后的缓存图，
+    /// 否则返回原图（并清理残留的处理缓存）。按「原图路径 + 全部处理参数」签名去重。
     /// </summary>
     private static Bitmap? DisplayBitmapForView(WallpaperLayerView view)
     {
@@ -2167,7 +2167,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return null;
         }
 
-        if (!WallpaperLayerEffects.HasHsl(layer))
+        if (!WallpaperLayerEffects.HasAdjustment(layer) && !WallpaperLayerEffects.HasCrop(layer))
         {
             view.ProcessedBitmap?.Dispose();
             view.ProcessedBitmap = null;
@@ -2175,17 +2175,21 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return raw;
         }
 
-        var signature = $"{layer.Path}|{layer.HueShift}|{layer.SaturationAdjust}|{layer.LightnessAdjust}";
+        var signature = ProcessSignature(layer);
         if (view.ProcessedBitmap != null && view.ProcessedSignature == signature)
         {
             return view.ProcessedBitmap;
         }
 
         view.ProcessedBitmap?.Dispose();
-        view.ProcessedBitmap = WallpaperLayerEffects.ApplyHsl(raw, layer);
+        view.ProcessedBitmap = WallpaperLayerEffects.Process(raw, layer);
         view.ProcessedSignature = signature;
         return view.ProcessedBitmap ?? raw;
     }
+
+    /// <summary>逐像素处理（裁剪 + 颜色调整）的缓存签名。</summary>
+    private static string ProcessSignature(WallpaperLayerItem layer) =>
+        $"{layer.Path}|{layer.CropX}|{layer.CropY}|{layer.CropWidth}|{layer.CropHeight}|{layer.HueShift}|{layer.SaturationAdjust}|{layer.LightnessAdjust}|{layer.Brightness}|{layer.Contrast}";
 
     private void DisposeLayerView(WallpaperLayerView view)
     {
@@ -2306,8 +2310,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
     }
 
     /// <summary>
-    /// 取全屏图层当前应显示的位图：启用色相/饱和度/明度时返回逐像素处理后的缓存图，
-    /// 否则返回原图（并清理残留的处理缓存）。按「原图路径 + HSL 值」签名去重。
+    /// 取全屏图层当前应显示的位图：启用裁剪 / 颜色调整时返回处理后的缓存图，
+    /// 否则返回原图（并清理残留的处理缓存）。按「原图路径 + 全部处理参数」签名去重。
     /// </summary>
     private Bitmap? DisplayFullscreenBitmap(WallpaperLayerItem layer)
     {
@@ -2317,7 +2321,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return null;
         }
 
-        if (!WallpaperLayerEffects.HasHsl(layer))
+        if (!WallpaperLayerEffects.HasAdjustment(layer) && !WallpaperLayerEffects.HasCrop(layer))
         {
             if (_fullscreenProcessed.Remove(layer.Id, out var stale))
             {
@@ -2327,7 +2331,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return raw;
         }
 
-        var signature = $"{layer.Path}|{layer.HueShift}|{layer.SaturationAdjust}|{layer.LightnessAdjust}";
+        var signature = ProcessSignature(layer);
         if (_fullscreenProcessed.TryGetValue(layer.Id, out var cached) && cached.Signature == signature)
         {
             return cached.Bitmap;
@@ -2340,7 +2344,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
             oldBitmap.Dispose();
         }
 
-        var processed = WallpaperLayerEffects.ApplyHsl(raw, layer);
+        var processed = WallpaperLayerEffects.Process(raw, layer);
         _fullscreenProcessed[layer.Id] = (signature, processed ?? raw);
         return processed ?? raw;
     }

@@ -358,6 +358,21 @@ public sealed class WallpaperLayerItem
     /// <summary>明度调整（-100 ~ 100；0 = 不调整）。</summary>
     public double LightnessAdjust { get; set; }
 
+    /// <summary>亮度调整（-100 ~ 100；0 = 不调整）。</summary>
+    public double Brightness { get; set; }
+
+    /// <summary>对比度调整（-100 ~ 100；0 = 不调整）。</summary>
+    public double Contrast { get; set; }
+
+    /// <summary>裁剪矩形（位图像素，相对原图左上角；全部为 0 = 不裁剪）。</summary>
+    public double CropX { get; set; }
+
+    public double CropY { get; set; }
+
+    public double CropWidth { get; set; }
+
+    public double CropHeight { get; set; }
+
     /// <summary>矢量形状类型（仅 Kind 为 Shape 时生效）。</summary>
     public WallpaperShapeType ShapeType { get; set; } = WallpaperShapeType.Rectangle;
 
@@ -455,6 +470,12 @@ public sealed class WallpaperLayerItem
         HueShift = HueShift,
         SaturationAdjust = SaturationAdjust,
         LightnessAdjust = LightnessAdjust,
+        Brightness = Brightness,
+        Contrast = Contrast,
+        CropX = CropX,
+        CropY = CropY,
+        CropWidth = CropWidth,
+        CropHeight = CropHeight,
         ShapeType = ShapeType,
         ShapeCornerRadius = ShapeCornerRadius,
         ShapeStarPoints = ShapeStarPoints,
@@ -532,6 +553,7 @@ public sealed class InjectorSettings
     private bool _reduceVisualBurden;
     private bool _disableVersionCheck;
     private bool _disableDegradationCheck;
+    private bool _rasterizeWarningDismissed;
     private bool _shadowEnabled;
     private string _shadowColor = "#99000000";
     private double _shadowBlur = 16;
@@ -672,9 +694,11 @@ public sealed class InjectorSettings
 
     /// <summary>降低视觉负担：隐藏设置项的说明文字，只保留名称。</summary>
     public bool ReduceVisualBurden { get => _reduceVisualBurden; set => Set(ref _reduceVisualBurden, value); }
-
     /// <summary>关闭插件版本检查与更新提醒。</summary>
     public bool DisableVersionCheck { get => _disableVersionCheck; set => Set(ref _disableVersionCheck, value); }
+
+    /// <summary>是否不再提示「栅格化会丢失矢量编辑」警告。</summary>
+    public bool RasterizeWarningDismissed { get => _rasterizeWarningDismissed; set => Set(ref _rasterizeWarningDismissed, value); }
 
     /// <summary>关闭宿主点位失效检查与降级提示。</summary>
     public bool DisableDegradationCheck { get => _disableDegradationCheck; set => Set(ref _disableDegradationCheck, value); }
@@ -856,6 +880,7 @@ public sealed class InjectorSettings
         ReduceVisualBurden = source.ReduceVisualBurden;
         DisableVersionCheck = source.DisableVersionCheck;
         DisableDegradationCheck = source.DisableDegradationCheck;
+        RasterizeWarningDismissed = source.RasterizeWarningDismissed;
         ShadowEnabled = source.ShadowEnabled;
         ShadowColor = source.ShadowColor;
         ShadowBlur = source.ShadowBlur;

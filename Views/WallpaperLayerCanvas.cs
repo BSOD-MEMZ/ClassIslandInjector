@@ -4,10 +4,12 @@ using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
+using Avalonia.Platform;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using ClassIsland.Core.Controls;
 using System.Globalization;
+using System.Runtime.InteropServices;
 
 namespace ClassIslandInjector.Views;
 
@@ -26,6 +28,12 @@ internal enum WallpaperEditorTool
     Shape,
     /// <summary>文本工具：点击插入文本框图层。</summary>
     Text,
+    /// <summary>裁剪工具：在图片图层上拖拽框选要保留的区域，松手即裁剪。</summary>
+    Crop,
+    /// <summary>画笔工具：在图片图层上拖拽绘制。</summary>
+    Brush,
+    /// <summary>橡皮擦工具：擦除图片图层的像素（变为透明）。</summary>
+    Eraser,
     /// <summary>抓手工具：按住拖动平移画布视图。</summary>
     Hand
 }
@@ -123,6 +131,15 @@ internal sealed class WallpaperLayerCanvas : UserControl
     private readonly HashSet<string> _lockedIds = [];
     private bool _islandUnlocked;
     private DragState? _drag;
+    // ---- 画笔 / 橡皮擦绘制状态 ----
+    private WallpaperLayerItem? _strokeLayer;
+    private byte[]? _strokeBytes;
+    private WriteableBitmap? _strokeBitmap;
+    private Point _strokeLast;
+    /// <summary>画笔颜色（编辑器检查器修改）。</summary>
+    public Color BrushColor { get; set; } = Colors.Black;
+    /// <summary>画笔 / 橡皮擦大小（像素）。</summary>
+    public double BrushSize { get; set; } = 8;
     /// <summary>浮动工具条是否已显示（用于首次显示后按真实尺寸重定位）。</summary>
     private bool _floatToolbarShown;
     /// <summary>当前工具（Photoshop 式左侧工具栏）。</summary>
@@ -142,6 +159,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
     public event Action? IslandChanged;
     public event Action? ImagesChanged;
     public event Action<WallpaperLayerItem>? DeleteRequested;
+    /// <summary>画布上请求栅格化选中的形状 / 文本图层（Ctrl+Shift+R）。</summary>
+    public event Action? RasterizeRequested;
     /// <summary>形状工具拖拽绘制完成后触发（供教程等外部推进流程）。</summary>
     public event Action? ShapeCreated;
     /// <summary>文本工具创建文本框完成后触发（供教程等外部推进流程）。</summary>
@@ -445,6 +464,9 @@ internal sealed class WallpaperLayerCanvas : UserControl
             WallpaperEditorTool.Zoom => new Cursor(StandardCursorType.Cross),
             WallpaperEditorTool.Shape => new Cursor(StandardCursorType.Cross),
             WallpaperEditorTool.Text => new Cursor(StandardCursorType.Ibeam),
+            WallpaperEditorTool.Crop => new Cursor(StandardCursorType.Cross),
+            WallpaperEditorTool.Brush => new Cursor(StandardCursorType.Cross),
+            WallpaperEditorTool.Eraser => new Cursor(StandardCursorType.Cross),
             WallpaperEditorTool.Hand => new Cursor(StandardCursorType.Hand),
             _ => new Cursor(StandardCursorType.Arrow)
         };
@@ -832,8 +854,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
     }
 
     /// <summary>
-    /// 取图层当前应显示的位图：启用色相/饱和度/明度时返回逐像素处理后的缓存图，
-    /// 否则返回原图（并清理残留的处理缓存）。按「原图路径 + HSL 值」签名去重。
+    /// 取图层当前应显示的位图：启用裁剪 / 颜色调整时返回处理后的缓存图，
+    /// 否则返回原图（并清理残留的处理缓存）。按「原图路径 + 全部处理参数」签名去重。
     /// </summary>
     private Bitmap? DisplayBitmap(WallpaperLayerItem layer)
     {
@@ -842,7 +864,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
             return null;
         }
 
-        if (!WallpaperLayerEffects.HasHsl(layer))
+        if (!WallpaperLayerEffects.HasAdjustment(layer) && !WallpaperLayerEffects.HasCrop(layer))
         {
             if (_processedBitmaps.Remove(layer.Id, out var stale))
             {
@@ -852,7 +874,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
             return raw;
         }
 
-        var signature = $"{layer.Path}|{layer.HueShift}|{layer.SaturationAdjust}|{layer.LightnessAdjust}";
+        var signature = ProcessSignature(layer);
         if (_processedBitmaps.TryGetValue(layer.Id, out var cached) && cached.Signature == signature)
         {
             return cached.Bitmap;
@@ -865,10 +887,14 @@ internal sealed class WallpaperLayerCanvas : UserControl
             oldBitmap.Dispose();
         }
 
-        var processed = WallpaperLayerEffects.ApplyHsl(raw, layer);
+        var processed = WallpaperLayerEffects.Process(raw, layer);
         _processedBitmaps[layer.Id] = (signature, processed ?? raw);
         return processed ?? raw;
     }
+
+    /// <summary>逐像素处理（裁剪 + 颜色调整）的缓存签名。</summary>
+    private static string ProcessSignature(WallpaperLayerItem layer) =>
+        $"{layer.Path}|{layer.CropX}|{layer.CropY}|{layer.CropWidth}|{layer.CropHeight}|{layer.HueShift}|{layer.SaturationAdjust}|{layer.LightnessAdjust}|{layer.Brightness}|{layer.Contrast}";
 
     private void LayoutImages()
     {
@@ -1299,6 +1325,13 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 PlaceText(pos);
                 e.Handled = true;
                 break;
+            case WallpaperEditorTool.Crop:
+                BeginCrop(pos, e);
+                break;
+            case WallpaperEditorTool.Brush:
+            case WallpaperEditorTool.Eraser:
+                BeginStroke(pos, e);
+                break;
             case WallpaperEditorTool.Hand:
                 BeginHandPan(pos, e);
                 break;
@@ -1336,6 +1369,14 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 break;
             case DragKind.ShapeDraw:
                 UpdateShapeDraw(_drag, e.GetPosition(_stage));
+                e.Handled = true;
+                break;
+            case DragKind.CropMarquee:
+                UpdateCrop(_drag, e.GetPosition(_stage));
+                e.Handled = true;
+                break;
+            case DragKind.Stroke:
+                UpdateStroke(_drag, e.GetPosition(_stage));
                 e.Handled = true;
                 break;
             case DragKind.Move:
@@ -1387,6 +1428,18 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 e.Pointer.Capture(null);
                 e.Handled = true;
                 break;
+            case DragKind.CropMarquee:
+                FinishCrop(_drag, e.GetPosition(_stage));
+                _drag = null;
+                e.Pointer.Capture(null);
+                e.Handled = true;
+                break;
+            case DragKind.Stroke:
+                FinishStroke();
+                _drag = null;
+                e.Pointer.Capture(null);
+                e.Handled = true;
+                break;
             case DragKind.Move:
                 _drag = null;
                 e.Pointer.Capture(null);
@@ -1405,6 +1458,13 @@ internal sealed class WallpaperLayerCanvas : UserControl
     /// <summary>触摸点被系统取消捕获时清理对应的平移/捏合状态。</summary>
     private void StageOnPointerCaptureLost(object? sender, PointerCaptureLostEventArgs e)
     {
+        if (_drag is { Kind: DragKind.Stroke })
+        {
+            // 画笔中途失去捕获（如弹出系统菜单）：丢弃本次笔画，恢复原图。
+            _drag = null;
+            CancelStroke();
+        }
+
         if (e.Pointer.Type != PointerType.Touch)
         {
             return;
@@ -1631,6 +1691,273 @@ internal sealed class WallpaperLayerCanvas : UserControl
         SwitchTool(WallpaperEditorTool.Move);
         ShapeCreated?.Invoke();
         Edited?.Invoke();
+    }
+
+    // ============ 裁剪工具 ============
+
+    /// <summary>裁剪工具按下：命中可裁剪的图片图层（非锁定、非全屏）则开始框选裁剪，否则仅选中。</summary>
+    private void BeginCrop(Point pos, PointerPressedEventArgs e)
+    {
+        var layer = HitTestLayer(pos);
+        if (layer == null || layer.Kind != WallpaperLayerKind.Image ||
+            layer.FullscreenExtend || _lockedIds.Contains(layer.Id))
+        {
+            SelectWithGroup(layer?.Id);
+            return;
+        }
+
+        Select(layer.Id);
+        _drag = new DragState
+        {
+            Kind = DragKind.CropMarquee,
+            Layer = layer,
+            StartPointer = pos,
+            CropRect = new Rect(pos.X, pos.Y, 0, 0)
+        };
+        _marqueeRect.IsVisible = true;
+        PositionMarquee(_drag.CropRect);
+        e.Pointer.Capture(_stage);
+        e.Handled = true;
+    }
+
+    /// <summary>裁剪工具拖拽：把拖拽框限制在图层显示矩形内并更新选框。</summary>
+    private void UpdateCrop(DragState drag, Point pointer)
+    {
+        var layer = drag.Layer!;
+        var rect = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer));
+        var stageRect = new Rect(rect.X + CanvasMargin, rect.Y + CanvasMargin, rect.Width, rect.Height);
+        var raw = NormalizeRect(drag.StartPointer, pointer);
+        var crop = new Rect(
+            Math.Clamp(Math.Min(raw.X, stageRect.Right), stageRect.X, stageRect.Right),
+            Math.Clamp(Math.Min(raw.Y, stageRect.Bottom), stageRect.Y, stageRect.Bottom),
+            Math.Max(0, Math.Min(raw.Right, stageRect.Right) - Math.Max(raw.X, stageRect.X)),
+            Math.Max(0, Math.Min(raw.Bottom, stageRect.Bottom) - Math.Max(raw.Y, stageRect.Y)));
+        drag.CropRect = crop;
+        PositionMarquee(crop);
+    }
+
+    /// <summary>裁剪工具释放：把裁剪框映射到位图像素、写回图层（保留区域原地不动），随后切回移动工具。</summary>
+    private void FinishCrop(DragState drag, Point pointer)
+    {
+        _marqueeRect.IsVisible = false;
+        var layer = drag.Layer;
+        if (layer == null)
+        {
+            return;
+        }
+
+        UpdateCrop(drag, pointer);
+        var crop = drag.CropRect;
+        if (crop.Width < 8 || crop.Height < 8)
+        {
+            return;
+        }
+
+        var rect = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer));
+        if (rect.Width < MinLayerSize || rect.Height < MinLayerSize)
+        {
+            return;
+        }
+
+        if (!_bitmaps.TryGetValue(layer.Id, out var bmp))
+        {
+            return;
+        }
+
+        var bw = bmp.PixelSize.Width;
+        var bh = bmp.PixelSize.Height;
+        if (bw <= 0 || bh <= 0)
+        {
+            return;
+        }
+
+        // 舞台裁剪框 → 图层局部坐标 → 位图像素坐标。
+        var local = new Rect(crop.X - (rect.X + CanvasMargin), crop.Y - (rect.Y + CanvasMargin),
+            crop.Width, crop.Height);
+        var bmpCrop = WallpaperLayerLayout.LocalRectToBitmapRect(layer, local, bw, bh, rect.Width, rect.Height);
+        var u = Math.Clamp((int)Math.Round(bmpCrop.X), 0, Math.Max(0, bw - 1));
+        var v = Math.Clamp((int)Math.Round(bmpCrop.Y), 0, Math.Max(0, bh - 1));
+        var uw = Math.Min((int)Math.Round(bmpCrop.Width), bw - u);
+        var vh = Math.Min((int)Math.Round(bmpCrop.Height), bh - v);
+        if (uw < 4 || vh < 4 || (u == 0 && v == 0 && uw == bw && vh == bh))
+        {
+            return;
+        }
+
+        // 裁剪区域原本占据的显示矩形（图层局部坐标），裁剪后保留区域原地不动。
+        var newLocal = WallpaperLayerLayout.BitmapRectToLocalRect(layer, new Rect(u, v, uw, vh),
+            bw, bh, rect.Width, rect.Height);
+        if (newLocal.Width < 4 || newLocal.Height < 4)
+        {
+            return;
+        }
+
+        // 先压撤销再写回（裁剪矩形 + 图层尺寸 / 位置）。
+        EditStarted?.Invoke();
+        layer.CropX = u;
+        layer.CropY = v;
+        layer.CropWidth = uw;
+        layer.CropHeight = vh;
+        layer.SizeMode = WallpaperLayerSizeMode.Custom;
+        layer.Width = newLocal.Width;
+        layer.Height = newLocal.Height;
+        ApplyRectOffsets(layer, new Rect(rect.X + newLocal.X, rect.Y + newLocal.Y,
+            newLocal.Width, newLocal.Height));
+        SyncImageControls();
+        Refresh();
+        Edited?.Invoke();
+        SwitchTool(WallpaperEditorTool.Move);
+    }
+
+    // ============ 画笔 / 橡皮擦 ============
+
+    /// <summary>画笔 / 橡皮擦按下：命中可绘制的图片图层（非锁定、非全屏）则开始笔画。</summary>
+    private void BeginStroke(Point pos, PointerPressedEventArgs e)
+    {
+        var layer = HitTestLayer(pos);
+        if (layer == null || layer.Kind != WallpaperLayerKind.Image ||
+            layer.FullscreenExtend || _lockedIds.Contains(layer.Id))
+        {
+            SelectWithGroup(layer?.Id);
+            return;
+        }
+
+        Select(layer.Id);
+        if (!_bitmaps.TryGetValue(layer.Id, out var raw) ||
+            raw.PixelSize.Width <= 0 || raw.PixelSize.Height <= 0)
+        {
+            return;
+        }
+
+        var w = raw.PixelSize.Width;
+        var h = raw.PixelSize.Height;
+        var stride = w * 4;
+        var bytes = new byte[h * stride];
+        var handle = GCHandle.Alloc(bytes, GCHandleType.Pinned);
+        try
+        {
+            raw.CopyPixels(new PixelRect(0, 0, w, h), handle.AddrOfPinnedObject(), bytes.Length, stride);
+        }
+        finally
+        {
+            handle.Free();
+        }
+
+        // 预乘位图先转直通 alpha，画笔混合在直通 alpha 空间进行。
+        if (raw.AlphaFormat == AlphaFormat.Premul)
+        {
+            WallpaperLayerEffects.Unpremultiply(bytes);
+        }
+
+        var working = new WriteableBitmap(new PixelSize(w, h), new Vector(96, 96),
+            PixelFormat.Bgra8888, AlphaFormat.Unpremul);
+        using (var ofb = working.Lock())
+        {
+            Marshal.Copy(bytes, 0, ofb.Address, bytes.Length);
+        }
+
+        // 先压撤销再落笔，保证撤销能恢复笔画前的图像。
+        EditStarted?.Invoke();
+        _strokeBytes = bytes;
+        _strokeBitmap = working;
+        _strokeLayer = layer;
+        _strokeLast = MapStrokePoint(layer, raw, pos);
+        _drag = new DragState { Kind = DragKind.Stroke, Layer = layer, StartPointer = pos };
+        e.Pointer.Capture(_stage);
+        e.Handled = true;
+    }
+
+    /// <summary>画笔 / 橡皮擦拖拽：把指针映射到位图像素，画一条圆头线段并实时显示。</summary>
+    private void UpdateStroke(DragState drag, Point pointer)
+    {
+        var layer = drag.Layer;
+        if (layer == null || _strokeBytes == null || _strokeBitmap == null)
+        {
+            return;
+        }
+
+        if (!_bitmaps.TryGetValue(layer.Id, out var raw) ||
+            raw.PixelSize.Width <= 0 || raw.PixelSize.Height <= 0)
+        {
+            return;
+        }
+
+        var p = MapStrokePoint(layer, raw, pointer);
+        var stride = raw.PixelSize.Width * 4;
+        var erasing = _tool == WallpaperEditorTool.Eraser;
+        WallpaperLayerEffects.DrawStroke(_strokeBytes, stride, raw.PixelSize.Width, raw.PixelSize.Height,
+            _strokeLast.X, _strokeLast.Y, p.X, p.Y, Math.Max(0.5, BrushSize / 2), BrushColor, erasing);
+        _strokeLast = p;
+
+        using (var ofb = _strokeBitmap.Lock())
+        {
+            Marshal.Copy(_strokeBytes, 0, ofb.Address, _strokeBytes.Length);
+        }
+
+        if (_layerImages.TryGetValue(layer.Id, out var image))
+        {
+            image.Source = _strokeBitmap;
+        }
+    }
+
+    /// <summary>把舞台坐标指针映射到该图层的位图像素坐标。</summary>
+    private Point MapStrokePoint(WallpaperLayerItem layer, Bitmap raw, Point stagePos)
+    {
+        var rect = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer));
+        var local = new Point(stagePos.X - (rect.X + CanvasMargin), stagePos.Y - (rect.Y + CanvasMargin));
+        return WallpaperLayerLayout.LocalPointToBitmapPoint(layer, local,
+            raw.PixelSize.Width, raw.PixelSize.Height, rect.Width, rect.Height);
+    }
+
+    /// <summary>画笔 / 橡皮擦释放：把绘制结果存为新 PNG 并重新指向图层，随后刷新。</summary>
+    private void FinishStroke()
+    {
+        var layer = _strokeLayer;
+        var bitmap = _strokeBitmap;
+        if (layer == null || bitmap == null || _strokeBytes == null)
+        {
+            return;
+        }
+
+        try
+        {
+            var dir = Path.Combine(InjectorRuntime.ConfigDirectory, "layers");
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, $"{layer.Id}_{Guid.NewGuid():N}.png");
+            using (var fs = File.Create(path))
+            {
+                bitmap.Save(fs);
+            }
+
+            layer.Path = path;
+            layer.Source = WallpaperSource.LocalImage;
+            // 重新加载位图（签名变化）并刷新显示。
+            Layers = _layers;
+            Refresh();
+            Edited?.Invoke();
+        }
+        finally
+        {
+            _strokeBitmap?.Dispose();
+            _strokeBitmap = null;
+            _strokeBytes = null;
+            _strokeLayer = null;
+        }
+    }
+
+    /// <summary>取消当前笔画（Escape / 捕获丢失）：丢弃绘制并恢复原图显示。</summary>
+    private void CancelStroke()
+    {
+        if (_strokeBitmap == null && _strokeBytes == null)
+        {
+            return;
+        }
+
+        _strokeBitmap?.Dispose();
+        _strokeBitmap = null;
+        _strokeBytes = null;
+        _strokeLayer = null;
+        Refresh();
     }
 
     /// <summary>文本工具：在点击处创建文本框图层，随后切回移动工具。</summary>
@@ -2606,7 +2933,18 @@ internal sealed class WallpaperLayerCanvas : UserControl
                     PasteLayer();
                     e.Handled = true;
                     return;
+                case Key.R when e.KeyModifiers.HasFlag(KeyModifiers.Shift):
+                    RasterizeRequested?.Invoke();
+                    e.Handled = true;
+                    return;
             }
+        }
+
+        // 工具快捷键只在未按 Ctrl 时生效（Ctrl 组合留给撤销 / 重做 / 滤镜等编辑器级快捷键，
+        // 避免 Ctrl+Z 误触「缩放工具」）。
+        if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            return;
         }
 
         var layer = SelectedLayer;
@@ -2632,6 +2970,18 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 SwitchTool(WallpaperEditorTool.Text);
                 e.Handled = true;
                 break;
+            case Key.C:
+                SwitchTool(WallpaperEditorTool.Crop);
+                e.Handled = true;
+                break;
+            case Key.B:
+                SwitchTool(WallpaperEditorTool.Brush);
+                e.Handled = true;
+                break;
+            case Key.E:
+                SwitchTool(WallpaperEditorTool.Eraser);
+                e.Handled = true;
+                break;
             case Key.H:
                 SwitchTool(WallpaperEditorTool.Hand);
                 e.Handled = true;
@@ -2642,6 +2992,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 break;
             case Key.Escape:
                 _drag = null;
+                CancelStroke();
                 _guideOverlay.Clear();
                 Select(null);
                 e.Handled = true;
@@ -2708,6 +3059,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
         IslandResize,
         ZoomMarquee,
         ShapeDraw,
+        CropMarquee,
+        Stroke,
         Pan
     }
 
@@ -2725,6 +3078,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
         public double StartRotation;
         /// <summary>缩放工具：单击时是否缩小（Alt / 右键）。</summary>
         public bool ZoomOut;
+        /// <summary>裁剪工具：当前裁剪框（舞台坐标）。</summary>
+        public Rect CropRect;
     }
 
     private sealed record Guide(bool Vertical, double Position, string Label, bool IsCenter);

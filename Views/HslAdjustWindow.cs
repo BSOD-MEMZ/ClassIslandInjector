@@ -9,170 +9,131 @@ namespace ClassIslandInjector.Views;
 
 /// <summary>
 /// 色相 / 饱和度调整窗口（仿 Photoshop 的「色相/饱和度」面板）：
-/// 色相、饱和度、明度三个滑块实时应用到编辑器当前选中的图片图层。
-/// 模型窗口（不阻塞主编辑窗口），便于在画布上直接观察逐像素处理效果。
-/// 同一时刻只允许一个实例。
+/// 顶部预设下拉（默认值 / 增加饱和度等滤镜预设），下面每行 = 标签 + 数字框（精确）+ 滑块（快速），
+/// 底部「预览」开关 + 「确定 / 取消」按钮。非模态，不阻塞主编辑窗口。
 /// </summary>
-internal sealed class HslAdjustWindow : MyWindow
+internal sealed class HslAdjustWindow : LayerFilterWindowBase
 {
     /// <summary>当前打开的实例（禁止多开）。</summary>
     public static HslAdjustWindow? Current { get; private set; }
 
-    private readonly WallpaperLayerEditorWindow _editor;
-    private bool _updating;
+    private readonly FilterRowControl _hueRow = new("色相", -180, 180, 1);
+    private readonly FilterRowControl _satRow = new("饱和度", -100, 100, 1);
+    private readonly FilterRowControl _lightRow = new("明度", -100, 100, 1);
+    private readonly ComboBox _presetBox = new() { MinWidth = 200 };
 
-    private readonly Slider _hueSlider = HslSlider(-180, 180);
-    private readonly Slider _satSlider = HslSlider(-100, 100);
-    private readonly Slider _lightSlider = HslSlider(-100, 100);
-    private readonly TextBlock _hueValue = ValueLabel();
-    private readonly TextBlock _satValue = ValueLabel();
-    private readonly TextBlock _lightValue = ValueLabel();
-    private readonly TextBlock _hint = new()
-    {
-        TextWrapping = TextWrapping.Wrap,
-        Opacity = 0.75,
-        FontSize = 12
-    };
+    private static readonly (string Name, double Hue, double Sat, double Light)[] Presets =
+    [
+        ("默认值", 0, 0, 0),
+        ("增加饱和度", 0, 40, 0),
+        ("降低饱和度", 0, -40, 0),
+        ("鲜艳", 0, 60, 5),
+        ("褪色", 0, -50, 8),
+        ("黑白", 0, -100, 0),
+        ("复古", 18, -25, -8),
+        ("暖色调", -30, 10, 5),
+        ("冷色调", 145, 5, 5),
+        ("反转色相", 180, 0, 0)
+    ];
 
     public HslAdjustWindow(WallpaperLayerEditorWindow editor)
+        : base(editor, "色相 / 饱和度", 420, 380)
     {
-        Title = "色相 / 饱和度";
-        Width = 380;
-        Height = 340;
-        MinWidth = 320;
-        MinHeight = 300;
-        Background = ThemePalette.WindowBackground();
-        _editor = editor;
-        BuildContent();
-        WireEvents();
-        SyncFromEditor();
         Current = this;
-        Closed += (_, _) =>
-        {
-            if (ReferenceEquals(Current, this))
-            {
-                Current = null;
-            }
-        };
+        SyncFromEditor();
     }
 
-    private void BuildContent()
+    protected override LayerFilterWindowBase? CurrentWindow
     {
-        var panel = new StackPanel { Spacing = 8, Margin = new Thickness(12) };
-        panel.Children.Add(new TextBlock
-        {
-            Text = "色相 / 饱和度",
-            FontSize = 16,
-            FontWeight = FontWeight.SemiBold,
-            Margin = new Thickness(0, 0, 0, 2)
-        });
-        panel.Children.Add(HslRow("色相", _hueSlider, _hueValue));
-        panel.Children.Add(HslRow("饱和度", _satSlider, _satValue));
-        panel.Children.Add(HslRow("明度", _lightSlider, _lightValue));
-        var reset = new Button { Content = "重置为 0", HorizontalAlignment = HorizontalAlignment.Stretch };
-        reset.Click += (_, _) =>
-        {
-            _hueSlider.Value = 0;
-            _satSlider.Value = 0;
-            _lightSlider.Value = 0;
-        };
-        panel.Children.Add(reset);
-        panel.Children.Add(_hint);
-        Content = new ScrollViewer
-        {
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            Content = panel
-        };
+        get => Current;
+        set => Current = (HslAdjustWindow?)value;
     }
 
-    private void WireEvents()
-    {
-        _hueSlider.ValueChanged += (_, _) => { if (!_updating) Apply(); };
-        _satSlider.ValueChanged += (_, _) => { if (!_updating) Apply(); };
-        _lightSlider.ValueChanged += (_, _) => { if (!_updating) Apply(); };
-    }
+    protected override int ValueCount => 3;
 
-    /// <summary>把当前滑块值应用到编辑器选中的图片图层（实时预览）。</summary>
-    private void Apply()
+    protected override double GetValue(WallpaperLayerItem layer, int index) => index switch
     {
-        UpdateValues();
-        _editor.ApplyHslToSelected(_hueSlider.Value, _satSlider.Value, _lightSlider.Value);
-    }
+        0 => layer.HueShift,
+        1 => layer.SaturationAdjust,
+        _ => layer.LightnessAdjust
+    };
 
-    private void UpdateValues()
+    protected override void SetValue(WallpaperLayerItem layer, int index, double value)
     {
-        _hueValue.Text = $"{_hueSlider.Value:0}°";
-        _satValue.Text = $"{_satSlider.Value:0}%";
-        _lightValue.Text = $"{_lightSlider.Value:0}%";
-    }
-
-    /// <summary>从编辑器当前选中的图片图层读取数值（编辑器选中变化时调用）。</summary>
-    public void SyncFromEditor()
-    {
-        _updating = true;
-        try
+        switch (index)
         {
-            var layer = _editor.FirstSelectedImageLayer;
-            var enabled = layer != null;
-            _hueSlider.IsEnabled = enabled;
-            _satSlider.IsEnabled = enabled;
-            _lightSlider.IsEnabled = enabled;
-            if (layer != null)
-            {
-                _hueSlider.Value = layer.HueShift;
-                _satSlider.Value = layer.SaturationAdjust;
-                _lightSlider.Value = layer.LightnessAdjust;
-            }
-
-            UpdateValues();
-            _hint.Text = enabled
-                ? "调整会实时应用到选中的图片图层；关闭窗口后需点击「保存并应用」才会写入主界面。"
-                : "请先在编辑器中选中一个图片图层。";
-        }
-        finally
-        {
-            _updating = false;
+            case 0:
+                layer.HueShift = value;
+                break;
+            case 1:
+                layer.SaturationAdjust = value;
+                break;
+            default:
+                layer.LightnessAdjust = value;
+                break;
         }
     }
 
-    private static Slider HslSlider(double min, double max) => new()
-    {
-        Minimum = min,
-        Maximum = max,
-        TickFrequency = 1,
-        IsSnapToTickEnabled = true,
-        VerticalAlignment = VerticalAlignment.Center
-    };
+    protected override double[] ReadControlsToValues() =>
+        [_hueRow.Value, _satRow.Value, _lightRow.Value];
 
-    private static TextBlock ValueLabel() => new()
+    protected override void ReadValuesToControls(double[] values)
     {
-        Width = 56,
-        TextAlignment = TextAlignment.Right,
-        VerticalAlignment = VerticalAlignment.Center,
-        Opacity = 0.9
-    };
+        _hueRow.Value = values[0];
+        _satRow.Value = values[1];
+        _lightRow.Value = values[2];
+    }
 
-    private static Control HslRow(string label, Slider slider, TextBlock value)
+    protected override void SyncEnabled(bool hasImageLayer)
     {
-        var row = new Grid
+        _presetBox.IsEnabled = hasImageLayer;
+        _hueRow.IsEnabled = hasImageLayer;
+        _satRow.IsEnabled = hasImageLayer;
+        _lightRow.IsEnabled = hasImageLayer;
+    }
+
+    protected override void BuildContentRows(StackPanel panel)
+    {
+        _presetBox.ItemsSource = Presets.Select(p => p.Name).ToList();
+        _presetBox.SelectedIndex = 0;
+        _presetBox.SelectionChanged += (_, _) =>
         {
-            ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"),
-            MinHeight = 32,
-            Children =
+            if (Updating)
             {
-                new TextBlock
-                {
-                    Text = label,
-                    VerticalAlignment = VerticalAlignment.Center,
-                    Opacity = 0.9,
-                    Margin = new Thickness(0, 0, 10, 0)
-                },
-                slider,
-                value
+                return;
+            }
+
+            ApplyPreset();
+        };
+        panel.Children.Add(PresetRow(_presetBox));
+        panel.Children.Add(_hueRow);
+        panel.Children.Add(_satRow);
+        panel.Children.Add(_lightRow);
+        WireRow(_hueRow);
+        WireRow(_satRow);
+        WireRow(_lightRow);
+    }
+
+    private void WireRow(FilterRowControl row)
+    {
+        row.Slider.PropertyChanged += (_, e) =>
+        {
+            if (!Updating && e.Property == RangeBase.ValueProperty)
+            {
+                OnValuesChanged();
             }
         };
-        Grid.SetColumn(slider, 1);
-        Grid.SetColumn(value, 2);
-        return row;
+    }
+
+    private void ApplyPreset()
+    {
+        if (_presetBox.SelectedIndex >= 0 && _presetBox.SelectedIndex < Presets.Length)
+        {
+            var p = Presets[_presetBox.SelectedIndex];
+            _hueRow.Value = p.Hue;
+            _satRow.Value = p.Sat;
+            _lightRow.Value = p.Light;
+            OnValuesChanged();
+        }
     }
 }

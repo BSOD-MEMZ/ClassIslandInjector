@@ -96,6 +96,68 @@ public static class WallpaperLayerLayout
         _ => Stretch.UniformToFill
     };
 
+    /// <summary>把图层显示矩形内的局部点换算到位图像素坐标（按显示方式映射）。</summary>
+    public static Point LocalPointToBitmapPoint(WallpaperLayerItem layer, Point local,
+        double bmpW, double bmpH, double rectW, double rectH)
+    {
+        if (layer.DisplayMode == WallpaperDisplayMode.Stretch)
+        {
+            return new Point(local.X * bmpW / rectW, local.Y * bmpH / rectH);
+        }
+
+        var scale = layer.DisplayMode == WallpaperDisplayMode.Fit
+            ? Math.Min(rectW / bmpW, rectH / bmpH)
+            : Math.Max(rectW / bmpW, rectH / bmpH);
+        var ox = (rectW - bmpW * scale) / 2;
+        var oy = (rectH - bmpH * scale) / 2;
+        return new Point((local.X - ox) / scale, (local.Y - oy) / scale);
+    }
+
+    /// <summary>
+    /// 把图层显示矩形内的局部矩形换算到位图像素矩形（按显示方式映射）。
+    /// Fill/Fit 为等比缩放（含居中留边），Stretch 为逐轴拉伸。
+    /// </summary>
+    public static Rect LocalRectToBitmapRect(WallpaperLayerItem layer, Rect local,
+        double bmpW, double bmpH, double rectW, double rectH)
+    {
+        if (layer.DisplayMode == WallpaperDisplayMode.Stretch)
+        {
+            var sx = bmpW / rectW;
+            var sy = bmpH / rectH;
+            return new Rect(local.X * sx, local.Y * sy, local.Width * sx, local.Height * sy);
+        }
+
+        var scale = layer.DisplayMode == WallpaperDisplayMode.Fit
+            ? Math.Min(rectW / bmpW, rectH / bmpH)
+            : Math.Max(rectW / bmpW, rectH / bmpH);
+        var ox = (rectW - bmpW * scale) / 2;
+        var oy = (rectH - bmpH * scale) / 2;
+        return new Rect((local.X - ox) / scale, (local.Y - oy) / scale,
+            local.Width / scale, local.Height / scale);
+    }
+
+    /// <summary>
+    /// 把位图像素矩形换算回图层显示矩形内的局部矩形（按显示方式映射），
+    /// 用于裁剪后计算「保留区域原地不动」的新显示矩形。
+    /// </summary>
+    public static Rect BitmapRectToLocalRect(WallpaperLayerItem layer, Rect bmp,
+        double bmpW, double bmpH, double rectW, double rectH)
+    {
+        if (layer.DisplayMode == WallpaperDisplayMode.Stretch)
+        {
+            var sx = rectW / bmpW;
+            var sy = rectH / bmpH;
+            return new Rect(bmp.X * sx, bmp.Y * sy, bmp.Width * sx, bmp.Height * sy);
+        }
+
+        var scale = layer.DisplayMode == WallpaperDisplayMode.Fit
+            ? Math.Min(rectW / bmpW, rectH / bmpH)
+            : Math.Max(rectW / bmpW, rectH / bmpH);
+        var ox = (rectW - bmpW * scale) / 2;
+        var oy = (rectH - bmpH * scale) / 2;
+        return new Rect(ox + bmp.X * scale, oy + bmp.Y * scale, bmp.Width * scale, bmp.Height * scale);
+    }
+
     /// <summary>把矩形坐标转换到以主界面左上角为原点的局部坐标。</summary>
     public static Rect InIslandSpace(Rect rect, double islandX, double islandY) =>
         new(rect.X - islandX, rect.Y - islandY, rect.Width, rect.Height);
