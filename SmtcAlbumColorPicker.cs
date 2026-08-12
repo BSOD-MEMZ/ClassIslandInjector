@@ -25,19 +25,7 @@ internal static class SmtcAlbumColorPicker
 
     public static void LogDiagnostic(string message)
     {
-        if (_logPath == null)
-        {
-            return;
-        }
-
-        try
-        {
-            File.AppendAllText(_logPath, $"[{DateTime.Now:HH:mm:ss.fff}] {message}{Environment.NewLine}");
-        }
-        catch
-        {
-            // 日志失败不影响取色。
-        }
+        DiagnosticLog.Write(_logPath, message);
     }
 
     public static AlbumAccentColors? ExtractAccentColors(byte[] bytes)

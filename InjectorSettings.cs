@@ -558,6 +558,7 @@ public sealed class InjectorSettings
     private bool _reduceVisualBurden;
     private bool _disableVersionCheck;
     private bool _disableDegradationCheck;
+    private bool _diagnosticLoggingEnabled = true;
     private bool _rasterizeWarningDismissed;
     private bool _canvasRasterizeWarningDismissed;
     private string _editorPickedColor = "#FFFFFFFF";
@@ -715,6 +716,9 @@ public sealed class InjectorSettings
 
     /// <summary>关闭宿主点位失效检查与降级提示。</summary>
     public bool DisableDegradationCheck { get => _disableDegradationCheck; set => Set(ref _disableDegradationCheck, value); }
+
+    /// <summary>是否输出诊断日志（album-color / preview-debug / canvas-debug / crash 等）。关闭可减少磁盘写入。</summary>
+    public bool DiagnosticLoggingEnabled { get => _diagnosticLoggingEnabled; set => Set(ref _diagnosticLoggingEnabled, value); }
     public bool ShadowEnabled { get => _shadowEnabled; set => Set(ref _shadowEnabled, value); }
     public string ShadowColor { get => _shadowColor; set => Set(ref _shadowColor, value.Trim()); }
     public double ShadowBlur { get => _shadowBlur; set => Set(ref _shadowBlur, Math.Clamp(value, 0, 200)); }
@@ -893,6 +897,7 @@ public sealed class InjectorSettings
         ReduceVisualBurden = source.ReduceVisualBurden;
         DisableVersionCheck = source.DisableVersionCheck;
         DisableDegradationCheck = source.DisableDegradationCheck;
+        DiagnosticLoggingEnabled = source.DiagnosticLoggingEnabled;
         RasterizeWarningDismissed = source.RasterizeWarningDismissed;
         CanvasRasterizeWarningDismissed = source.CanvasRasterizeWarningDismissed;
         EditorPickedColor = source.EditorPickedColor;

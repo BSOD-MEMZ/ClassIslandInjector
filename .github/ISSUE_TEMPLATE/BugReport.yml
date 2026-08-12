@@ -1,0 +1,53 @@
+name: Bug 反馈
+description: 在使用 ClassIslandInjector 的过程中遇到了 Bug。
+title: （将此栏【替换】为你的标题）
+labels: ["Bug", "待查看", "优先级：无"]
+type: Bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你进行 Bug 反馈！请先在上面写一个标题吧~
+        这个 Issues 模板是从 ![ClassIsland](https://github.com/ClassIsland/ClassIsland) 仓库里抄过来的。
+        > [!important]
+        > 重要：如果要提出**多个 Bug**，请为每一个 Bug 开一个单独的 issue。
+        > 和大部分开源项目不同，我主张自由地提出问题，不必为自己无法有效精确表达问题或者被其它开发者骂而担心，所以请用你熟悉的语言、你喜欢的方式随意提出问题，我最讨厌那什么[《提问的智慧》](https://github.com/ryanhanwu/How-To-Ask-Questions-The-Smart-Way/blob/main/README-zh_CN.md)了。
+        > 不过需要注意的是，我暂时无适配 Linux 和适配 ClassIsland 1.x 的打算，因此我们尽量聊 Windows 的事；开始之前，也可以检查一下自己是否更新到最新版本，也许有些问题我已经修了。
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望的行为
+      description: 你希望它怎么样。
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 实际结果
+      description: 但它偏偏不怎么样。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce-steps
+    attributes:
+      label: 重现步骤
+      description: |
+        插件要怎样才能出现你说的问题。
+    validations:
+      required: true
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: 截图/录屏（可选，建议）
+      description: |
+        如果可能，请提供可以用来进一步描述问题的截图或录屏。
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 诊断信息
+      description: |
+        日志存在 `data\Config\Plugins\classisland.injector\` 目录内，但不是所有异常都能被成功记录，如果你实在找不到诊断信息，可以不填这里。
+      render: plaintext
+    validations:
+      required: false
+

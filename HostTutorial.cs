@@ -217,19 +217,13 @@ internal static class HostTutorial
 
     private static void Log(string message)
     {
-        try
+        if (string.IsNullOrEmpty(ErrorLogPath))
         {
-            if (string.IsNullOrEmpty(ErrorLogPath))
-            {
-                return;
-            }
+            return;
+        }
 
-            File.AppendAllText(ErrorLogPath, $"{DateTime.Now:HH:mm:ss.fff} {message}{Environment.NewLine}");
-        }
-        catch
-        {
-            // 写日志失败忽略。
-        }
+        // 统一经 DiagnosticLog 门面写入：全局开关关闭时静默丢弃。
+        DiagnosticLog.Write(ErrorLogPath, message);
     }
 
     private static Type? FindType(string fullName)

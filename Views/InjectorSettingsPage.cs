@@ -66,6 +66,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly ToggleSwitch _reduceVisualBurden = Toggle();
     private readonly ToggleSwitch _disableVersionCheck = Toggle();
     private readonly ToggleSwitch _disableDegradationCheck = Toggle();
+    private readonly ToggleSwitch _diagnosticLogging = Toggle();
     /// <summary>「降低视觉负担」需要隐藏说明的全部设置项/卡片及其原始说明。</summary>
     private readonly List<SettingsExpander> _allExpanders = [];
     private readonly List<SettingsExpanderItem> _allItems = [];
@@ -1177,6 +1178,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(Setting("\uE817", "降低视觉负担", "隐藏设置项的说明文字，只保留名称，减少视觉干扰。", _reduceVisualBurden));
         panel.Children.Add(Setting("\uEF25", "关闭版本检查和提醒", "不再检查插件版本，也不提示去 GitHub 更新。", _disableVersionCheck));
         panel.Children.Add(Setting("\uEF4F", "关闭宿主定位点失效检查", "不再检测宿主点位失效，也不显示降级提示。", _disableDegradationCheck));
+        panel.Children.Add(Setting("\uE480", "输出诊断日志", "写入 album-color / preview-debug / canvas-debug / crash 等日志文件用于排查问题；关闭可减少磁盘写入（crash 崩溃日志仍会记录）。", _diagnosticLogging));
 
         AddSection(panel, "\uE9E4", "关于");
         var manifest = Plugin.Manifest;
@@ -2058,6 +2060,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _reduceVisualBurden.IsChecked = settings.ReduceVisualBurden;
         _disableVersionCheck.IsChecked = settings.DisableVersionCheck;
         _disableDegradationCheck.IsChecked = settings.DisableDegradationCheck;
+        _diagnosticLogging.IsChecked = settings.DiagnosticLoggingEnabled;
         _albumColorPollingInterval.DoubleValue = settings.AlbumColorPollingIntervalSeconds;
         _albumColorTransition.DoubleValue = settings.AlbumColorTransitionSeconds;
         _gradient.IsChecked = settings.GradientEnabled;
@@ -2211,6 +2214,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.ReduceVisualBurden = _reduceVisualBurden.IsChecked == true;
             settings.DisableVersionCheck = _disableVersionCheck.IsChecked == true;
             settings.DisableDegradationCheck = _disableDegradationCheck.IsChecked == true;
+            settings.DiagnosticLoggingEnabled = _diagnosticLogging.IsChecked == true;
             settings.AlbumColorPollingIntervalSeconds = _albumColorPollingInterval.DoubleValue;
             settings.AlbumColorTransitionSeconds = _albumColorTransition.DoubleValue;
             settings.GradientEnabled = _gradient.IsChecked == true;

@@ -68,10 +68,6 @@
 
 ---
 
-### 给爱折腾的你
-
-插件还支持直接编写样式表（`.axaml` 文件）做更深度的定制，保存后会自动热重载，立刻生效。具体用法可以在设置页的「高级样式表」里查看说明。
-
 ### 感谢梁圣开源
 
 本项目基本上全部由 DeepSeek V4 Flash 编写，真的便宜，希望国模能越做越好吧。
@@ -95,7 +91,7 @@
 - **Windows.Media.Control（SMTC）**：调用 Windows 系统媒体会话（WinRT）API，获取正在播放的媒体信息、播放状态与专辑封面。
 - **Fluent System Icons**（Microsoft）：界面图标，MIT 许可证。
 - **sekai-stickers 贴纸库**（[TheOriginalAyaka/sekai-stickers](https://github.com/TheOriginalAyaka/sekai-stickers)）：编辑器「添加贴纸」功能按需从该仓库在线拉取贴纸列表与缩略图（缓存到本地配置目录，不随插件分发）。贴纸为社区粉丝自制，仅供个人使用，相关角色形象版权归原版权方（SEGA / Colorful Palette）所有。
-
+- **hanabi 效果**（[LingFeng-bbben/MajdataView](https://github.com/LingFeng-bbben/MajdataView/)）：舞萌 hanabi 效果贴图。
 ### 自带素材
 
 - `Assets/` 目录下的示例图片、教程横幅与演示音效为本插件自带素材，随插件分发，仅用于功能演示与内置教程。

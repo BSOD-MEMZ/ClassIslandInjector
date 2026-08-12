@@ -1465,24 +1465,14 @@ internal sealed class WallpaperLayerCanvas : UserControl
     /// <summary>画布交互诊断日志（定位触摸 / 指针异常用；写失败不影响功能）。</summary>
     private static void CanvasDebugLog(string message)
     {
-        try
+        var dir = InjectorRuntime.ConfigDirectory;
+        if (string.IsNullOrEmpty(dir))
         {
-            var dir = InjectorRuntime.ConfigDirectory;
-            if (string.IsNullOrEmpty(dir))
-            {
-                return;
-            }
+            return;
+        }
 
-            lock (typeof(WallpaperLayerCanvas))
-            {
-                File.AppendAllText(Path.Combine(dir, "canvas-debug.log"),
-                    $"[{DateTime.Now:HH:mm:ss.fff}] {message}\n");
-            }
-        }
-        catch
-        {
-            // 日志失败不影响功能。
-        }
+        // 统一经 DiagnosticLog 门面写入：全局开关关闭时静默丢弃，锁由门面统一处理。
+        DiagnosticLog.Write(Path.Combine(dir, "canvas-debug.log"), message);
     }
 
     // ============ 画布手势（按工具分发）============

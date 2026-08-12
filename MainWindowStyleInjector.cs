@@ -68,24 +68,14 @@ internal sealed class MainWindowStyleInjector : IDisposable
     /// <summary>临时诊断日志（定位「即将上课样式预览不生效」，定位后移除）。</summary>
     internal static void DebugLog(string message)
     {
-        try
+        var dir = InjectorRuntime.ConfigDirectory;
+        if (string.IsNullOrEmpty(dir))
         {
-            var dir = InjectorRuntime.ConfigDirectory;
-            if (string.IsNullOrEmpty(dir))
-            {
-                return;
-            }
+            return;
+        }
 
-            var path = Path.Combine(dir, "preview-debug.log");
-            lock (typeof(MainWindowStyleInjector))
-            {
-                File.AppendAllText(path, $"[{DateTime.Now:HH:mm:ss.fff}] {message}\n");
-            }
-        }
-        catch
-        {
-            // 诊断日志失败不影响功能。
-        }
+        // 统一经 DiagnosticLog 门面写入：全局开关关闭时静默丢弃，锁由门面统一处理。
+        DiagnosticLog.Write(Path.Combine(dir, "preview-debug.log"), message);
     }
     // A custom ripple normally lives in ClassIsland's full-screen topmost effect
     // window.  This map lets us remove it from the same host when it completes.

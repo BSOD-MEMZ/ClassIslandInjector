@@ -31,6 +31,10 @@ internal static class InjectorRuntime
         Settings = InjectorSettingsStore.Load(configDirectory, pluginDirectory);
         _presets = InjectorPresetStore.Load(configDirectory);
         SmtcAlbumColorPicker.SetLogPath(Path.Combine(configDirectory, "album-color.log"));
+        DiagnosticLog.CrashLogPath = Path.Combine(configDirectory, "crash.log");
+        // 注册全局异常兜底（漏网异常静默写入 crash.log）并同步日志开关（须在设置加载之后）。
+        DiagnosticLog.RegisterGlobalHandlers();
+        ApplyDiagnosticLoggingEnabled();
         Settings.Changed += OnSettingsChanged;
         ContractCatalogService.Initialize(configDirectory);
         HostTutorial.ErrorLogPath = Path.Combine(configDirectory, "tutorial-error.log");
@@ -291,8 +295,15 @@ internal static class InjectorRuntime
 
     #endregion
 
+    /// <summary>把设置里的「输出诊断日志」开关同步到全局日志门面，开关即刻生效。</summary>
+    private static void ApplyDiagnosticLoggingEnabled()
+    {
+        DiagnosticLog.Enabled = Settings.DiagnosticLoggingEnabled;
+    }
+
     private static void OnSettingsChanged(object? sender, EventArgs e)
     {
+        ApplyDiagnosticLoggingEnabled();
         SaveAndApply();
     }
 
