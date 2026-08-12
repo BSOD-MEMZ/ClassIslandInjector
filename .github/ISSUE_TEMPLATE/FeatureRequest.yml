@@ -28,9 +28,9 @@ body:
     validations:
       required: true
   - type: textarea
+    id: expected-effect
     attributes:
       label: 期望效果
-      placeholder: |
-        如果你真能实现这个功能，那我会看到……
+      description: 如果你真能实现这个功能，那我会看到……
     validations:
       required: true
