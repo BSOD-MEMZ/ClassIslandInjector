@@ -22,6 +22,10 @@ internal enum WallpaperEditorTool
     Move,
     /// <summary>选择工具：点击只选中图层，不拖拽。</summary>
     Select,
+    /// <summary>矩形选框工具：在当前图层上拖拽框选像素区域。</summary>
+    RectSelect,
+    /// <summary>套索工具：在当前图层上自由圈选像素区域。</summary>
+    Lasso,
     /// <summary>缩放工具：单击放大 / Alt+单击缩小 / 拖拽框选放大。</summary>
     Zoom,
     /// <summary>形状工具：拖拽绘制矢量形状图层。</summary>
@@ -47,7 +51,7 @@ internal enum WallpaperEditorTool
 /// </summary>
 internal sealed class WallpaperLayerCanvas : UserControl
 {
-    private const double CanvasMargin = 180;
+    internal const double CanvasMargin = 180;
     private const double SnapThreshold = 7;
     private const double MinLayerSize = 8;
 
@@ -159,6 +163,29 @@ internal sealed class WallpaperLayerCanvas : UserControl
     private double _strokeRadius;
     /// <summary>笔锋：上一次指针事件时间戳（毫秒，用于计算移动速度）。</summary>
     private ulong _strokeLastTimestamp;
+    // ---- 像素选区（矩形选框 / 套索）状态 ----
+    /// <summary>选区所属图层（null = 无选区）。</summary>
+    private WallpaperLayerItem? _selLayer;
+    /// <summary>选区掩码：1 字节/像素，0=未选、255=选中（位图尺寸）。</summary>
+    private byte[]? _selMask;
+    private int _selW;
+    private int _selH;
+    /// <summary>选区包围盒（位图像素）。</summary>
+    private Rect _selBounds;
+    /// <summary>选区路径（舞台坐标，蚂蚁线渲染用）。</summary>
+    private readonly List<Point> _selPath = [];
+    private bool _selPathClosed;
+    /// <summary>选区包围盒（舞台坐标，从选区新建图层时定位用）。</summary>
+    private Rect _selStageRect;
+    /// <summary>移动选区内容：从图层裁剪出的选中像素（位图尺寸，未选中区域透明）。</summary>
+    private byte[]? _selCut;
+    /// <summary>移动选区内容：清除选中像素后的图层基底。</summary>
+    private byte[]? _selCutBase;
+    /// <summary>套索绘制中的路径点（舞台坐标）。</summary>
+    private readonly List<Point> _lassoPoints = [];
+    /// <summary>像素选区蚂蚁线叠加层。</summary>
+    private readonly PixelSelectionOverlay _selOverlay = new() { IsHitTestVisible = false, IsVisible = false, ZIndex = 210 };
+    private readonly DispatcherTimer _antsTimer = new() { Interval = TimeSpan.FromMilliseconds(180) };
     private Color _activeColor = Colors.White;
     /// <summary>当前取色 / 默认颜色（新建形状、文本、画笔都用它；吸管取色后更新）。</summary>
     public Color ActiveColor
@@ -208,6 +235,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
     public event Action? TextCreated;
     /// <summary>工具切换（供窗口左侧工具栏同步选中态）。</summary>
     public event Action<WallpaperEditorTool>? ToolChanged;
+    /// <summary>选区创建 / 清除（供检查器显示选区操作）。</summary>
+    public event Action? SelectionStateChanged;
 
     public WallpaperLayerCanvas()
     {
@@ -299,6 +328,14 @@ internal sealed class WallpaperLayerCanvas : UserControl
         _stage.Children.Add(_guideOverlay);
         _stage.Children.Add(_marqueeRect);
         _stage.Children.Add(_brushCursor);
+        _stage.Children.Add(_selOverlay);
+        _antsTimer.Tick += (_, _) =>
+        {
+            if (_selOverlay.IsVisible)
+            {
+                _selOverlay.Tick();
+            }
+        };
         _island.ZIndex = 20;
         _islandOutline.ZIndex = 40;
         _selectionOverlay.ZIndex = 100;
@@ -528,6 +565,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
             WallpaperEditorTool.Shape => new Cursor(StandardCursorType.Cross),
             WallpaperEditorTool.Text => new Cursor(StandardCursorType.Ibeam),
             WallpaperEditorTool.Crop => new Cursor(StandardCursorType.Cross),
+            WallpaperEditorTool.RectSelect => new Cursor(StandardCursorType.Cross),
+            WallpaperEditorTool.Lasso => new Cursor(StandardCursorType.Cross),
             WallpaperEditorTool.Brush => new Cursor(StandardCursorType.Cross),
             WallpaperEditorTool.Eraser => new Cursor(StandardCursorType.Cross),
             WallpaperEditorTool.Eyedropper => new Cursor(StandardCursorType.Cross),
@@ -626,6 +665,12 @@ internal sealed class WallpaperLayerCanvas : UserControl
     /// <summary>单选：清空旧选择后选中指定图层（null 取消全部选中）。</summary>
     public void Select(string? id)
     {
+        // 选中图层变化时清掉旧图层上的像素选区。
+        if (_selLayer != null && _selLayer.Id != id)
+        {
+            ClearSelection();
+        }
+
         if (_selectedId == id && _selectedIds.Count == (id == null ? 0 : 1) &&
             (id == null || _selectedIds.Contains(id)))
         {
@@ -666,6 +711,11 @@ internal sealed class WallpaperLayerCanvas : UserControl
             _selectedId = id;
         }
 
+        if (_selLayer != null && _selectedId != _selLayer.Id)
+        {
+            ClearSelection();
+        }
+
         Refresh();
         SelectionChanged?.Invoke();
     }
@@ -691,6 +741,11 @@ internal sealed class WallpaperLayerCanvas : UserControl
         _selectedId = id;
         _selectedIds.Clear();
         _selectedIds.AddRange(ids);
+        if (_selLayer != null && _selectedId != _selLayer.Id)
+        {
+            ClearSelection();
+        }
+
         Refresh();
         SelectionChanged?.Invoke();
     }
@@ -1300,7 +1355,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         _selectionOverlay.RotationEnd = new Point(x + w / 2, y - 34);
         _selectionOverlay.InvalidateVisual();
 
-        var locked = _lockedIds.Contains(layer.Id) || layer.FullscreenExtend;
+        var locked = _lockedIds.Contains(layer.Id) || layer.FullscreenExtend || layer.IsCanvasLayer;
         // 层序按钮：置顶时「上一层」禁用，置底时「下一层」禁用。
         var zIndex = _layers.IndexOf(layer);
         _moveUpButton.IsEnabled = !locked && zIndex >= 0 && zIndex < _layers.Count - 1;
@@ -1326,8 +1381,17 @@ internal sealed class WallpaperLayerCanvas : UserControl
             var tw = _floatToolbar.Bounds.Width > 0 ? _floatToolbar.Bounds.Width : 250;
             var th = _floatToolbar.Bounds.Height > 0 ? _floatToolbar.Bounds.Height : 32;
             var anchor = _stage.TranslatePoint(new Point(x + w / 2, y), this) ?? new Point(x, y);
+            // 旋转手柄位于选中框上方约 40px（舞台坐标），浮动条放在它上方避免遮挡手柄。
+            var rotHandle = _stage.TranslatePoint(new Point(x + w / 2, y - 40), this) ?? anchor;
             var left = Math.Clamp(anchor.X - tw / 2, 2, Math.Max(2, Bounds.Width - tw - 2));
-            var top = Math.Max(2, anchor.Y - th - 50);
+            var top = rotHandle.Y - th - 6;
+            if (top < 2)
+            {
+                // 上方（旋转手柄之上）放不下 → 自适应显示在选中框下方，无需缩小视图。
+                var bottom = _stage.TranslatePoint(new Point(x + w / 2, y + h), this) ?? anchor;
+                top = bottom.Y + 8;
+            }
+
             _floatToolbar.Margin = new Thickness(left, top, 0, 0);
             if (!_floatToolbarShown)
             {
@@ -1450,6 +1514,12 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 SelectToolPress(pos, e);
                 e.Handled = true;
                 break;
+            case WallpaperEditorTool.RectSelect:
+                BeginRectSelect(pos, e);
+                break;
+            case WallpaperEditorTool.Lasso:
+                BeginLasso(pos, e);
+                break;
             case WallpaperEditorTool.Zoom:
                 _drag = new DragState
                 {
@@ -1514,6 +1584,18 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 UpdateCrop(_drag, e.GetPosition(_stage));
                 e.Handled = true;
                 break;
+            case DragKind.RectSelectMarquee:
+                PositionMarquee(NormalizeRect(_drag.StartPointer, e.GetPosition(_stage)));
+                e.Handled = true;
+                break;
+            case DragKind.LassoDraw:
+                UpdateLasso(_drag, e.GetPosition(_stage));
+                e.Handled = true;
+                break;
+            case DragKind.MoveSelection:
+                UpdateMoveSelection(_drag, e.GetPosition(_stage));
+                e.Handled = true;
+                break;
             case DragKind.Stroke:
                 UpdateStroke(_drag, e.GetPosition(_stage), (ulong)e.Timestamp);
                 e.Handled = true;
@@ -1551,6 +1633,24 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 break;
             case DragKind.CropMarquee:
                 FinishCrop(_drag, e.GetPosition(_stage));
+                _drag = null;
+                e.Pointer.Capture(null);
+                e.Handled = true;
+                break;
+            case DragKind.RectSelectMarquee:
+                FinishRectSelect(_drag, e.GetPosition(_stage));
+                _drag = null;
+                e.Pointer.Capture(null);
+                e.Handled = true;
+                break;
+            case DragKind.LassoDraw:
+                FinishLasso(_drag, e.GetPosition(_stage));
+                _drag = null;
+                e.Pointer.Capture(null);
+                e.Handled = true;
+                break;
+            case DragKind.MoveSelection:
+                FinishMoveSelection(_drag, e.GetPosition(_stage));
                 _drag = null;
                 e.Pointer.Capture(null);
                 e.Handled = true;
@@ -1639,6 +1739,13 @@ internal sealed class WallpaperLayerCanvas : UserControl
     /// <summary>移动工具按下：命中图层则选中并开始拖拽移动（Ctrl 多选、可整组拖动），否则取消选中。</summary>
     private void MoveToolPress(Point pos, PointerPressedEventArgs e)
     {
+        // 当前图层有像素选区且按下点在选区内 → 移动选区内容（而不是移动图层）。
+        if (HasSelection && _selLayer != null && _selLayer == SelectedLayer && PointInSelection(pos))
+        {
+            BeginMoveSelection(pos, e);
+            return;
+        }
+
         var layer = HitTestLayer(pos);
         var ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
         if (layer == null)
@@ -1662,9 +1769,10 @@ internal sealed class WallpaperLayerCanvas : UserControl
             SelectWithGroup(layer.Id);
         }
 
-        if (_lockedIds.Contains(layer.Id) || layer.FullscreenExtend)
+        if (_lockedIds.Contains(layer.Id) || layer.FullscreenExtend || layer.IsCanvasLayer)
         {
-            // 锁定 / 全屏扩展图层只允许选中，不进入拖拽（全屏图层固定铺满显示框架）。
+            // 锁定 / 全屏扩展 / 画布图层只允许选中，不进入拖拽（全屏图层固定铺满显示框架；
+            // 画布图层固定铺满整张画布，要调整需先栅格化为图片）。
             return;
         }
 
@@ -2142,6 +2250,664 @@ internal sealed class WallpaperLayerCanvas : UserControl
         Refresh();
     }
 
+    // ============ 像素选区（矩形选框 / 套索）============
+
+    /// <summary>当前是否有像素选区。</summary>
+    public bool HasSelection => _selLayer != null && _selMask != null;
+
+    /// <summary>选区所属图层。</summary>
+    public WallpaperLayerItem? SelectionLayer => _selLayer;
+
+    /// <summary>清除选区（蚂蚁线、掩码、移动缓冲一并清空）。</summary>
+    public void ClearSelection()
+    {
+        if (_selLayer == null && _selMask == null)
+        {
+            return;
+        }
+
+        _selLayer = null;
+        _selMask = null;
+        _selW = 0;
+        _selH = 0;
+        _selBounds = default;
+        _selPath.Clear();
+        _selCut = null;
+        _selCutBase = null;
+        _selOverlay.SetPath([], false);
+        _selOverlay.IsVisible = false;
+        StopAnts();
+        SelectionStateChanged?.Invoke();
+    }
+
+    private void StartAnts()
+    {
+        if (!_antsTimer.IsEnabled)
+        {
+            _antsTimer.Start();
+        }
+    }
+
+    private void StopAnts()
+    {
+        if (_antsTimer.IsEnabled)
+        {
+            _antsTimer.Stop();
+        }
+    }
+
+    /// <summary>矩形选框按下：在选中的图片图层上开始拖拽框选。</summary>
+    private void BeginRectSelect(Point pos, PointerPressedEventArgs e)
+    {
+        var layer = SelectedLayer;
+        if (layer == null || layer.Kind != WallpaperLayerKind.Image ||
+            layer.FullscreenExtend || _lockedIds.Contains(layer.Id))
+        {
+            ClearSelection();
+            return;
+        }
+
+        _drag = new DragState { Kind = DragKind.RectSelectMarquee, StartPointer = pos };
+        _marqueeRect.IsVisible = true;
+        PositionMarquee(new Rect(pos.X, pos.Y, 0, 0));
+        e.Pointer.Capture(_stage);
+        e.Handled = true;
+    }
+
+    /// <summary>矩形选框释放：把框选矩形转为像素选区。</summary>
+    private void FinishRectSelect(DragState drag, Point pointer)
+    {
+        _marqueeRect.IsVisible = false;
+        var rect = NormalizeRect(drag.StartPointer, pointer);
+        if (rect.Width < 3 || rect.Height < 3)
+        {
+            // 过小视为点击，保持 / 清除现有选区由后续逻辑处理。
+            return;
+        }
+
+        var pts = new List<Point>
+        {
+            new(rect.X, rect.Y),
+            new(rect.Right, rect.Y),
+            new(rect.Right, rect.Bottom),
+            new(rect.X, rect.Bottom)
+        };
+        BuildSelection(pts, true);
+    }
+
+    /// <summary>套索按下：在选中的图片图层上开始自由圈选。</summary>
+    private void BeginLasso(Point pos, PointerPressedEventArgs e)
+    {
+        var layer = SelectedLayer;
+        if (layer == null || layer.Kind != WallpaperLayerKind.Image ||
+            layer.FullscreenExtend || _lockedIds.Contains(layer.Id))
+        {
+            ClearSelection();
+            return;
+        }
+
+        _lassoPoints.Clear();
+        _lassoPoints.Add(pos);
+        _drag = new DragState { Kind = DragKind.LassoDraw, StartPointer = pos };
+        _selOverlay.SetPath(_lassoPoints, false);
+        _selOverlay.IsVisible = true;
+        e.Pointer.Capture(_stage);
+        e.Handled = true;
+    }
+
+    /// <summary>套索拖拽：按最小间距追加路径点（避免点过多）。</summary>
+    private void UpdateLasso(DragState drag, Point pointer)
+    {
+        var last = _lassoPoints.Count > 0 ? _lassoPoints[^1] : drag.StartPointer;
+        if (Dist(last, pointer) >= 3)
+        {
+            _lassoPoints.Add(pointer);
+            _selOverlay.SetPath(_lassoPoints, false);
+        }
+    }
+
+    /// <summary>套索释放：闭合路径并转为像素选区。</summary>
+    private void FinishLasso(DragState drag, Point pointer)
+    {
+        if (_lassoPoints.Count >= 2 && Dist(_lassoPoints[^1], pointer) >= 2)
+        {
+            _lassoPoints.Add(pointer);
+        }
+
+        if (_lassoPoints.Count < 3)
+        {
+            _selOverlay.IsVisible = false;
+            _lassoPoints.Clear();
+            return;
+        }
+
+        var pts = new List<Point>(_lassoPoints);
+        _lassoPoints.Clear();
+        BuildSelection(pts, true);
+    }
+
+    /// <summary>
+    /// 把舞台坐标的闭合路径（矩形或套索）转成当前图层位图像素掩码，并记录选区状态。
+    /// 掩码用扫描线填充多边形生成（矩形即四点多边形）。
+    /// </summary>
+    private void BuildSelection(List<Point> stagePath, bool closed)
+    {
+        var layer = SelectedLayer;
+        if (layer == null || layer.Kind != WallpaperLayerKind.Image || layer.FullscreenExtend ||
+            !_bitmaps.TryGetValue(layer.Id, out var bmp) || bmp.PixelSize.Width <= 0 || bmp.PixelSize.Height <= 0)
+        {
+            return;
+        }
+
+        var w = bmp.PixelSize.Width;
+        var h = bmp.PixelSize.Height;
+        var poly = stagePath.Select(p => MapStrokePoint(layer, bmp, p)).ToList();
+        if (poly.Count < 3)
+        {
+            return;
+        }
+
+        var mask = new byte[w * h];
+        var ys = poly.Select(p => (int)Math.Round(p.Y)).ToArray();
+        var minY = Math.Max(0, ys.Min());
+        var maxY = Math.Min(h - 1, ys.Max());
+        for (var y = minY; y <= maxY; y++)
+        {
+            var crossings = new List<double>();
+            for (var i = 0; i < poly.Count; i++)
+            {
+                var j = (i + 1) % poly.Count;
+                var y1 = poly[i].Y;
+                var y2 = poly[j].Y;
+                if ((y1 <= y && y2 > y) || (y2 <= y && y1 > y))
+                {
+                    var t = (y - y1) / (y2 - y1);
+                    crossings.Add(poly[i].X + t * (poly[j].X - poly[i].X));
+                }
+            }
+
+            crossings.Sort();
+            for (var k = 0; k + 1 < crossings.Count; k += 2)
+            {
+                var x0 = Math.Max(0, (int)Math.Ceiling(crossings[k]));
+                var x1 = Math.Min(w - 1, (int)Math.Floor(crossings[k + 1]));
+                for (var x = x0; x <= x1; x++)
+                {
+                    mask[y * w + x] = 255;
+                }
+            }
+        }
+
+        var bounds = ComputeMaskBounds(mask, w, h);
+        if (bounds.Width < 1 || bounds.Height < 1)
+        {
+            return;
+        }
+
+        _selLayer = layer;
+        _selMask = mask;
+        _selW = w;
+        _selH = h;
+        _selBounds = bounds;
+        _selPath.Clear();
+        _selPath.AddRange(stagePath);
+        _selPathClosed = closed;
+        _selStageRect = BoundingBox(stagePath);
+        _selCut = null;
+        _selCutBase = null;
+        _selOverlay.SetPath(stagePath, closed);
+        _selOverlay.IsVisible = true;
+        StartAnts();
+        SelectionStateChanged?.Invoke();
+    }
+
+    /// <summary>计算掩码中选中像素的包围盒（位图像素）。</summary>
+    private static Rect ComputeMaskBounds(byte[] mask, int w, int h)
+    {
+        var minX = int.MaxValue;
+        var minY = int.MaxValue;
+        var maxX = -1;
+        var maxY = -1;
+        for (var y = 0; y < h; y++)
+        {
+            var row = y * w;
+            for (var x = 0; x < w; x++)
+            {
+                if (mask[row + x] == 0)
+                {
+                    continue;
+                }
+
+                if (x < minX)
+                {
+                    minX = x;
+                }
+
+                if (x > maxX)
+                {
+                    maxX = x;
+                }
+
+                if (y < minY)
+                {
+                    minY = y;
+                }
+
+                if (y > maxY)
+                {
+                    maxY = y;
+                }
+            }
+        }
+
+        return maxX < 0 ? default : new Rect(minX, minY, maxX - minX + 1, maxY - minY + 1);
+    }
+
+    /// <summary>点集的轴对齐包围盒。</summary>
+    private static Rect BoundingBox(List<Point> pts)
+    {
+        var minX = pts.Min(p => p.X);
+        var minY = pts.Min(p => p.Y);
+        var maxX = pts.Max(p => p.X);
+        var maxY = pts.Max(p => p.Y);
+        return new Rect(minX, minY, maxX - minX, maxY - minY);
+    }
+
+    /// <summary>两点距离。</summary>
+    private static double Dist(Point a, Point b) =>
+        Math.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y));
+
+    /// <summary>舞台点是否在当前选区内（射线法点-多边形包含）。</summary>
+    private bool PointInSelection(Point stagePos)
+    {
+        if (!HasSelection || SelectedLayer != _selLayer || _selPath.Count < 3)
+        {
+            return false;
+        }
+
+        var inside = false;
+        var pts = _selPath;
+        for (int i = 0, j = pts.Count - 1; i < pts.Count; j = i++)
+        {
+            var xi = pts[i].X;
+            var yi = pts[i].Y;
+            var xj = pts[j].X;
+            var yj = pts[j].Y;
+            if ((yi > stagePos.Y) != (yj > stagePos.Y) &&
+                stagePos.X < (xj - xi) * (stagePos.Y - yi) / (yj - yi) + xi)
+            {
+                inside = !inside;
+            }
+        }
+
+        return inside;
+    }
+
+    /// <summary>删除选区内的像素（清为透明），选区保留。</summary>
+    public void DeleteSelection()
+    {
+        var layer = _selLayer;
+        if (layer == null || _selMask == null ||
+            !TryReadLayerPixels(layer, out var bytes, out var w, out var h))
+        {
+            return;
+        }
+
+        if (w != _selW || h != _selH)
+        {
+            // 位图已变化（例如重新加载），选区失效。
+            ClearSelection();
+            return;
+        }
+
+        EditStarted?.Invoke();
+        var mask = _selMask;
+        for (var y = 0; y < h; y++)
+        {
+            var row = y * w;
+            for (var x = 0; x < w; x++)
+            {
+                if (mask[row + x] == 0)
+                {
+                    continue;
+                }
+
+                var i = (row + x) * 4;
+                bytes[i] = 0;
+                bytes[i + 1] = 0;
+                bytes[i + 2] = 0;
+                bytes[i + 3] = 0;
+            }
+        }
+
+        CommitLayerPixels(layer, bytes, w, h);
+    }
+
+    /// <summary>从选区新建图层：把选中像素裁出为新图片图层（位置与选区对齐）。</summary>
+    public void LayerFromSelection()
+    {
+        var layer = _selLayer;
+        if (layer == null || _selMask == null || _selBounds.Width < 1 || _selBounds.Height < 1 ||
+            !TryReadLayerPixels(layer, out var bytes, out var w, out var h))
+        {
+            return;
+        }
+
+        if (w != _selW || h != _selH)
+        {
+            ClearSelection();
+            return;
+        }
+
+        var bx = Math.Clamp((int)_selBounds.X, 0, w - 1);
+        var by = Math.Clamp((int)_selBounds.Y, 0, h - 1);
+        var bw = Math.Min((int)_selBounds.Width, w - bx);
+        var bh = Math.Min((int)_selBounds.Height, h - by);
+        if (bw < 1 || bh < 1)
+        {
+            return;
+        }
+
+        // 从掩码裁出包围盒区域，未选中像素清透明。
+        var mask = _selMask;
+        var sub = new byte[bh * bw * 4];
+        for (var y = 0; y < bh; y++)
+        {
+            for (var x = 0; x < bw; x++)
+            {
+                var dst = (y * bw + x) * 4;
+                if (mask[(by + y) * w + (bx + x)] == 0)
+                {
+                    continue;
+                }
+
+                var src = ((by + y) * w + (bx + x)) * 4;
+                sub[dst] = bytes[src];
+                sub[dst + 1] = bytes[src + 1];
+                sub[dst + 2] = bytes[src + 2];
+                sub[dst + 3] = bytes[src + 3];
+            }
+        }
+
+        var id = Guid.NewGuid().ToString("N");
+        var dir = Path.Combine(InjectorRuntime.ConfigDirectory, "layers");
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, $"{id}.png");
+        try
+        {
+            using (var bmp = new WriteableBitmap(new PixelSize(bw, bh), new Vector(96, 96),
+                       PixelFormat.Bgra8888, AlphaFormat.Unpremul))
+            {
+                using (var ofb = bmp.Lock())
+                {
+                    Marshal.Copy(sub, 0, ofb.Address, sub.Length);
+                }
+
+                using (var fs = File.Create(path))
+                {
+                    bmp.Save(fs);
+                }
+            }
+        }
+        catch
+        {
+            return;
+        }
+
+        // 新图层位置 = 选区在舞台上的位置（左上角锚点对齐）。
+        var stageRect = _selStageRect.Width > 0 ? _selStageRect : new Rect(0, 0, bw, bh);
+        EditStarted?.Invoke();
+        var newLayer = new WallpaperLayerItem
+        {
+            Id = id,
+            Name = $"选区图层 {_layers.Count + 1}",
+            Kind = WallpaperLayerKind.Image,
+            Source = WallpaperSource.LocalImage,
+            Path = path,
+            DisplayMode = WallpaperDisplayMode.Stretch,
+            SizeMode = WallpaperLayerSizeMode.Custom,
+            AnchorX = WallpaperLayerAnchorX.Left,
+            AnchorY = WallpaperLayerAnchorY.Top,
+            OffsetX = stageRect.X - CanvasMargin,
+            OffsetY = stageRect.Y - CanvasMargin,
+            Width = Math.Max(1, stageRect.Width),
+            Height = Math.Max(1, stageRect.Height)
+        };
+        _layers.Add(newLayer);
+        // 新 Id 的位图不在 _bitmaps 中，必须走 RefreshImages 加载后才能第一时间显示。
+        RefreshImages();
+        Select(newLayer.Id);
+        Edited?.Invoke();
+    }
+
+    /// <summary>移动工具按下且在选区内：开始移动选区内容（释放时剪切粘贴）。</summary>
+    private void BeginMoveSelection(Point pos, PointerPressedEventArgs e)
+    {
+        var layer = _selLayer;
+        if (layer == null || _selMask == null ||
+            !TryReadLayerPixels(layer, out var bytes, out var w, out var h))
+        {
+            return;
+        }
+
+        if (w != _selW || h != _selH)
+        {
+            ClearSelection();
+            return;
+        }
+
+        // 裁剪出选中像素（未选中透明），并把原图层选中区域清空作为基底。
+        var mask = _selMask;
+        var cut = new byte[bytes.Length];
+        for (var p = 0; p < mask.Length; p++)
+        {
+            if (mask[p] == 0)
+            {
+                continue;
+            }
+
+            var bi = p * 4;
+            cut[bi] = bytes[bi];
+            cut[bi + 1] = bytes[bi + 1];
+            cut[bi + 2] = bytes[bi + 2];
+            cut[bi + 3] = bytes[bi + 3];
+            bytes[bi] = 0;
+            bytes[bi + 1] = 0;
+            bytes[bi + 2] = 0;
+            bytes[bi + 3] = 0;
+        }
+
+        EditStarted?.Invoke();
+        _selCut = cut;
+        _selCutBase = bytes;
+        _drag = new DragState { Kind = DragKind.MoveSelection, Layer = layer, StartPointer = pos };
+        e.Pointer.Capture(_stage);
+        e.Handled = true;
+    }
+
+    /// <summary>移动选区内容：蚂蚁线轮廓跟随指针（像素在释放时一次性剪切粘贴，保证触摸不卡）。</summary>
+    private void UpdateMoveSelection(DragState drag, Point pointer)
+    {
+        var delta = pointer - drag.StartPointer;
+        var translated = _selPath.Select(p => p + delta).ToList();
+        _selOverlay.SetPath(translated, _selPathClosed);
+    }
+
+    /// <summary>移动选区内容释放：按位移把裁剪像素粘贴回新位置并提交。</summary>
+    private void FinishMoveSelection(DragState drag, Point pointer)
+    {
+        var layer = _selLayer;
+        if (layer == null || _selCut == null || _selCutBase == null || _selMask == null)
+        {
+            return;
+        }
+
+        var delta = pointer - drag.StartPointer;
+        var rect = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer));
+        var bscale = BitmapPixelsPerDip(layer, _selW, _selH, rect.Width, rect.Height);
+        var dpx = (int)Math.Round(delta.X * bscale);
+        var dpy = (int)Math.Round(delta.Y * bscale);
+        var ow = _selW;
+        var oh = _selH;
+        var mask = _selMask;
+        var cut = _selCut;
+        var final = new byte[_selCutBase.Length];
+        Array.Copy(_selCutBase, final, final.Length);
+        for (var y = 0; y < oh; y++)
+        {
+            var row = y * ow;
+            for (var x = 0; x < ow; x++)
+            {
+                if (mask[row + x] == 0)
+                {
+                    continue;
+                }
+
+                var nx = x + dpx;
+                var ny = y + dpy;
+                if (nx < 0 || ny < 0 || nx >= ow || ny >= oh)
+                {
+                    continue;
+                }
+
+                var src = (row + x) * 4;
+                var dst = (ny * ow + nx) * 4;
+                final[dst] = cut[src];
+                final[dst + 1] = cut[src + 1];
+                final[dst + 2] = cut[src + 2];
+                final[dst + 3] = cut[src + 3];
+            }
+        }
+
+        CommitLayerPixels(layer, final, ow, oh);
+        // 选区随内容平移。
+        _selBounds = new Rect(_selBounds.X + dpx, _selBounds.Y + dpy, _selBounds.Width, _selBounds.Height);
+        var translated = _selPath.Select(p => p + delta).ToList();
+        _selPath.Clear();
+        _selPath.AddRange(translated);
+        _selStageRect = BoundingBox(translated);
+        _selOverlay.SetPath(translated, _selPathClosed);
+        _selCut = null;
+        _selCutBase = null;
+    }
+
+    /// <summary>读出图层位图像素（直通 alpha），成功返回 true。</summary>
+    private bool TryReadLayerPixels(WallpaperLayerItem layer, out byte[] bytes, out int w, out int h)
+    {
+        bytes = Array.Empty<byte>();
+        w = 0;
+        h = 0;
+        if (!_bitmaps.TryGetValue(layer.Id, out var raw) || raw.PixelSize.Width <= 0 || raw.PixelSize.Height <= 0)
+        {
+            return false;
+        }
+
+        w = raw.PixelSize.Width;
+        h = raw.PixelSize.Height;
+        var stride = w * 4;
+        bytes = new byte[h * stride];
+        var handle = GCHandle.Alloc(bytes, GCHandleType.Pinned);
+        try
+        {
+            raw.CopyPixels(new PixelRect(0, 0, w, h), handle.AddrOfPinnedObject(), bytes.Length, stride);
+        }
+        finally
+        {
+            handle.Free();
+        }
+
+        if (raw.AlphaFormat == AlphaFormat.Premul)
+        {
+            WallpaperLayerEffects.Unpremultiply(bytes);
+        }
+
+        return true;
+    }
+
+    /// <summary>把修改后的像素提交回图层：保存为 PNG、更新路径、重载位图并刷新。</summary>
+    private void CommitLayerPixels(WallpaperLayerItem layer, byte[] bytes, int w, int h)
+    {
+        try
+        {
+            var dir = Path.Combine(InjectorRuntime.ConfigDirectory, "layers");
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, $"{layer.Id}_{Guid.NewGuid():N}.png");
+            using (var bmp = new WriteableBitmap(new PixelSize(w, h), new Vector(96, 96),
+                       PixelFormat.Bgra8888, AlphaFormat.Unpremul))
+            {
+                using (var ofb = bmp.Lock())
+                {
+                    Marshal.Copy(bytes, 0, ofb.Address, bytes.Length);
+                }
+
+                using (var fs = File.Create(path))
+                {
+                    bmp.Save(fs);
+                }
+            }
+
+            layer.Path = path;
+            layer.Source = WallpaperSource.LocalImage;
+            Layers = _layers;
+            Refresh();
+            Edited?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            CanvasDebugLog($"提交像素失败: {ex}");
+        }
+    }
+
+    /// <summary>
+    /// 把图层当前的滤镜调整值（HSL / 亮度对比度 / 高斯模糊）**烘焙进选区像素**并重置为中性值，
+    /// 选区外像素保持不变。供「选区内的图像变换」（Ctrl+U / Ctrl+M / 模糊）确认时调用。
+    /// 撤销快照在重置前压入，可完整还原到变换前状态。
+    /// </summary>
+    public void BakeAdjustmentsToSelection()
+    {
+        var layer = _selLayer;
+        if (layer == null || _selMask == null ||
+            !TryReadLayerPixels(layer, out var bytes, out var w, out var h))
+        {
+            return;
+        }
+
+        if (w != _selW || h != _selH)
+        {
+            ClearSelection();
+            return;
+        }
+
+        var hasAdjust = WallpaperLayerEffects.HasAdjustment(layer);
+        var hasBlur = layer.BlurRadius > 0;
+        if (!hasAdjust && !hasBlur)
+        {
+            return;
+        }
+
+        EditStarted?.Invoke();
+        if (hasAdjust)
+        {
+            WallpaperLayerEffects.AdjustPixels(bytes, w * 4, w, h, true,
+                layer.HueShift, layer.SaturationAdjust, layer.LightnessAdjust,
+                layer.Brightness, layer.Contrast, false, _selMask);
+        }
+
+        if (hasBlur)
+        {
+            WallpaperLayerEffects.BlurPixelsMasked(bytes, w * 4, w, h, layer.BlurRadius, _selMask);
+        }
+
+        // 先重置滤镜值为中性：提交后显示刷新用中性值，不会对已烘焙像素二次应用。
+        layer.HueShift = 0;
+        layer.SaturationAdjust = 0;
+        layer.LightnessAdjust = 0;
+        layer.Brightness = 0;
+        layer.Contrast = 0;
+        layer.BlurRadius = 0;
+        CommitLayerPixels(layer, bytes, w, h);
+    }
+
     // ============ 吸管工具 ============
 
     /// <summary>吸管按下：开始拖拽取色（可拖到窗口外），松手时取最终颜色。</summary>
@@ -2468,7 +3234,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         }
 
         var layer = SelectedLayer;
-        if (layer == null || _lockedIds.Contains(layer.Id))
+        if (layer == null || _lockedIds.Contains(layer.Id) || layer.IsCanvasLayer)
         {
             return;
         }
@@ -2661,7 +3427,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         }
 
         var layer = SelectedLayer;
-        if (layer == null || _lockedIds.Contains(layer.Id))
+        if (layer == null || _lockedIds.Contains(layer.Id) || layer.IsCanvasLayer)
         {
             return;
         }
@@ -3218,6 +3984,14 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 SwitchTool(WallpaperEditorTool.Select);
                 e.Handled = true;
                 break;
+            case Key.M:
+                SwitchTool(WallpaperEditorTool.RectSelect);
+                e.Handled = true;
+                break;
+            case Key.L:
+                SwitchTool(WallpaperEditorTool.Lasso);
+                e.Handled = true;
+                break;
             case Key.Z:
                 SwitchTool(WallpaperEditorTool.Zoom);
                 e.Handled = true;
@@ -3251,14 +4025,32 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 e.Handled = true;
                 break;
             case Key.Delete when layer != null && !_lockedIds.Contains(layer.Id):
-                DeleteRequested?.Invoke(layer);
+                // 有选区且选区在当前图层上 → 删除选区像素；否则删除整个图层。
+                if (HasSelection && _selLayer?.Id == layer.Id)
+                {
+                    DeleteSelection();
+                }
+                else
+                {
+                    DeleteRequested?.Invoke(layer);
+                }
+
                 e.Handled = true;
                 break;
             case Key.Escape:
                 _drag = null;
                 CancelStroke();
                 _guideOverlay.Clear();
-                Select(null);
+                if (HasSelection)
+                {
+                    // 有选区时先清选区（Photoshop 行为），不取消图层选中。
+                    ClearSelection();
+                }
+                else
+                {
+                    Select(null);
+                }
+
                 e.Handled = true;
                 break;
             case Key.Left:
@@ -3325,7 +4117,10 @@ internal sealed class WallpaperLayerCanvas : UserControl
         CropMarquee,
         Stroke,
         Eyedrop,
-        Pan
+        Pan,
+        RectSelectMarquee,
+        LassoDraw,
+        MoveSelection
     }
 
     private sealed class DragState
@@ -3464,6 +4259,52 @@ internal sealed class WallpaperLayerCanvas : UserControl
                     new Rect(labelX, labelY, text.Width + 8, text.Height + 4), 0, 0, default);
                 context.DrawText(text, new Point(labelX + 4, labelY + 2));
             }
+        }
+    }
+}
+
+/// <summary>像素选区（矩形选框 / 套索）的蚂蚁线叠加层：沿选区路径绘制行走虚线。</summary>
+internal sealed class PixelSelectionOverlay : Control
+{
+    private readonly List<Point> _path = [];
+    private bool _closed;
+    private double _phase;
+
+    public void SetPath(IEnumerable<Point> path, bool closed)
+    {
+        _path.Clear();
+        _path.AddRange(path);
+        _closed = closed;
+        InvalidateVisual();
+    }
+
+    public void Tick()
+    {
+        // 虚线相位前进，形成「蚂蚁行军」动画。
+        _phase -= 1.5;
+        InvalidateVisual();
+    }
+
+    public override void Render(DrawingContext context)
+    {
+        base.Render(context);
+        if (_path.Count < 2)
+        {
+            return;
+        }
+
+        var pen = new Pen(new SolidColorBrush(ThemePalette.AccentColorWithAlpha(230)), 1.5)
+        {
+            DashStyle = new DashStyle([5, 4], _phase)
+        };
+        for (var i = 0; i < _path.Count - 1; i++)
+        {
+            context.DrawLine(pen, _path[i], _path[i + 1]);
+        }
+
+        if (_closed && _path.Count > 2)
+        {
+            context.DrawLine(pen, _path[^1], _path[0]);
         }
     }
 }

@@ -1857,9 +1857,10 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         // 位图图层需要来源；形状 / 文本图层（Kind != Image）始终参与渲染；
-        // 「扩展到整个显示框架」的图层由独立全屏宿主渲染，不参与主界面画布。
+        // 「扩展到整个显示框架」的图层由独立全屏宿主渲染，不参与主界面画布；
+        // 画布图层（IsCanvasLayer）是编辑器内的自由绘制层，栅格化前不显示在主界面上。
         var wanted = _settings.WallpaperLayers
-            .Where(l => l.Visible && !l.FullscreenExtend &&
+            .Where(l => l.Visible && !l.FullscreenExtend && !l.IsCanvasLayer &&
                         (l.Kind != WallpaperLayerKind.Image || l.Source != WallpaperSource.None))
             .ToList();
         var wantedIds = wanted.Select(l => l.Id).ToHashSet();

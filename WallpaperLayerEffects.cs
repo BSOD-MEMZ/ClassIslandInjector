@@ -227,9 +227,11 @@ public static class WallpaperLayerEffects
         return output;
     }
 
-    /// <summary>就地逐像素调整（Bgra8888 / Rgba8888，正确处理预乘 alpha）。</summary>
-    private static void AdjustPixels(byte[] bytes, int stride, int w, int h, bool bgra,
-        double hue, double sat, double light, double brightness, double contrast, bool premul)
+    /// <summary>就地逐像素调整（Bgra8888 / Rgba8888，正确处理预乘 alpha）。
+    /// <paramref name="mask"/> 非空时只处理掩码内（255）像素，用于选区内的图像变换。</summary>
+    public static void AdjustPixels(byte[] bytes, int stride, int w, int h, bool bgra,
+        double hue, double sat, double light, double brightness, double contrast, bool premul,
+        byte[]? mask = null)
     {
         var rowPixels = w * 4;
         var needLight = Math.Abs(light) > 0.001;
@@ -242,6 +244,11 @@ public static class WallpaperLayerEffects
             var row = y * stride;
             for (var x = 0; x < rowPixels; x += 4)
             {
+                if (mask != null && mask[y * w + (x >> 2)] == 0)
+                {
+                    continue;
+                }
+
                 var i = row + x;
                 var a = bytes[i + 3];
                 if (a == 0)
@@ -347,6 +354,94 @@ public static class WallpaperLayerEffects
         var v = value + brightness * 2.55;
         v = (v - 128) * contrastFactor + 128;
         return (byte)Math.Clamp(v, 0, 255);
+    }
+
+    /// <summary>
+    /// 对掩码内（255）的像素做三趟盒式模糊（近似高斯模糊），掩码外像素不动。
+    /// 模糊核采样包含掩码外的相邻像素（与 Photoshop 选区模糊行为一致）。
+    /// 输入为直通 alpha 的 Bgra8888 缓冲。
+    /// </summary>
+    public static void BlurPixelsMasked(byte[] bytes, int stride, int w, int h, double radius, byte[] mask)
+    {
+        if (radius < 1 || w <= 0 || h <= 0 || bytes.Length < h * stride || mask.Length < w * h)
+        {
+            return;
+        }
+
+        var r = (int)Math.Ceiling(radius);
+        var a = new byte[bytes.Length];
+        var b = new byte[bytes.Length];
+        Array.Copy(bytes, a, bytes.Length);
+        BoxBlurPass(a, b, stride, w, h, r, true);
+        BoxBlurPass(b, a, stride, w, h, r, false);
+        BoxBlurPass(a, b, stride, w, h, r, true);
+        // 只把模糊结果写回掩码内像素。
+        for (var y = 0; y < h; y++)
+        {
+            var row = y * w;
+            for (var x = 0; x < w; x++)
+            {
+                if (mask[row + x] == 0)
+                {
+                    continue;
+                }
+
+                var src = (row + x) * 4;
+                bytes[src] = b[src];
+                bytes[src + 1] = b[src + 1];
+                bytes[src + 2] = b[src + 2];
+                bytes[src + 3] = b[src + 3];
+            }
+        }
+    }
+
+    /// <summary>单趟盒式模糊（RGBA 逐通道滑动窗口均值；边界按最近像素补齐）。</summary>
+    private static void BoxBlurPass(byte[] src, byte[] dst, int stride, int w, int h, int r, bool horizontal)
+    {
+        var window = r * 2 + 1;
+        if (horizontal)
+        {
+            for (var y = 0; y < h; y++)
+            {
+                var row = y * stride;
+                for (var c = 0; c < 4; c++)
+                {
+                    long sum = 0;
+                    for (var k = -r; k <= r; k++)
+                    {
+                        sum += src[row + Math.Clamp(k, 0, w - 1) * 4 + c];
+                    }
+
+                    for (var x = 0; x < w; x++)
+                    {
+                        dst[row + x * 4 + c] = (byte)(sum / window);
+                        sum += src[row + Math.Clamp(x + r + 1, 0, w - 1) * 4 + c]
+                             - src[row + Math.Clamp(x - r, 0, w - 1) * 4 + c];
+                    }
+                }
+            }
+        }
+        else
+        {
+            for (var x = 0; x < w; x++)
+            {
+                for (var c = 0; c < 4; c++)
+                {
+                    long sum = 0;
+                    for (var k = -r; k <= r; k++)
+                    {
+                        sum += src[Math.Clamp(k, 0, h - 1) * stride + x * 4 + c];
+                    }
+
+                    for (var y = 0; y < h; y++)
+                    {
+                        dst[y * stride + x * 4 + c] = (byte)(sum / window);
+                        sum += src[Math.Clamp(y + r + 1, 0, h - 1) * stride + x * 4 + c]
+                             - src[Math.Clamp(y - r, 0, h - 1) * stride + x * 4 + c];
+                    }
+                }
+            }
+        }
     }
 
     /// <summary>

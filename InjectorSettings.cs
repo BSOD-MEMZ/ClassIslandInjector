@@ -316,6 +316,10 @@ public sealed class WallpaperLayerItem
     /// （启用时运行时隐藏底色、边框、阴影）。</summary>
     public bool FullscreenExtend { get; set; }
 
+    /// <summary>是否整张画布图层：铺满整个编辑器画布（主界面 + 四周留白区域），
+    /// 供自由绘制；栅格化后转为普通图片图层，才会出现在主界面上。</summary>
+    public bool IsCanvasLayer { get; set; }
+
     /// <summary>全屏扩展时是否启用九宫格切图（防变形拉伸）。</summary>
     public bool SliceEnabled { get; set; }
 
@@ -455,6 +459,7 @@ public sealed class WallpaperLayerItem
         SlideshowIntervalSeconds = SlideshowIntervalSeconds,
         Kind = Kind,
         FullscreenExtend = FullscreenExtend,
+        IsCanvasLayer = IsCanvasLayer,
         SliceEnabled = SliceEnabled,
         SliceTop = SliceTop,
         SliceBottom = SliceBottom,
@@ -554,6 +559,7 @@ public sealed class InjectorSettings
     private bool _disableVersionCheck;
     private bool _disableDegradationCheck;
     private bool _rasterizeWarningDismissed;
+    private bool _canvasRasterizeWarningDismissed;
     private string _editorPickedColor = "#FFFFFFFF";
     private bool _shadowEnabled;
     private string _shadowColor = "#99000000";
@@ -700,6 +706,9 @@ public sealed class InjectorSettings
 
     /// <summary>是否不再提示「栅格化会丢失矢量编辑」警告。</summary>
     public bool RasterizeWarningDismissed { get => _rasterizeWarningDismissed; set => Set(ref _rasterizeWarningDismissed, value); }
+
+    /// <summary>保存时若有未栅格化的画布图层，是否不再提醒（勾选「永不弹出」后置 true）。</summary>
+    public bool CanvasRasterizeWarningDismissed { get => _canvasRasterizeWarningDismissed; set => Set(ref _canvasRasterizeWarningDismissed, value); }
 
     /// <summary>编辑器「吸管」取到的当前色（新建形状 / 文本 / 画笔的默认色，自动记忆）。</summary>
     public string EditorPickedColor { get => _editorPickedColor; set => Set(ref _editorPickedColor, value.Trim()); }
@@ -885,6 +894,7 @@ public sealed class InjectorSettings
         DisableVersionCheck = source.DisableVersionCheck;
         DisableDegradationCheck = source.DisableDegradationCheck;
         RasterizeWarningDismissed = source.RasterizeWarningDismissed;
+        CanvasRasterizeWarningDismissed = source.CanvasRasterizeWarningDismissed;
         EditorPickedColor = source.EditorPickedColor;
         ShadowEnabled = source.ShadowEnabled;
         ShadowColor = source.ShadowColor;

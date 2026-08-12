@@ -132,7 +132,7 @@
           "InitializeActions": [],
           "Content": [
             {
-              "Title": "第一步 · 添加图片",
+              "Title": "添加图片",
               "Content": "先点「添加图片图层」，选一张你喜欢的图片。如果手头没有，就选对话框里的「使用示例图片」，我们给你准备了一张！",
               "IconExpression": "bitmap({stickerUri}/miku_thumbup.png)",
               "TargetSelector": "#EditorAddImage",
@@ -147,7 +147,7 @@
               "LeftButtonText": ""
             },
             {
-              "Title": "第二步 · 摆位置",
+              "Title": "摆位置",
               "Content": "图片加好了。用鼠标拖住它，放到你觉得合适的位置。",
               "IconExpression": "bitmap({stickerUri}/miku_happy.png)",
               "TargetSelector": "#EditorCanvas",
@@ -162,7 +162,7 @@
               "LeftButtonText": ""
             },
             {
-              "Title": "第三步 · 解锁主界面",
+              "Title": "解锁主界面",
               "Content": "接下来，去图层面板点一下「ClassIsland 主界面」那一行的解锁。不解锁的话，主界面是拖不动的。",
               "IconExpression": "bitmap({stickerUri}/Airi_11.png)",
               "TargetSelector": "#EditorLayerPanel",
@@ -190,7 +190,7 @@
               "LeftButtonText": ""
             },
             {
-              "Title": "第四步 · 看跟随效果",
+              "Title": "看跟随效果",
               "Content": "解锁后，拖动主界面的边缘改变一下大小，看看图片是不是还贴在自己那边？这就是相对定位的效果。",
               "IconExpression": "bitmap({stickerUri}/miku_happy.png)",
               "TargetSelector": "#EditorCanvas",
@@ -205,7 +205,7 @@
               "LeftButtonText": ""
             },
             {
-              "Title": "第五步 · 画个形状",
+              "Title": "画个形状",
               "Content": "接下来试个形状。点左侧的「形状」工具，在画布上拖出一个形状。",
               "IconExpression": "bitmap({stickerUri}/Airi_13.png)",
               "TargetSelector": "#EditorShapeTool",
@@ -219,7 +219,7 @@
               "LeftButtonText": ""
             },
             {
-              "Title": "第六步 · 换形状类型",
+              "Title": "换形状类型",
               "Content": "画好了？在右侧检查器里可以换成别的形状类型：矩形、椭圆、心形……试试看。",
               "IconExpression": "bitmap({stickerUri}/Airi_08.png)",
               "TargetSelector": "#EditorShapeType",
@@ -233,7 +233,7 @@
               "LeftButtonText": ""
             },
             {
-              "Title": "第七步 · 加点文字",
+              "Title": "加点文字",
               "Content": "最后是文字。点左侧的「文本」工具，再到画布上点一下，就能加一行文字了。",
               "IconExpression": "bitmap({stickerUri}/miku_happy.png)",
               "TargetSelector": "#EditorTextTool",
@@ -247,7 +247,7 @@
               "LeftButtonText": ""
             },
             {
-              "Title": "第八步 · 保存",
+              "Title": "保存",
               "Content": "差不多了就点「保存并应用」。记得多保存几次，每次改动都能马上看到效果。",
               "IconExpression": "bitmap({stickerUri}/miku_thumbup.png)",
               "TargetSelector": "#EditorSave",
