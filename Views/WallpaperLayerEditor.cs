@@ -205,6 +205,12 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             islandSize?.Height > 0 ? islandSize.Value.Height : DefaultIslandHeight);
         _canvas.ZOrder = InjectorRuntime.Settings.WallpaperZOrder;
         _canvas.Layers = _layers;
+        // 恢复上次吸管取到的默认色（新建形状 / 文本 / 画笔的默认色，自动记忆）。
+        if (Color.TryParse(InjectorRuntime.Settings.EditorPickedColor, out var picked))
+        {
+            _canvas.ActiveColor = picked;
+        }
+
         // 供宿主教程 TargetSelector 定位（#EditorCanvas）。
         _canvas.Name = "EditorCanvas";
 
@@ -280,6 +286,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _canvas.ImagesChanged += RefreshLayerList;
         _canvas.DeleteRequested += DeleteLayer;
         _canvas.RasterizeRequested += RasterizeSelected;
+        _canvas.ColorPicked += OnColorPicked;
+        _canvas.ColorPreview += OnColorPreview;
         _canvas.ToolChanged += _ =>
         {
             UpdateToolBarSelection();
@@ -805,6 +813,29 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         }
     }
 
+    /// <summary>吸管最终取色：更新状态栏，并把取到的颜色设为默认色并自动记忆。</summary>
+    private void OnColorPicked(Color color)
+    {
+        _statusText.Text = $"已取色 RGB({color.R}, {color.G}, {color.B})  {color.ToString()}";
+        RememberActiveColor(color);
+    }
+
+    /// <summary>吸管悬停预览：状态栏实时汇报 RGB。</summary>
+    private void OnColorPreview(Color color)
+    {
+        _statusText.Text = $"RGB {color.R}, {color.G}, {color.B}  {color.ToString()}";
+    }
+
+    /// <summary>
+    /// 把用户最后使用的颜色设为默认色并自动记忆（新建形状 / 文本 / 画笔的默认色）。
+    /// 直接写设置属性即可：Changed 事件会自动触发保存应用。
+    /// </summary>
+    private void RememberActiveColor(Color color)
+    {
+        _canvas.ActiveColor = color;
+        InjectorRuntime.Settings.EditorPickedColor = color.ToString();
+    }
+
     /// <summary>
     /// 打开「画布棋盘格配色」对话框：跟随主题自动按深浅色选择，或自定义两种颜色；
     /// 改动实时写回设置并刷新画布。
@@ -890,6 +921,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         panel.Children.Add(ToolButton(WallpaperEditorTool.Select, "\uE5BF", "选择工具（S）：点击只选中图层，不拖拽"));
         panel.Children.Add(ToolButton(WallpaperEditorTool.Zoom, "\uF4D1", "缩放工具（Z）：单击放大 / Alt+单击缩小 / 拖拽框选放大；Ctrl + / Ctrl - 也可缩放"));
         panel.Children.Add(ToolButton(WallpaperEditorTool.Crop, "\uE59B", "裁剪工具（C）：在图片图层上拖拽框选要保留的区域，松手即裁剪（裁剪后切回移动工具）"));
+        panel.Children.Add(ToolButton(WallpaperEditorTool.Eyedropper, "\uE81D", "吸管工具（I）：拾取屏幕上任意位置的颜色，按住拖拽可在窗口外取色；取到的颜色会成为新建形状 / 文本 / 画笔的默认色并自动记忆"));
         panel.Children.Add(ToolButton(WallpaperEditorTool.Brush, "\uEC4A", "画笔工具（B）：在图片图层上按住拖动绘制（右侧可调颜色 / 大小）"));
         panel.Children.Add(ToolButton(WallpaperEditorTool.Eraser, "\uE7FF", "橡皮擦工具（E）：擦除图片图层的像素（变为透明）"));
         panel.Children.Add(ToolButton(WallpaperEditorTool.Shape, "\uE775", "形状工具（U）：拖拽绘制矩形；创建后可在右侧修改形状类型"));
@@ -980,7 +1012,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         [WallpaperEditorTool.Text] = ("\uF1BD", "\uF1BE"),
         [WallpaperEditorTool.Crop] = ("\uE59A", "\uE59B"),
         [WallpaperEditorTool.Brush] = ("\uEC49", "\uEC4A"),
-        [WallpaperEditorTool.Eraser] = ("\uE7FE", "\uE7FF")
+        [WallpaperEditorTool.Eraser] = ("\uE7FE", "\uE7FF"),
+        [WallpaperEditorTool.Eyedropper] = ("\uE81C", "\uE81D")
     };
 
     private StackPanel BuildInspector()
@@ -1120,7 +1153,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         {
             if (!_updatingInspector && e.Property?.Name == "Color")
             {
-                _canvas.BrushColor = _brushColorPicker.Color;
+                RememberActiveColor(_brushColorPicker.Color);
             }
         };
         _brushSizeSlider.ValueChanged += (_, _) =>
@@ -1153,6 +1186,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             if (!_updatingInspector && e.Property?.Name == "Color")
             {
                 ApplyToSelected(l => { if (l.Kind == WallpaperLayerKind.Shape) l.FillColor = _shapeFillPicker.Color.ToString(); });
+                // 手动换的填充色也会成为「记忆颜色」（新建形状 / 文本 / 画笔的默认色）。
+                RememberActiveColor(_shapeFillPicker.Color);
             }
         };
         _shapeStrokePicker.PropertyChanged += (_, e) =>
@@ -1250,6 +1285,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                         l.TextColor = _textColorPicker.Color.ToString();
                     }
                 });
+                // 手动换的文字颜色也会成为「记忆颜色」（新建形状 / 文本 / 画笔的默认色）。
+                RememberActiveColor(_textColorPicker.Color);
             }
         };
         _textColorThemeToggle.PropertyChanged += (_, e) =>
@@ -2347,7 +2384,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             var brushActive = _canvas.Tool is WallpaperEditorTool.Brush or WallpaperEditorTool.Eraser;
             _brushColorItem.IsVisible = brushActive;
             _brushSizeItem.IsVisible = brushActive;
-            _brushColorPicker.Color = _canvas.BrushColor;
+            _brushColorPicker.Color = _canvas.ActiveColor;
             _brushSizeSlider.Value = _canvas.BrushSize;
             var layer = _canvas.SelectedLayer;
             if (layer == null)

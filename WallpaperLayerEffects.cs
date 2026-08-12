@@ -368,15 +368,19 @@ public static class WallpaperLayerEffects
         }
     }
 
-    /// <summary>在一个圆盘区域内落笔（画笔 alpha 混合 / 橡皮清空）。</summary>
+    /// <summary>
+    /// 在一个圆盘区域内落笔（画笔 alpha 混合 / 橡皮清空），边缘 1px 抗锯齿软过渡。
+    /// 以像素中心到圆心的距离计算覆盖度：半径内覆盖度 1，向外 1px 线性降到 0，
+    /// 消除原来的锯齿硬边（这也是「矢量对象看着不抗锯齿」的主要来源——笔刷边缘）。
+    /// </summary>
     private static void DrawDisc(byte[] bytes, int stride, int w, int h,
         double cx, double cy, double radius, Color color, bool erase)
     {
-        var r2 = radius * radius;
-        var x0 = Math.Clamp((int)Math.Floor(cx - radius), 0, w - 1);
-        var x1 = Math.Clamp((int)Math.Ceiling(cx + radius), 0, w - 1);
-        var y0 = Math.Clamp((int)Math.Floor(cy - radius), 0, h - 1);
-        var y1 = Math.Clamp((int)Math.Ceiling(cy + radius), 0, h - 1);
+        // 外扩 1px 覆盖抗锯齿过渡带。
+        var x0 = Math.Clamp((int)Math.Floor(cx - radius - 1), 0, w - 1);
+        var x1 = Math.Clamp((int)Math.Ceiling(cx + radius + 1), 0, w - 1);
+        var y0 = Math.Clamp((int)Math.Floor(cy - radius - 1), 0, h - 1);
+        var y1 = Math.Clamp((int)Math.Ceiling(cy + radius + 1), 0, h - 1);
         for (var y = y0; y <= y1; y++)
         {
             var row = y * stride;
@@ -384,7 +388,9 @@ public static class WallpaperLayerEffects
             {
                 var ddx = x - cx;
                 var ddy = y - cy;
-                if (ddx * ddx + ddy * ddy > r2)
+                var d = Math.Sqrt(ddx * ddx + ddy * ddy);
+                var coverage = Math.Clamp(radius + 0.5 - d, 0, 1);
+                if (coverage <= 0)
                 {
                     continue;
                 }
@@ -392,15 +398,14 @@ public static class WallpaperLayerEffects
                 var i = row + x * 4;
                 if (erase)
                 {
-                    bytes[i] = 0;
-                    bytes[i + 1] = 0;
-                    bytes[i + 2] = 0;
-                    bytes[i + 3] = 0;
+                    // 橡皮：按覆盖度把现有 alpha 降到 0（直通 alpha 空间，RGB 不变，保存时再预乘）。
+                    var a = bytes[i + 3];
+                    bytes[i + 3] = (byte)(a * (1 - coverage));
                     continue;
                 }
 
                 var da = bytes[i + 3] / 255.0;
-                var sa = color.A / 255.0;
+                var sa = color.A / 255.0 * coverage;
                 var outA = sa + da * (1 - sa);
                 if (outA <= 0)
                 {

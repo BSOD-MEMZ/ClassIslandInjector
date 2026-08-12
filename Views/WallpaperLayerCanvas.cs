@@ -34,6 +34,8 @@ internal enum WallpaperEditorTool
     Brush,
     /// <summary>橡皮擦工具：擦除图片图层的像素（变为透明）。</summary>
     Eraser,
+    /// <summary>吸管工具：拾取屏幕上任意位置的颜色（按住拖动可在窗口外取色）。</summary>
+    Eyedropper,
     /// <summary>抓手工具：按住拖动平移画布视图。</summary>
     Hand
 }
@@ -49,9 +51,15 @@ internal sealed class WallpaperLayerCanvas : UserControl
     private const double SnapThreshold = 7;
     private const double MinLayerSize = 8;
 
-    private readonly ScrollViewer _scrollViewer = new();
-    private readonly Border _stageHost = new() { ClipToBounds = true };
+    // 视口 + 手写平移/缩放（不用 ScrollViewer：Avalonia 的 ScrollViewer.Offset 与
+    // ScrollContentPresenter.Offset 双向绑定在程序化设置 Offset 时会无限递归 → 栈溢出崩溃，
+    // 触摸平移/缩放频繁设置 Offset 极易触发，转储栈已证实）。
+    private readonly Border _viewport = new() { ClipToBounds = true };
     private readonly Canvas _stage = new();
+    private readonly ScaleTransform _zoomTransform = new(1, 1);
+    private readonly TranslateTransform _panTransform = new();
+    /// <summary>当前视口平移量（逻辑像素，0 = 画布左上角对齐视口左上角）。</summary>
+    private Vector _panOffset;
     private readonly Border _island;
     private readonly TextBlock _islandTitle = new()
     {
@@ -99,6 +107,17 @@ internal sealed class WallpaperLayerCanvas : UserControl
     /// <summary>浮动操作条层序按钮（置顶/置底时禁用）。</summary>
     private Button _moveUpButton = null!;
     private Button _moveDownButton = null!;
+    /// <summary>画笔 / 橡皮擦的笔尖预览圆（显示笔刷大小与位置，触摸屏上没有悬停光标，全靠它定位）。</summary>
+    private readonly Border _brushCursor = new()
+    {
+        IsHitTestVisible = false,
+        IsVisible = false,
+        BorderBrush = new SolidColorBrush(Color.FromArgb(220, 120, 190, 255)),
+        BorderThickness = new Thickness(1.5),
+        Background = new SolidColorBrush(Color.FromArgb(30, 120, 190, 255)),
+        CornerRadius = new CornerRadius(50),
+        ZIndex = 190
+    };
     /// <summary>缩放滑动条（舞台右下角）。</summary>
     private readonly Slider _zoomSlider = new()
     {
@@ -136,8 +155,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
     private byte[]? _strokeBytes;
     private WriteableBitmap? _strokeBitmap;
     private Point _strokeLast;
-    /// <summary>画笔颜色（编辑器检查器修改）。</summary>
-    public Color BrushColor { get; set; } = Colors.Black;
+    /// <summary>当前取色 / 默认颜色（新建形状、文本、画笔都用它；吸管取色后更新）。</summary>
+    public Color ActiveColor { get; set; } = Colors.White;
     /// <summary>画笔 / 橡皮擦大小（像素）。</summary>
     public double BrushSize { get; set; } = 8;
     /// <summary>浮动工具条是否已显示（用于首次显示后按真实尺寸重定位）。</summary>
@@ -146,12 +165,6 @@ internal sealed class WallpaperLayerCanvas : UserControl
     private WallpaperEditorTool _tool = WallpaperEditorTool.Move;
     /// <summary>形状工具当前形状类型。</summary>
     private WallpaperShapeType _shapeToolType = WallpaperShapeType.Rectangle;
-    /// <summary>当前位于舞台上的触摸点；用于空白处平移和双指捏合缩放。</summary>
-    private readonly Dictionary<IPointer, Point> _touchPoints = [];
-    private bool _isPinching;
-    private Point _pinchCenter;
-    private double _pinchStartDistance;
-    private double _pinchStartZoom;
 
     public event Action? EditStarted;
     public event Action? Edited;
@@ -161,6 +174,10 @@ internal sealed class WallpaperLayerCanvas : UserControl
     public event Action<WallpaperLayerItem>? DeleteRequested;
     /// <summary>画布上请求栅格化选中的形状 / 文本图层（Ctrl+Shift+R）。</summary>
     public event Action? RasterizeRequested;
+    /// <summary>吸管悬停 / 拖拽中的实时取色预览（RGB）。</summary>
+    public event Action<Color>? ColorPreview;
+    /// <summary>吸管最终取色（点击 / 松开）。</summary>
+    public event Action<Color>? ColorPicked;
     /// <summary>形状工具拖拽绘制完成后触发（供教程等外部推进流程）。</summary>
     public event Action? ShapeCreated;
     /// <summary>文本工具创建文本框完成后触发（供教程等外部推进流程）。</summary>
@@ -177,7 +194,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         _stage.Width = _islandWidth + CanvasMargin * 2;
         _stage.Height = _islandHeight + CanvasMargin * 2;
         _stage.RenderTransformOrigin = new RelativePoint(0, 0, RelativeUnit.Relative);
-        _stage.RenderTransform = new ScaleTransform(_zoom, _zoom);
+        _stage.RenderTransform = new TransformGroup { Children = { _zoomTransform, _panTransform } };
         _stage.SizeChanged += (_, _) =>
         {
             _islandOutline.Width = _stage.Width;
@@ -218,11 +235,11 @@ internal sealed class WallpaperLayerCanvas : UserControl
                      ("w", (Dx: -1, Dy: 0), StandardCursorType.LeftSide)
                  })
         {
-            var handle = Handle(9, new SolidColorBrush(Color.FromRgb(0, 120, 212)), cursor);
+            var handle = Handle(11, new SolidColorBrush(Color.FromRgb(0, 120, 212)), cursor);
             handle.Name = name;
-            handle.PointerPressed += (s, e) => ResizeHandleOnPointerPressed(handle, e);
-            handle.PointerMoved += (s, e) => ResizeHandleOnPointerMoved(handle, e);
-            handle.PointerReleased += (s, e) => ResizeHandleOnPointerReleased(handle, e);
+            handle.PointerPressed += (s, e) => SafePointer(() => ResizeHandleOnPointerPressed(handle, e));
+            handle.PointerMoved += (s, e) => SafePointer(() => ResizeHandleOnPointerMoved(handle, e));
+            handle.PointerReleased += (s, e) => SafePointer(() => ResizeHandleOnPointerReleased(handle, e));
             _resizeHandles.Add(handle);
             _handleDirs[handle] = dir;
             _stage.Children.Add(handle);
@@ -230,9 +247,9 @@ internal sealed class WallpaperLayerCanvas : UserControl
 
         // 旋转手柄（选中图层上方的紫色圆点）
         _rotationHandle = Handle(11, new SolidColorBrush(Color.FromRgb(121, 80, 242)), StandardCursorType.Hand);
-        _rotationHandle.PointerPressed += RotationHandleOnPointerPressed;
-        _rotationHandle.PointerMoved += RotationHandleOnPointerMoved;
-        _rotationHandle.PointerReleased += RotationHandleOnPointerReleased;
+        _rotationHandle.PointerPressed += (s, e) => SafePointer(() => RotationHandleOnPointerPressed(s, e));
+        _rotationHandle.PointerMoved += (s, e) => SafePointer(() => RotationHandleOnPointerMoved(s, e));
+        _rotationHandle.PointerReleased += (s, e) => SafePointer(() => RotationHandleOnPointerReleased(s, e));
         _stage.Children.Add(_rotationHandle);
 
         // 主界面缩放手柄（解锁后出现：右 / 下 / 右下角）
@@ -244,9 +261,9 @@ internal sealed class WallpaperLayerCanvas : UserControl
                  })
         {
             var handle = Handle(11, new SolidColorBrush(Color.FromRgb(0, 170, 120)), cursor);
-            handle.PointerPressed += (s, e) => IslandHandleOnPointerPressed(handle, e);
-            handle.PointerMoved += (s, e) => IslandHandleOnPointerMoved(handle, e);
-            handle.PointerReleased += (s, e) => IslandHandleOnPointerReleased(handle, e);
+            handle.PointerPressed += (s, e) => SafePointer(() => IslandHandleOnPointerPressed(handle, e));
+            handle.PointerMoved += (s, e) => SafePointer(() => IslandHandleOnPointerMoved(handle, e));
+            handle.PointerReleased += (s, e) => SafePointer(() => IslandHandleOnPointerReleased(handle, e));
             _islandHandles.Add(handle);
             _islandHandleDirs[handle] = dir;
             _stage.Children.Add(handle);
@@ -257,6 +274,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         _stage.Children.Add(_selectionOverlay);
         _stage.Children.Add(_guideOverlay);
         _stage.Children.Add(_marqueeRect);
+        _stage.Children.Add(_brushCursor);
         _island.ZIndex = 20;
         _islandOutline.ZIndex = 40;
         _selectionOverlay.ZIndex = 100;
@@ -314,19 +332,24 @@ internal sealed class WallpaperLayerCanvas : UserControl
             Child = toolbarChildren
         };
 
-        _stage.PointerPressed += StageOnPointerPressed;
-        _stage.PointerMoved += StageOnPointerMoved;
-        _stage.PointerReleased += StageOnPointerReleased;
-        _stage.PointerCaptureLost += StageOnPointerCaptureLost;
-        _stage.PointerWheelChanged += StageOnPointerWheelChanged;
+        // 全部指针事件走 SafePointer 兜底：触摸屏系统手势打断（第二根手指落下、通知栏下拉、
+        // 手掌误触、窗口失焦等）容易让处理器中途抛异常，异常绝不能冒泡到宿主导致崩溃。
+        _stage.PointerPressed += (s, e) => SafePointer(() => StageOnPointerPressed(s, e));
+        _stage.PointerMoved += (s, e) => SafePointer(() => StageOnPointerMoved(s, e));
+        _stage.PointerReleased += (s, e) => SafePointer(() => StageOnPointerReleased(s, e));
+        _stage.PointerCaptureLost += (s, e) => SafePointer(() => StageOnPointerCaptureLost(s, e));
+        _stage.PointerWheelChanged += (s, e) => SafePointer(() => StageOnPointerWheelChanged(s, e));
+        _stage.PointerExited += (_, _) => _brushCursor.IsVisible = false;
         KeyDown += CanvasOnKeyDown;
         // 支持从系统文件管理器直接拖拽图片到画布创建图层。
         DragDrop.SetAllowDrop(_stage, true);
         _stage.AddHandler(DragDrop.DragOverEvent, StageOnDragOver);
         _stage.AddHandler(DragDrop.DropEvent, StageOnDrop);
 
-        _stageHost.Child = _stage;
-        _scrollViewer.Content = _stageHost;
+        _viewport.Child = _stage;
+        // 舞台左上角对齐视口（0 平移 = 看到画布左上角），与旧 ScrollViewer 行为一致。
+        _stage.HorizontalAlignment = HorizontalAlignment.Left;
+        _stage.VerticalAlignment = VerticalAlignment.Top;
         _zoomSlider.ValueChanged += (_, _) =>
         {
             Zoom = _zoomSlider.Value;
@@ -353,7 +376,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 }
             }
         };
-        Content = new Grid { Children = { _scrollViewer, zoomPanel, _floatToolbar } };
+        Content = new Grid { Children = { _viewport, zoomPanel, _floatToolbar } };
         UpdateStageSize();
     }
 
@@ -420,8 +443,11 @@ internal sealed class WallpaperLayerCanvas : UserControl
             }
 
             _zoom = v;
-            _stage.RenderTransform = new ScaleTransform(_zoom, _zoom);
+            _zoomTransform.ScaleX = v;
+            _zoomTransform.ScaleY = v;
             UpdateStageSize();
+            // 缩放后画布逻辑尺寸变化，重新限制平移范围，避免内容被移出视口。
+            SetScrollOffset(_panOffset);
             _zoomSlider.Value = v;
             _zoomText.Text = $"{v:P0}";
         }
@@ -449,9 +475,22 @@ internal sealed class WallpaperLayerCanvas : UserControl
         }
 
         _tool = tool;
+        // 切换工具时若画笔 / 橡皮擦笔画尚未结束（触摸屏上第二根手指点工具栏等场景），
+        // 先丢弃本次笔画，避免 _strokeBitmap 泄漏或 Image 残留引用已释放位图。
+        if (_drag is { Kind: DragKind.Stroke })
+        {
+            _drag = null;
+            CancelStroke();
+        }
+
         _drag = null;
         _guideOverlay.Clear();
         _marqueeRect.IsVisible = false;
+        if (_tool is not (WallpaperEditorTool.Brush or WallpaperEditorTool.Eraser))
+        {
+            _brushCursor.IsVisible = false;
+        }
+
         UpdateToolCursor();
         ToolChanged?.Invoke(tool);
     }
@@ -467,9 +506,45 @@ internal sealed class WallpaperLayerCanvas : UserControl
             WallpaperEditorTool.Crop => new Cursor(StandardCursorType.Cross),
             WallpaperEditorTool.Brush => new Cursor(StandardCursorType.Cross),
             WallpaperEditorTool.Eraser => new Cursor(StandardCursorType.Cross),
+            WallpaperEditorTool.Eyedropper => new Cursor(StandardCursorType.Cross),
             WallpaperEditorTool.Hand => new Cursor(StandardCursorType.Hand),
             _ => new Cursor(StandardCursorType.Arrow)
         };
+    }
+
+    /// <summary>
+    /// 更新画笔 / 橡皮擦笔尖预览圆：按选中图片图层的显示比例把笔刷半径
+    /// （位图像素）换算成舞台像素并跟随指针；非画笔工具时隐藏。
+    /// </summary>
+    private void UpdateBrushCursor(Point stagePos)
+    {
+        if (_tool is not (WallpaperEditorTool.Brush or WallpaperEditorTool.Eraser))
+        {
+            _brushCursor.IsVisible = false;
+            return;
+        }
+
+        var layer = SelectedLayer;
+        var scale = 1.0;
+        if (layer != null && _bitmaps.TryGetValue(layer.Id, out var bmp) &&
+            bmp.PixelSize.Width > 0 && bmp.PixelSize.Height > 0)
+        {
+            var rect = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer));
+            scale = layer.DisplayMode switch
+            {
+                WallpaperDisplayMode.Stretch => rect.Width / bmp.PixelSize.Width,
+                WallpaperDisplayMode.Fit => Math.Min(rect.Width / bmp.PixelSize.Width, rect.Height / bmp.PixelSize.Height),
+                WallpaperDisplayMode.Fill => Math.Max(rect.Width / bmp.PixelSize.Width, rect.Height / bmp.PixelSize.Height),
+                _ => 1
+            };
+        }
+
+        var radius = Math.Max(2, BrushSize / 2 * scale);
+        _brushCursor.Width = radius * 2;
+        _brushCursor.Height = radius * 2;
+        Canvas.SetLeft(_brushCursor, stagePos.X - radius);
+        Canvas.SetTop(_brushCursor, stagePos.Y - radius);
+        _brushCursor.IsVisible = true;
     }
 
     public WallpaperLayerZOrder ZOrder
@@ -980,8 +1055,6 @@ internal sealed class WallpaperLayerCanvas : UserControl
     {
         _stage.Width = _islandWidth + CanvasMargin * 2;
         _stage.Height = _islandHeight + CanvasMargin * 2;
-        _stageHost.Width = _stage.Width * _zoom;
-        _stageHost.Height = _stage.Height * _zoom;
         _islandOutline.Width = _stage.Width;
         _islandOutline.Height = _stage.Height;
         _guideOverlay.Width = _stage.Width;
@@ -1111,18 +1184,34 @@ internal sealed class WallpaperLayerCanvas : UserControl
     /// <summary>重建舞台棋盘格（设置变化后调用）。</summary>
     public void ApplyCheckerboardColors() => _stage.Background = BuildCheckerBrush();
 
-    private static Border Handle(double size, IBrush background, StandardCursorType cursor) => new()
+    /// <summary>
+    /// 拖拽手柄：外层为 24px 的透明命中区（触摸屏手指也能轻松点到），内层才是可见圆点。
+    /// 可见圆点尺寸由 size 决定；命中区统一放大，避免 9px 圆点在触摸屏上几乎无法抓取。
+    /// </summary>
+    private static Border Handle(double size, IBrush background, StandardCursorType cursor)
     {
-        Width = size,
-        Height = size,
-        CornerRadius = new CornerRadius(size / 2),
-        Background = background,
-        BorderBrush = Brushes.White,
-        BorderThickness = new Thickness(1),
-        BoxShadow = new BoxShadows(new BoxShadow { Blur = 5, Color = Color.FromArgb(115, 0, 0, 0) }),
-        Cursor = new Cursor(cursor),
-        IsVisible = false
-    };
+        const double hitSize = 24;
+        return new Border
+        {
+            Width = hitSize,
+            Height = hitSize,
+            Background = Brushes.Transparent,
+            Cursor = new Cursor(cursor),
+            IsVisible = false,
+            Child = new Border
+            {
+                Width = size,
+                Height = size,
+                CornerRadius = new CornerRadius(size / 2),
+                Background = background,
+                BorderBrush = Brushes.White,
+                BorderThickness = new Thickness(1),
+                BoxShadow = new BoxShadows(new BoxShadow { Blur = 5, Color = Color.FromArgb(115, 0, 0, 0) }),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            }
+        };
+    }
 
     // ============ 交互：选中框与手柄定位 ============
 
@@ -1258,9 +1347,45 @@ internal sealed class WallpaperLayerCanvas : UserControl
         return null;
     }
 
-    private bool IsInsideIsland(Point stagePos) =>
-        stagePos.X >= CanvasMargin && stagePos.Y >= CanvasMargin &&
-        stagePos.X <= CanvasMargin + _islandWidth && stagePos.Y <= CanvasMargin + _islandHeight;
+    /// <summary>
+    /// 指针事件兜底：任何异常只写诊断日志、绝不冒泡到宿主。触摸屏上系统手势打断
+    /// （第二根手指落下、通知栏下拉、手掌误触、窗口失焦等）容易让处理器中途抛异常，
+    /// 宿主没有全局异常处理，异常会直接导致插件 / 主程序崩溃。
+    /// </summary>
+    private void SafePointer(Action action)
+    {
+        try
+        {
+            action();
+        }
+        catch (Exception ex)
+        {
+            CanvasDebugLog($"指针事件异常: {ex}");
+        }
+    }
+
+    /// <summary>画布交互诊断日志（定位触摸 / 指针异常用；写失败不影响功能）。</summary>
+    private static void CanvasDebugLog(string message)
+    {
+        try
+        {
+            var dir = InjectorRuntime.ConfigDirectory;
+            if (string.IsNullOrEmpty(dir))
+            {
+                return;
+            }
+
+            lock (typeof(WallpaperLayerCanvas))
+            {
+                File.AppendAllText(Path.Combine(dir, "canvas-debug.log"),
+                    $"[{DateTime.Now:HH:mm:ss.fff}] {message}\n");
+            }
+        }
+        catch
+        {
+            // 日志失败不影响功能。
+        }
+    }
 
     // ============ 画布手势（按工具分发）============
 
@@ -1268,34 +1393,19 @@ internal sealed class WallpaperLayerCanvas : UserControl
     {
         var point = e.GetCurrentPoint(_stage);
         var pos = point.Position;
-        if (e.Pointer.Type == PointerType.Touch)
-        {
-            _touchPoints[e.Pointer] = pos;
-            if (_touchPoints.Count >= 2)
-            {
-                BeginPinch();
-                e.Handled = true;
-                return;
-            }
-
-            // 触屏在空白画布上拖动 = 平移视图；在图层上按下仍保留原有编辑行为。
-            if (HitTestLayer(pos) == null && !IsInsideIsland(pos))
-            {
-                Focus();
-                _drag = new DragState
-                {
-                    Kind = DragKind.Pan,
-                    Pointer = e.Pointer,
-                    StartPointer = pos,
-                    StartScrollOffset = _scrollViewer.Offset
-                };
-                e.Handled = true;
-                return;
-            }
-        }
-
+        UpdateBrushCursor(pos);
+        // 触摸屏不再提供「单指平移视图」与「双指捏合缩放」：手指只执行当前工具的操作，
+        // 平移视图请用手型工具（H），缩放用右下角滑条 / 缩放工具 / Ctrl+滚轮。
         if (!point.Properties.IsLeftButtonPressed)
         {
+            return;
+        }
+
+        // 已有手势进行中（触摸屏第二根手指落下）时忽略新的按下，避免多指手势互相干扰
+        //（例如形状工具拖拽中第二根手指落下会取消当前拖拽）。
+        if (_drag != null)
+        {
+            e.Handled = true;
             return;
         }
 
@@ -1332,6 +1442,9 @@ internal sealed class WallpaperLayerCanvas : UserControl
             case WallpaperEditorTool.Eraser:
                 BeginStroke(pos, e);
                 break;
+            case WallpaperEditorTool.Eyedropper:
+                BeginEyedrop(pos, e);
+                break;
             case WallpaperEditorTool.Hand:
                 BeginHandPan(pos, e);
                 break;
@@ -1343,22 +1456,14 @@ internal sealed class WallpaperLayerCanvas : UserControl
 
     private void StageOnPointerMoved(object? sender, PointerEventArgs e)
     {
-        if (e.Pointer.Type == PointerType.Touch && _touchPoints.ContainsKey(e.Pointer))
-        {
-            _touchPoints[e.Pointer] = e.GetPosition(_stage);
-            if (_isPinching)
-            {
-                UpdatePinch();
-                e.Handled = true;
-                return;
-            }
+        // 画笔 / 橡皮擦：实时更新笔尖预览圆（触摸屏没有悬停光标，靠它看笔刷位置与大小）。
+        UpdateBrushCursor(e.GetPosition(_stage));
 
-            if (_drag is { Kind: DragKind.Pan } pan && ReferenceEquals(pan.Pointer, e.Pointer))
-            {
-                UpdatePan(pan, e.GetPosition(_stage));
-                e.Handled = true;
-                return;
-            }
+        if (_tool == WallpaperEditorTool.Eyedropper && _drag == null)
+        {
+            // 吸管悬停：实时预览指针所在屏幕像素的颜色。
+            PreviewEyedrop(e.GetPosition(_stage));
+            return;
         }
 
         switch (_drag?.Kind)
@@ -1379,6 +1484,10 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 UpdateStroke(_drag, e.GetPosition(_stage));
                 e.Handled = true;
                 break;
+            case DragKind.Eyedrop:
+                UpdateEyedrop(_drag, e.GetPosition(_stage));
+                e.Handled = true;
+                break;
             case DragKind.Move:
                 UpdateMove(_drag, e.GetPosition(_stage));
                 e.Handled = true;
@@ -1392,28 +1501,6 @@ internal sealed class WallpaperLayerCanvas : UserControl
 
     private void StageOnPointerReleased(object? sender, PointerReleasedEventArgs e)
     {
-        if (e.Pointer.Type == PointerType.Touch)
-        {
-            var wasPan = _drag is { Kind: DragKind.Pan } pan && ReferenceEquals(pan.Pointer, e.Pointer);
-            var wasPinching = _isPinching;
-            _touchPoints.Remove(e.Pointer);
-            if (_touchPoints.Count < 2)
-            {
-                _isPinching = false;
-            }
-
-            if (wasPan || wasPinching)
-            {
-                _drag = null;
-                // 大倍率平移时 Skia 可能暂时裁掉画布外的图层；手势结束后重新布局并
-                // 使舞台失效，确保移入视口的内容立即补绘。
-                Refresh();
-                _stage.InvalidateVisual();
-                e.Handled = true;
-                return;
-            }
-        }
-
         switch (_drag?.Kind)
         {
             case DragKind.ZoomMarquee:
@@ -1440,6 +1527,12 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 e.Pointer.Capture(null);
                 e.Handled = true;
                 break;
+            case DragKind.Eyedrop:
+                FinishEyedrop(_drag, e.GetPosition(_stage));
+                _drag = null;
+                e.Pointer.Capture(null);
+                e.Handled = true;
+                break;
             case DragKind.Move:
                 _drag = null;
                 e.Pointer.Capture(null);
@@ -1460,27 +1553,9 @@ internal sealed class WallpaperLayerCanvas : UserControl
     {
         if (_drag is { Kind: DragKind.Stroke })
         {
-            // 画笔中途失去捕获（如弹出系统菜单）：丢弃本次笔画，恢复原图。
+            // 画笔中途失去捕获（如弹出系统菜单 / 触摸被系统手势打断）：丢弃本次笔画，恢复原图。
             _drag = null;
             CancelStroke();
-        }
-
-        if (e.Pointer.Type != PointerType.Touch)
-        {
-            return;
-        }
-
-        _touchPoints.Remove(e.Pointer);
-        if (_drag is { Kind: DragKind.Pan } pan && ReferenceEquals(pan.Pointer, e.Pointer))
-        {
-            _drag = null;
-            Refresh();
-            _stage.InvalidateVisual();
-        }
-
-        if (_touchPoints.Count < 2)
-        {
-            _isPinching = false;
         }
     }
 
@@ -1495,47 +1570,18 @@ internal sealed class WallpaperLayerCanvas : UserControl
         else
         {
             // 触控板的双指滚动会作为 PointerWheel 发送；同时处理水平和垂直分量。
-            SetScrollOffset(_scrollViewer.Offset - new Vector(e.Delta.X * 48, e.Delta.Y * 48));
+            SetScrollOffset(_panOffset - new Vector(e.Delta.X * 48, e.Delta.Y * 48));
         }
 
         e.Handled = true;
     }
 
-    /// <summary>开始双指捏合，固定两指中点以避免缩放时画面跳动。</summary>
-    private void BeginPinch()
-    {
-        var pair = _touchPoints.Values.Take(2).ToArray();
-        _pinchCenter = new Point((pair[0].X + pair[1].X) / 2, (pair[0].Y + pair[1].Y) / 2);
-        _pinchStartDistance = Distance(pair[0], pair[1]);
-        _pinchStartZoom = _zoom;
-        _isPinching = _pinchStartDistance > 0.1;
-        _drag = null;
-    }
-
-    /// <summary>按两指距离比例更新缩放。</summary>
-    private void UpdatePinch()
-    {
-        if (!_isPinching || _touchPoints.Count < 2)
-        {
-            return;
-        }
-
-        var pair = _touchPoints.Values.Take(2).ToArray();
-        var distance = Distance(pair[0], pair[1]);
-        if (distance > 0.1)
-        {
-            ZoomTo(_pinchCenter, _pinchStartZoom * distance / _pinchStartDistance);
-        }
-    }
-
-    /// <summary>手指拖动画布空白区时平移滚动视口。</summary>
+    /// <summary>抓手工具：按住拖动画布时平移滚动视口（视口移动量按缩放系数换算）。</summary>
     private void UpdatePan(DragState drag, Point pointer)
     {
         var delta = pointer - drag.StartPointer;
         SetScrollOffset(drag.StartScrollOffset - new Vector(delta.X * _zoom, delta.Y * _zoom));
     }
-
-    private static double Distance(Point a, Point b) => Math.Sqrt(Math.Pow(a.X - b.X, 2) + Math.Pow(a.Y - b.Y, 2));
 
     // ============ 工具实现 ============
 
@@ -1646,7 +1692,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
             Kind = DragKind.Pan,
             Pointer = e.Pointer,
             StartPointer = pos,
-            StartScrollOffset = _scrollViewer.Offset
+            StartScrollOffset = _panOffset
         };
         e.Pointer.Capture(_stage);
         e.Handled = true;
@@ -1811,18 +1857,25 @@ internal sealed class WallpaperLayerCanvas : UserControl
 
     // ============ 画笔 / 橡皮擦 ============
 
-    /// <summary>画笔 / 橡皮擦按下：命中可绘制的图片图层（非锁定、非全屏）则开始笔画。</summary>
+    /// <summary>
+    /// 画笔 / 橡皮擦按下：只作用于「图层面板当前选中的图片图层」（非锁定、非全屏）。
+    /// 绘制期间点击画布不会切换选中——换图层只能去右侧图层面板点选。
+    /// </summary>
     private void BeginStroke(Point pos, PointerPressedEventArgs e)
     {
-        var layer = HitTestLayer(pos);
+        var layer = SelectedLayer;
         if (layer == null || layer.Kind != WallpaperLayerKind.Image ||
             layer.FullscreenExtend || _lockedIds.Contains(layer.Id))
         {
-            SelectWithGroup(layer?.Id);
             return;
         }
 
-        Select(layer.Id);
+        // 已有笔画进行中（触摸屏第二根手指落下）时忽略新的按下，避免多指笔画互相串线。
+        if (_drag is { Kind: DragKind.Stroke })
+        {
+            return;
+        }
+
         if (!_bitmaps.TryGetValue(layer.Id, out var raw) ||
             raw.PixelSize.Width <= 0 || raw.PixelSize.Height <= 0)
         {
@@ -1882,19 +1935,37 @@ internal sealed class WallpaperLayerCanvas : UserControl
             return;
         }
 
+        var last = _strokeLast;
         var p = MapStrokePoint(layer, raw, pointer);
-        var stride = raw.PixelSize.Width * 4;
+        var w = raw.PixelSize.Width;
+        var h = raw.PixelSize.Height;
+        var stride = w * 4;
+        var radius = Math.Max(0.5, BrushSize / 2);
         var erasing = _tool == WallpaperEditorTool.Eraser;
-        WallpaperLayerEffects.DrawStroke(_strokeBytes, stride, raw.PixelSize.Width, raw.PixelSize.Height,
-            _strokeLast.X, _strokeLast.Y, p.X, p.Y, Math.Max(0.5, BrushSize / 2), BrushColor, erasing);
+        WallpaperLayerEffects.DrawStroke(_strokeBytes, stride, w, h,
+            last.X, last.Y, p.X, p.Y, radius, ActiveColor, erasing);
         _strokeLast = p;
 
-        using (var ofb = _strokeBitmap.Lock())
+        // 只把本次笔画的脏矩形区域拷回工作位图：大图整幅 Marshal.Copy 每次移动都要拷
+        // 好几 MB，触摸屏高频指针移动下会明显卡顿。
+        var minX = Math.Max(0, (int)Math.Floor(Math.Min(last.X, p.X) - radius - 1));
+        var maxX = Math.Min(w - 1, (int)Math.Ceiling(Math.Max(last.X, p.X) + radius + 1));
+        var minY = Math.Max(0, (int)Math.Floor(Math.Min(last.Y, p.Y) - radius - 1));
+        var maxY = Math.Min(h - 1, (int)Math.Ceiling(Math.Max(last.Y, p.Y) + radius + 1));
+        if (maxX >= minX && maxY >= minY)
         {
-            Marshal.Copy(_strokeBytes, 0, ofb.Address, _strokeBytes.Length);
+            using (var ofb = _strokeBitmap.Lock())
+            {
+                var rowBytes = (maxX - minX + 1) * 4;
+                for (var y = minY; y <= maxY; y++)
+                {
+                    var src = y * stride + minX * 4;
+                    Marshal.Copy(_strokeBytes, src, ofb.Address + y * ofb.RowBytes + minX * 4, rowBytes);
+                }
+            }
         }
 
-        if (_layerImages.TryGetValue(layer.Id, out var image))
+        if (_layerImages.TryGetValue(layer.Id, out var image) && !ReferenceEquals(image.Source, _strokeBitmap))
         {
             image.Source = _strokeBitmap;
         }
@@ -1942,10 +2013,11 @@ internal sealed class WallpaperLayerCanvas : UserControl
             _strokeBitmap = null;
             _strokeBytes = null;
             _strokeLayer = null;
+            _brushCursor.IsVisible = false;
         }
     }
 
-    /// <summary>取消当前笔画（Escape / 捕获丢失）：丢弃绘制并恢复原图显示。</summary>
+    /// <summary>取消当前笔画（Escape / 捕获丢失 / 切换工具）：丢弃绘制并恢复原图显示。</summary>
     private void CancelStroke()
     {
         if (_strokeBitmap == null && _strokeBytes == null)
@@ -1953,11 +2025,84 @@ internal sealed class WallpaperLayerCanvas : UserControl
             return;
         }
 
+        // 先把图层预览换回原图，再释放工作位图：避免 Image 仍引用已释放的
+        // WriteableBitmap——Skia 下一帧渲染已释放位图会触发原生崩溃（托管 try/catch 捕不到）。
+        var layer = _strokeLayer;
+        if (layer != null && _layerImages.TryGetValue(layer.Id, out var image))
+        {
+            image.Source = DisplayBitmap(layer);
+        }
+
         _strokeBitmap?.Dispose();
         _strokeBitmap = null;
         _strokeBytes = null;
         _strokeLayer = null;
+        _brushCursor.IsVisible = false;
         Refresh();
+    }
+
+    // ============ 吸管工具 ============
+
+    /// <summary>吸管按下：开始拖拽取色（可拖到窗口外），松手时取最终颜色。</summary>
+    private void BeginEyedrop(Point pos, PointerPressedEventArgs e)
+    {
+        _drag = new DragState { Kind = DragKind.Eyedrop, StartPointer = pos };
+        e.Pointer.Capture(_stage);
+        e.Handled = true;
+        PreviewEyedrop(pos);
+    }
+
+    /// <summary>吸管拖拽 / 悬停：读取指针所在屏幕像素并汇报预览。</summary>
+    private void UpdateEyedrop(DragState drag, Point pointer) => PreviewEyedrop(pointer);
+
+    /// <summary>吸管松开：把最终取到的颜色设为当前默认色，并切回移动工具。</summary>
+    private void FinishEyedrop(DragState drag, Point pointer)
+    {
+        var color = PickScreenColor(pointer);
+        if (color is { } c)
+        {
+            ActiveColor = c;
+            ColorPicked?.Invoke(c);
+        }
+
+        SwitchTool(WallpaperEditorTool.Move);
+    }
+
+    /// <summary>取指针所在位置的屏幕像素颜色并汇报（无法取色时静默忽略）。</summary>
+    private void PreviewEyedrop(Point stagePos)
+    {
+        if (PickScreenColor(stagePos) is { } color)
+        {
+            ColorPreview?.Invoke(color);
+        }
+    }
+
+    /// <summary>读取屏幕指定逻辑坐标（画布坐标）处的像素颜色；失败返回 null。</summary>
+    private Color? PickScreenColor(Point stagePos)
+    {
+        try
+        {
+            var topLevel = TopLevel.GetTopLevel(this);
+            if (topLevel == null || _stage.TranslatePoint(stagePos, topLevel) is not { } windowPoint)
+            {
+                return null;
+            }
+
+            var screen = topLevel.PointToScreen(windowPoint);
+            using var bmp = new System.Drawing.Bitmap(1, 1);
+            using (var graphics = System.Drawing.Graphics.FromImage(bmp))
+            {
+                graphics.CopyFromScreen(screen.X, screen.Y, 0, 0, new System.Drawing.Size(1, 1));
+            }
+
+            var c = bmp.GetPixel(0, 0);
+            return Color.FromArgb(255, c.R, c.G, c.B);
+        }
+        catch
+        {
+            // 部分环境（安全桌面 / 权限受限）抓屏会失败，忽略即可。
+            return null;
+        }
     }
 
     /// <summary>文本工具：在点击处创建文本框图层，随后切回移动工具。</summary>
@@ -1971,6 +2116,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
             Source = WallpaperSource.None,
             SizeMode = WallpaperLayerSizeMode.Custom,
             Text = "双击修改文本",
+            TextColor = ActiveColor.ToString(),
             TextFontSize = 16,
             AnchorX = WallpaperLayerAnchorX.Center,
             AnchorY = WallpaperLayerAnchorY.Center,
@@ -1998,6 +2144,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
             ShapeType = _shapeToolType,
             Source = WallpaperSource.None,
             SizeMode = WallpaperLayerSizeMode.Custom,
+            FillColor = ActiveColor.ToString(),
             AnchorX = WallpaperLayerAnchorX.Center,
             AnchorY = WallpaperLayerAnchorY.Center,
             Width = Math.Max(1, rect.Width),
@@ -2108,9 +2255,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
             return;
         }
 
-        var offset = _scrollViewer.Offset;
-        var ox = offset.X + logicalPos.X * (newZoom - oldZoom);
-        var oy = offset.Y + logicalPos.Y * (newZoom - oldZoom);
+        var ox = _panOffset.X + logicalPos.X * (newZoom - oldZoom);
+        var oy = _panOffset.Y + logicalPos.Y * (newZoom - oldZoom);
         Zoom = newZoom;
         SetScrollOffset(new Vector(ox, oy));
     }
@@ -2123,7 +2269,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
             return;
         }
 
-        var viewport = _scrollViewer.Viewport;
+        var viewport = _viewport.Bounds.Size;
         var scale = Math.Min(viewport.Width / logicalRect.Width, viewport.Height / logicalRect.Height);
         var newZoom = Math.Clamp(_zoom * scale, 0.4, 2.5);
         var center = new Point(logicalRect.X + logicalRect.Width / 2, logicalRect.Y + logicalRect.Height / 2);
@@ -2133,12 +2279,25 @@ internal sealed class WallpaperLayerCanvas : UserControl
             center.Y * newZoom - viewport.Height / 2));
     }
 
-    /// <summary>将滚动偏移限制在当前画布内容边界内。</summary>
+    /// <summary>
+    /// 设置视口平移量并限制在当前画布内容边界内。直接改 TranslateTransform，
+    /// 绝不经过 ScrollViewer.Offset——那会触发 Avalonia 的 Offset 双向绑定无限递归
+    /// （ScrollViewer ↔ ScrollContentPresenter 互相通知）导致栈溢出崩溃。
+    /// </summary>
     private void SetScrollOffset(Vector offset)
     {
-        var maxX = Math.Max(0, _scrollViewer.Extent.Width - _scrollViewer.Viewport.Width);
-        var maxY = Math.Max(0, _scrollViewer.Extent.Height - _scrollViewer.Viewport.Height);
-        _scrollViewer.Offset = new Vector(Math.Clamp(offset.X, 0, maxX), Math.Clamp(offset.Y, 0, maxY));
+        var viewport = _viewport.Bounds.Size;
+        var maxX = Math.Max(0, _stage.Width * _zoom - viewport.Width);
+        var maxY = Math.Max(0, _stage.Height * _zoom - viewport.Height);
+        var clamped = new Vector(Math.Clamp(offset.X, 0, maxX), Math.Clamp(offset.Y, 0, maxY));
+        if ((clamped - _panOffset).Length < 0.01)
+        {
+            return;
+        }
+
+        _panOffset = clamped;
+        _panTransform.X = -_panOffset.X;
+        _panTransform.Y = -_panOffset.Y;
     }
 
     /// <summary>把普通两点矩形归一化为左上 + 宽高的矩形。</summary>
@@ -2982,6 +3141,10 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 SwitchTool(WallpaperEditorTool.Eraser);
                 e.Handled = true;
                 break;
+            case Key.I:
+                SwitchTool(WallpaperEditorTool.Eyedropper);
+                e.Handled = true;
+                break;
             case Key.H:
                 SwitchTool(WallpaperEditorTool.Hand);
                 e.Handled = true;
@@ -3019,11 +3182,10 @@ internal sealed class WallpaperLayerCanvas : UserControl
     /// <summary>以当前视口中心为锚点进行快捷键缩放。</summary>
     private void ZoomAtViewportCenter(double factor)
     {
-        var viewport = _scrollViewer.Viewport;
-        var offset = _scrollViewer.Offset;
+        var viewport = _viewport.Bounds.Size;
         var center = new Point(
-            (offset.X + viewport.Width / 2) / _zoom,
-            (offset.Y + viewport.Height / 2) / _zoom);
+            (_panOffset.X + viewport.Width / 2) / _zoom,
+            (_panOffset.Y + viewport.Height / 2) / _zoom);
         ZoomTo(center, _zoom * factor);
     }
 
@@ -3061,6 +3223,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         ShapeDraw,
         CropMarquee,
         Stroke,
+        Eyedrop,
         Pan
     }
 

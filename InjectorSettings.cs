@@ -554,6 +554,7 @@ public sealed class InjectorSettings
     private bool _disableVersionCheck;
     private bool _disableDegradationCheck;
     private bool _rasterizeWarningDismissed;
+    private string _editorPickedColor = "#FFFFFFFF";
     private bool _shadowEnabled;
     private string _shadowColor = "#99000000";
     private double _shadowBlur = 16;
@@ -699,6 +700,9 @@ public sealed class InjectorSettings
 
     /// <summary>是否不再提示「栅格化会丢失矢量编辑」警告。</summary>
     public bool RasterizeWarningDismissed { get => _rasterizeWarningDismissed; set => Set(ref _rasterizeWarningDismissed, value); }
+
+    /// <summary>编辑器「吸管」取到的当前色（新建形状 / 文本 / 画笔的默认色，自动记忆）。</summary>
+    public string EditorPickedColor { get => _editorPickedColor; set => Set(ref _editorPickedColor, value.Trim()); }
 
     /// <summary>关闭宿主点位失效检查与降级提示。</summary>
     public bool DisableDegradationCheck { get => _disableDegradationCheck; set => Set(ref _disableDegradationCheck, value); }
@@ -881,6 +885,7 @@ public sealed class InjectorSettings
         DisableVersionCheck = source.DisableVersionCheck;
         DisableDegradationCheck = source.DisableDegradationCheck;
         RasterizeWarningDismissed = source.RasterizeWarningDismissed;
+        EditorPickedColor = source.EditorPickedColor;
         ShadowEnabled = source.ShadowEnabled;
         ShadowColor = source.ShadowColor;
         ShadowBlur = source.ShadowBlur;
