@@ -46,17 +46,7 @@ public static class WallpaperLayerEffects
     }
 
     /// <summary>容错解析颜色；格式非法时回退到默认。</summary>
-    private static Color ParseColor(string text, Color fallback)
-    {
-        try
-        {
-            return Color.Parse(text);
-        }
-        catch (FormatException)
-        {
-            return fallback;
-        }
-    }
+    private static Color ParseColor(string text, Color fallback) => ColorUtil.Parse(text, fallback);
 
     // ============ 裁剪 + 色相 / 饱和度 / 明度 / 亮度 / 对比度（逐像素）============
 

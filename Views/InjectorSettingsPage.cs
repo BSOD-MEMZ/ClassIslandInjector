@@ -2702,17 +2702,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         }
     }
 
-    private static Color ReadColor(string value, Color fallback)
-    {
-        try
-        {
-            return Color.Parse(value);
-        }
-        catch (FormatException)
-        {
-            return fallback;
-        }
-    }
+    private static Color ReadColor(string value, Color fallback) => ColorUtil.Parse(value, fallback);
 
     private static void Select<T>(ComboBox comboBox, IEnumerable<Choice<T>> choices, T value)
     {

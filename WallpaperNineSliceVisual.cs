@@ -31,16 +31,62 @@ public sealed class WallpaperNineSliceVisual : Control
         }
     }
 
+    private bool _sliceEnabled;
+    private double _sliceTop;
+    private double _sliceBottom;
+    private double _sliceLeft;
+    private double _sliceRight;
+
     /// <summary>是否启用九宫格切图；关闭时整体拉伸。</summary>
-    public bool SliceEnabled { get; set; }
+    public bool SliceEnabled
+    {
+        get => _sliceEnabled;
+        set
+        {
+            _sliceEnabled = value;
+            InvalidateVisual();
+        }
+    }
 
-    public double SliceTop { get; set; }
+    public double SliceTop
+    {
+        get => _sliceTop;
+        set
+        {
+            _sliceTop = value;
+            InvalidateVisual();
+        }
+    }
 
-    public double SliceBottom { get; set; }
+    public double SliceBottom
+    {
+        get => _sliceBottom;
+        set
+        {
+            _sliceBottom = value;
+            InvalidateVisual();
+        }
+    }
 
-    public double SliceLeft { get; set; }
+    public double SliceLeft
+    {
+        get => _sliceLeft;
+        set
+        {
+            _sliceLeft = value;
+            InvalidateVisual();
+        }
+    }
 
-    public double SliceRight { get; set; }
+    public double SliceRight
+    {
+        get => _sliceRight;
+        set
+        {
+            _sliceRight = value;
+            InvalidateVisual();
+        }
+    }
 
     public override void Render(DrawingContext context)
     {

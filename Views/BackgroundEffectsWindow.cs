@@ -310,17 +310,7 @@ internal sealed class BackgroundEffectsWindow : MyWindow
         _borderThicknessSpin.IsEnabled = bd;
     }
 
-    private static Color ReadColor(string text, Color fallback)
-    {
-        try
-        {
-            return Color.Parse(text);
-        }
-        catch (FormatException)
-        {
-            return fallback;
-        }
-    }
+    private static Color ReadColor(string text, Color fallback) => ColorUtil.Parse(text, fallback);
 
     private static T Selected<T>(ComboBox box, T fallback) => box.SelectedItem is Pick<T> choice ? choice.Value : fallback;
 

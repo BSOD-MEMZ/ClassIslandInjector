@@ -23,17 +23,24 @@ internal abstract class PrepareOnClassOverlay : Control
     /// <summary>0..1 的循环进度（Phase 的小数部分）。</summary>
     protected double Loop => Phase - Math.Floor(Phase);
 
-    /// <summary>覆盖层创建时间（用于淡入淡出计时）。</summary>
+    /// <summary>覆盖层创建时间（用于淡入计时）。</summary>
     public DateTime CreatedAt { get; } = DateTime.UtcNow;
+
+    /// <summary>淡出开始时间（仅淡出期间使用，避免用创建时间导致淡出瞬间完成）。</summary>
+    private DateTime _fadeOutStartedAt;
 
     /// <summary>是否正在淡出（即将被移除）。</summary>
     public bool IsFadingOut { get; private set; }
 
     /// <summary>淡出是否已完成，可安全移除。</summary>
-    public bool IsFadeComplete => IsFadingOut && (DateTime.UtcNow - CreatedAt).TotalSeconds >= FadeSeconds;
+    public bool IsFadeComplete => IsFadingOut && (DateTime.UtcNow - _fadeOutStartedAt).TotalSeconds >= FadeSeconds;
 
     /// <summary>请求淡出（完成后由注入器移除）。</summary>
-    public void BeginFadeOut() => IsFadingOut = true;
+    public void BeginFadeOut()
+    {
+        IsFadingOut = true;
+        _fadeOutStartedAt = DateTime.UtcNow;
+    }
 
     /// <summary>取消淡出（重新进入即将上课状态时恢复）。</summary>
     public void CancelFadeOut() => IsFadingOut = false;
@@ -43,7 +50,7 @@ internal abstract class PrepareOnClassOverlay : Control
     {
         get
         {
-            var elapsed = (DateTime.UtcNow - CreatedAt).TotalSeconds;
+            var elapsed = (DateTime.UtcNow - (IsFadingOut ? _fadeOutStartedAt : CreatedAt)).TotalSeconds;
             return IsFadingOut
                 ? Math.Clamp((FadeSeconds - elapsed) / FadeSeconds, 0, 1)
                 : Math.Clamp(elapsed / FadeSeconds, 0, 1);

@@ -66,6 +66,15 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private Control _anchorItem = null!;
     private Control _offsetXItem = null!;
     private Control _offsetYItem = null!;
+    /// <summary>检查器分组小标题（未选中图层时整体隐藏，避免出现无内容的标题）。</summary>
+    private Control _layerGroupTitle = null!;
+    private Control _appearanceGroupTitle = null!;
+    private Control _effectGroupTitle = null!;
+    private Control _sizeGroupTitle = null!;
+    private Control _rotationGroupTitle = null!;
+    private Control _positionGroupTitle = null!;
+    /// <summary>「重置变换」行（未选中图层时隐藏）。</summary>
+    private Control _resetTransformItem = null!;
     /// <summary>自定义尺寸的两行（铺满主界面关闭时显示）。</summary>
     private Control _widthItem = null!;
     private Control _heightItem = null!;
@@ -284,6 +293,10 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         Current = this;
         Closed += (_, _) =>
         {
+            // 幽灵拖拽预览窗口只 Hide 不 Close 会残留置顶窗口：随编辑器一起关闭释放。
+            _dragPreviewWindow?.Close();
+            _dragPreviewWindow = null;
+            _dragPreviewHost = null;
             if (ReferenceEquals(Current, this))
             {
                 Current = null;
@@ -716,14 +729,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             AnchorX = WallpaperLayerAnchorX.Center,
             AnchorY = WallpaperLayerAnchorY.Center
         };
-        PushUndo();
-        _layers.Add(layer);
-        _dirty = true;
-        _canvas.Layers = _layers;
-        _canvas.Select(layer.Id);
-        RefreshLayerList();
-        RefreshInspector();
-        UpdateStatus();
+        AddLayer(layer);
     }
 
     /// <summary>
@@ -772,14 +778,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             Height = canvasH,
             IsCanvasLayer = true
         };
-        PushUndo();
-        _layers.Add(layer);
-        _dirty = true;
-        _canvas.Layers = _layers;
-        _canvas.Select(layer.Id);
-        RefreshLayerList();
-        RefreshInspector();
-        UpdateStatus();
+        AddLayer(layer);
     }
 
     /// <summary>
@@ -908,16 +907,22 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         }
     }
 
-    /// <summary>打开背景效果窗口（单例；已打开则聚焦）。</summary>
-    private void OpenBackgroundEffects()
+    /// <summary>打开单例窗口：已打开则聚焦现有实例，否则创建并显示。</summary>
+    private static void OpenOrActivate<TWindow>(TWindow? current, Func<TWindow> create) where TWindow : Window
     {
-        if (BackgroundEffectsWindow.Current is { } existing)
+        if (current != null)
         {
-            existing.Activate();
+            current.Activate();
             return;
         }
 
-        new BackgroundEffectsWindow().Show();
+        create().Show();
+    }
+
+    /// <summary>打开背景效果窗口（单例；已打开则聚焦）。</summary>
+    private void OpenBackgroundEffects()
+    {
+        OpenOrActivate(BackgroundEffectsWindow.Current, () => new BackgroundEffectsWindow());
     }
 
     // ============ 图层滤镜窗口（色相/饱和度、亮度/对比度、高斯模糊）============
@@ -977,37 +982,19 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     /// <summary>打开色相 / 饱和度窗口（单例；已打开则聚焦）。</summary>
     private void OpenHslAdjustWindow()
     {
-        if (HslAdjustWindow.Current is { } existing)
-        {
-            existing.Activate();
-            return;
-        }
-
-        new HslAdjustWindow(this).Show();
+        OpenOrActivate(HslAdjustWindow.Current, () => new HslAdjustWindow(this));
     }
 
     /// <summary>打开亮度 / 对比度窗口（单例；已打开则聚焦）。</summary>
     private void OpenBrightnessContrastWindow()
     {
-        if (BrightnessContrastWindow.Current is { } existing)
-        {
-            existing.Activate();
-            return;
-        }
-
-        new BrightnessContrastWindow(this).Show();
+        OpenOrActivate(BrightnessContrastWindow.Current, () => new BrightnessContrastWindow(this));
     }
 
     /// <summary>打开高斯模糊窗口（单例；已打开则聚焦）。</summary>
     private void OpenBlurAdjustWindow()
     {
-        if (BlurAdjustWindow.Current is { } existing)
-        {
-            existing.Activate();
-            return;
-        }
-
-        new BlurAdjustWindow(this).Show();
+        OpenOrActivate(BlurAdjustWindow.Current, () => new BlurAdjustWindow(this));
     }
 
     /// <summary>窗口级快捷键：撤销 / 重做与 PS 式滤镜快捷键（画布未处理的键冒泡到这里）。</summary>
@@ -1737,10 +1724,12 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         });
         var layerPanel = new StackPanel { Spacing = 8 };
         _layerPanel = layerPanel;
-        layerPanel.Children.Add(GroupSubtitle("\uE9B2", "图层"));
+        _layerGroupTitle = GroupSubtitle("\uE9B2", "图层");
+        layerPanel.Children.Add(_layerGroupTitle);
         _nameItem = SettingsRow("名称", _nameBox);
         layerPanel.Children.Add(_nameItem);
-        layerPanel.Children.Add(GroupSubtitle("\uEC4A", "外观"));
+        _appearanceGroupTitle = GroupSubtitle("\uEC4A", "外观");
+        layerPanel.Children.Add(_appearanceGroupTitle);
         _smtcModeItem = SettingsRow("SMTC 模式", _smtcModeBox);
         layerPanel.Children.Add(_smtcModeItem);
         _opacityItem = SettingsRow("不透明度", _opacitySlider);
@@ -1764,7 +1753,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         layerPanel.Children.Add(_sliceBottomItem);
         layerPanel.Children.Add(_fullscreenHint);
         // 效果（仅图片图层）：投影（高斯模糊 / 色相饱和度 / 亮度对比度改由顶部命令栏的滤镜窗口调整）
-        layerPanel.Children.Add(GroupSubtitle("\uF42F", "效果"));
+        _effectGroupTitle = GroupSubtitle("\uF42F", "效果");
+        layerPanel.Children.Add(_effectGroupTitle);
         _shadowItem = SettingsRow("投影", _shadowToggle);
         _shadowBlurItem = SettingsRow("投影模糊", _shadowBlurSpin);
         _shadowOffsetXItem = SettingsRow("投影水平偏移", _shadowOffsetXSpin);
@@ -1835,15 +1825,18 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         layerPanel.Children.Add(_textAlignItem);
         _widthItem = SettingsRow("宽度 (px)", _widthSpin);
         _heightItem = SettingsRow("高度 (px)", _heightSpin);
-        layerPanel.Children.Add(GroupSubtitle("\uE27E", "尺寸"));
+        _sizeGroupTitle = GroupSubtitle("\uE27E", "尺寸");
+        layerPanel.Children.Add(_sizeGroupTitle);
         _fillIslandItem = SettingsRow("铺满主界面", _fillIslandToggle);
         layerPanel.Children.Add(_fillIslandItem);
         layerPanel.Children.Add(_widthItem);
         layerPanel.Children.Add(_heightItem);
-        layerPanel.Children.Add(GroupSubtitle("\uEEA5", "旋转"));
+        _rotationGroupTitle = GroupSubtitle("\uEEA5", "旋转");
+        layerPanel.Children.Add(_rotationGroupTitle);
         _rotationItem = SettingsRow("角度 (°)", _rotationSpin);
         layerPanel.Children.Add(_rotationItem);
-        layerPanel.Children.Add(GroupSubtitle("\uE113", "相对定位"));
+        _positionGroupTitle = GroupSubtitle("\uE113", "相对定位");
+        layerPanel.Children.Add(_positionGroupTitle);
         _anchorItem = SettingsRow("锚点", _anchorPicker);
         layerPanel.Children.Add(_anchorItem);
         _offsetXItem = SettingsRow("水平偏移 (px)", _offsetXSpin);
@@ -1851,7 +1844,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _offsetYItem = SettingsRow("垂直偏移 (px)", _offsetYSpin);
         layerPanel.Children.Add(_offsetYItem);
         layerPanel.Children.Add(_relativeHint);
-        layerPanel.Children.Add(SettingsRow("重置变换", Button("重置变换", ResetLayerTransform)));
+        _resetTransformItem = SettingsRow("重置变换", Button("重置变换", ResetLayerTransform));
+        layerPanel.Children.Add(_resetTransformItem);
 
         // ---- 像素选区操作（当前图层有选区时显示）----
         _selectionToLayerButton = Button("从选区新建图层", () =>
@@ -1988,8 +1982,21 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
 
     // ============ 撤销 / 重做 / 保存 ============
 
+    private DateTime _lastUndoPushAt = DateTime.MinValue;
+
     private void PushUndo()
     {
+        var now = DateTime.UtcNow;
+        // 合并高频变更（滑块拖动 / 连续输入 / 方向键长按等）：500ms 内的连续 PushUndo
+        // 视为同一次编辑会话，只保留首个快照，避免一次操作压入几十个快照挤掉早期历史。
+        // 离散操作（新建 / 删除 / 贴纸等）间隔通常大于 500ms，不会被误合并。
+        if (_undoStack.Count > 0 && (now - _lastUndoPushAt).TotalMilliseconds < 500)
+        {
+            _lastUndoPushAt = now;
+            return;
+        }
+
+        _lastUndoPushAt = now;
         _undoStack.Add(_layers.Select(l => l.Clone()).ToList());
         if (_undoStack.Count > 100)
         {
@@ -2197,11 +2204,24 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         }
     }
 
+    /// <summary>新建图层的公共骨架：压撤销、加入列表、刷新画布/图层面板/检查器并选中新图层。</summary>
+    private WallpaperLayerItem AddLayer(WallpaperLayerItem layer)
+    {
+        PushUndo();
+        _layers.Add(layer);
+        _dirty = true;
+        _canvas.Layers = _layers;
+        _canvas.Select(layer.Id);
+        RefreshLayerList();
+        RefreshInspector();
+        UpdateStatus();
+        return layer;
+    }
+
     /// <summary>按本地路径创建一张图片图层并选中（添加成功后会推进教程的 add-image 句）。</summary>
     private void AddLayerFromPath(string path)
     {
-        PushUndo();
-        _layers.Add(new WallpaperLayerItem
+        AddLayer(new WallpaperLayerItem
         {
             Id = Guid.NewGuid().ToString("N"),
             Name = $"底图图层 {_layers.Count + 1}",
@@ -2210,12 +2230,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             SizeMode = WallpaperLayerSizeMode.FillIsland,
             DisplayMode = WallpaperDisplayMode.Fill
         });
-        _dirty = true;
-        _canvas.Layers = _layers;
-        _canvas.Select(_layers[^1].Id);
-        RefreshLayerList();
-        RefreshInspector();
-        UpdateStatus();
         // 向前推动教程的「添加图片」等待句。
         TutorialServicePush("add-image");
     }
@@ -2223,8 +2237,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     /// <summary>添加一个 SMTC 专辑封面图层（无播放时画布显示占位封面 album.jpg）。</summary>
     private void AddSmtcLayer()
     {
-        PushUndo();
-        _layers.Add(new WallpaperLayerItem
+        AddLayer(new WallpaperLayerItem
         {
             Id = Guid.NewGuid().ToString("N"),
             Name = $"SMTC 封面图层 {_layers.Count + 1}",
@@ -2233,24 +2246,12 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             SizeMode = WallpaperLayerSizeMode.FillIsland,
             DisplayMode = WallpaperDisplayMode.Fill
         });
-        _dirty = true;
-        _canvas.Layers = _layers;
-        _canvas.Select(_layers[^1].Id);
-        RefreshLayerList();
-        RefreshInspector();
-        UpdateStatus();
     }
 
     /// <summary>打开在线贴纸选择窗口（单例；已打开则聚焦）。</summary>
     private void OpenStickerPicker()
     {
-        if (StickerPickerWindow.Current is { } existing)
-        {
-            existing.Activate();
-            return;
-        }
-
-        new StickerPickerWindow(AddStickerLayer).Show();
+        OpenOrActivate(StickerPickerWindow.Current, () => new StickerPickerWindow(AddStickerLayer));
     }
 
     /// <summary>把下载到本地缓存的贴纸插入为新的图片图层（按贴纸比例自动设定初始尺寸）。</summary>
@@ -2282,57 +2283,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         }
 
         _canvas.Select(layer.Id);
-        RefreshLayerList();
-        RefreshInspector();
-        UpdateStatus();
-    }
-
-    /// <summary>在主界面中央添加一个矢量形状图层（可在画布上继续移动 / 调整）。</summary>
-    private void AddShapeLayer()
-    {
-        PushUndo();
-        _layers.Add(new WallpaperLayerItem
-        {
-            Id = Guid.NewGuid().ToString("N"),
-            Name = $"形状图层 {_layers.Count + 1}",
-            Kind = WallpaperLayerKind.Shape,
-            ShapeType = WallpaperShapeType.Rectangle,
-            Source = WallpaperSource.None,
-            SizeMode = WallpaperLayerSizeMode.Custom,
-            AnchorX = WallpaperLayerAnchorX.Center,
-            AnchorY = WallpaperLayerAnchorY.Center,
-            Width = 160,
-            Height = 100
-        });
-        _dirty = true;
-        _canvas.Layers = _layers;
-        _canvas.Select(_layers[^1].Id);
-        RefreshLayerList();
-        RefreshInspector();
-        UpdateStatus();
-    }
-
-    /// <summary>在主界面中央添加一个文本框图层。</summary>
-    private void AddTextLayer()
-    {
-        PushUndo();
-        _layers.Add(new WallpaperLayerItem
-        {
-            Id = Guid.NewGuid().ToString("N"),
-            Name = $"文本图层 {_layers.Count + 1}",
-            Kind = WallpaperLayerKind.Text,
-            Source = WallpaperSource.None,
-            SizeMode = WallpaperLayerSizeMode.Custom,
-            Text = "双击修改文本",
-            TextFontSize = 16,
-            AnchorX = WallpaperLayerAnchorX.Center,
-            AnchorY = WallpaperLayerAnchorY.Center,
-            Width = 180,
-            Height = 48
-        });
-        _dirty = true;
-        _canvas.Layers = _layers;
-        _canvas.Select(_layers[^1].Id);
         RefreshLayerList();
         RefreshInspector();
         UpdateStatus();
@@ -2659,6 +2609,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             _reorderIndicator.IsVisible = false;
             if (target != _canvas.ZOrder)
             {
+                // 背景层级拖拽也会改变状态：补压撤销，与图层拖拽排序保持一致。
+                PushUndo();
                 _canvas.ZOrder = target;
                 _dirty = true;
                 RefreshLayerList();
@@ -2936,6 +2888,14 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 _offsetXItem.IsVisible = false;
                 _offsetYItem.IsVisible = false;
                 _anchorItem.IsVisible = false;
+                // 分组标题与「重置变换」行一并隐藏，避免残留无内容的标题。
+                _layerGroupTitle.IsVisible = false;
+                _appearanceGroupTitle.IsVisible = false;
+                _effectGroupTitle.IsVisible = false;
+                _sizeGroupTitle.IsVisible = false;
+                _rotationGroupTitle.IsVisible = false;
+                _positionGroupTitle.IsVisible = false;
+                _resetTransformItem.IsVisible = false;
                 _shapeTypeItem.IsVisible = false;
                 _shapeCornerRadiusItem.IsVisible = false;
                 _shapeStarPointsItem.IsVisible = false;
@@ -2988,6 +2948,14 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 : string.Empty;
             // 效果仅图片图层显示；投影子项仅在启用投影后展开。
             var isImage = allSameKind && layer.Kind == WallpaperLayerKind.Image;
+            // 分组标题随内容显隐，避免出现无内容的标题（类型不适用 / SMTC 默认模式时）。
+            _layerGroupTitle.IsVisible = true;
+            _appearanceGroupTitle.IsVisible = true;
+            _effectGroupTitle.IsVisible = isImage;
+            _sizeGroupTitle.IsVisible = true;
+            _rotationGroupTitle.IsVisible = !smtcDefault;
+            _positionGroupTitle.IsVisible = !smtcDefault;
+            _resetTransformItem.IsVisible = true;
             _shadowItem.IsVisible = isImage;
             _shadowBlurItem.IsVisible = isImage && layer.ShadowEnabled;
             _shadowOffsetXItem.IsVisible = isImage && layer.ShadowEnabled;
@@ -3102,17 +3070,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     }
 
     /// <summary>解析颜色（失败回退）。</summary>
-    private static Color ReadColor(string text, Color fallback)
-    {
-        try
-        {
-            return Color.Parse(text);
-        }
-        catch (FormatException)
-        {
-            return fallback;
-        }
-    }
+    private static Color ReadColor(string text, Color fallback) => ColorUtil.Parse(text, fallback);
 
     /// <summary>取检查器显示的颜色：启用主题色时显示当前主题强调色（保留配置颜色的透明度）。</summary>
     private static Color InspectorColor(string text, Color fallback, bool useTheme)
@@ -3222,13 +3180,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
 
     // ============ 小工具 ============
 
-    private static IconText SectionTitle(string glyph, string text) => new()
-    {
-        Glyph = glyph,
-        Text = text,
-        Margin = new Thickness(0, 4, 0, 0)
-    };
-
     private static Button Button(string text, Action action)
     {
         var button = new Button { Content = text };
@@ -3237,15 +3188,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     }
 
     /// <summary>图标 + 文字按钮（如「＋ 添加图片图层」）。</summary>
-    private static Button ActionButton(string glyph, string text, Action action)
-    {
-        var button = new Button { Content = new IconText { Glyph = glyph, Text = text } };
-        EditorAnimations.AddPressFeedback(button);
-        button.Click += (_, _) => action();
-        return button;
-    }
-
-    /// <summary>命令栏按钮（图标 + 右侧文字标签，参考档案编辑窗口）。</summary>
     private static CommandBarButton CommandButton(string glyph, string label, string tooltip, Action action)
     {
         var button = new CommandBarButton
@@ -3261,19 +3203,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     }
 
     /// <summary>纯图标工具栏按钮（带提示文字）。</summary>
-    private static Button ToolbarIconButton(string glyph, string tooltip, Action action)
-    {
-        var button = new Button
-        {
-            Content = new IconText { Glyph = glyph, Text = string.Empty },
-            Padding = new Thickness(9, 5)
-        };
-        EditorAnimations.AddPressFeedback(button);
-        ToolTip.SetTip(button, tooltip);
-        button.Click += (_, _) => action();
-        return button;
-    }
-
     private static Slider SliderControl(double min, double max, double tick) => new()
     {
         Width = 150,

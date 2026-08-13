@@ -499,6 +499,13 @@ internal sealed class WallpaperLayerCanvas : UserControl
 
     // ============ 公共接口 ============
 
+    /// <summary>从视觉树分离（编辑器关闭等）时停止蚂蚁线定时器，避免定时器泄漏并每 75ms 持续重绘。</summary>
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnDetachedFromVisualTree(e);
+        _antsTimer.Stop();
+    }
+
     public List<WallpaperLayerItem> Layers
     {
         get => _layers;
@@ -979,11 +986,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 return null;
             }
 
-            var extensions = new[] { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp" };
-            return Directory.EnumerateFiles(layer.Path)
-                .Where(f => extensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
-                .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
-                .FirstOrDefault();
+            return ImageFiles.EnumerateSorted(layer.Path).FirstOrDefault();
         }
 
         if (layer.Source == WallpaperSource.SmtcAlbum)
@@ -1143,8 +1146,21 @@ internal sealed class WallpaperLayerCanvas : UserControl
         }
 
         var processed = WallpaperLayerEffects.Process(raw, layer);
-        _processedBitmaps[layer.Id] = (signature, processed ?? raw);
-        return processed ?? raw;
+        if (processed == null)
+        {
+            // 处理失败（格式不支持 / 裁剪覆盖整图等）：不把共享源位图写入缓存，
+            // 并清理残留的处理缓存（若残留缓存恰好指向源位图则跳过，避免误 Dispose
+            // 仍被 Image.Source 引用的位图导致原生崩溃）。
+            if (_processedBitmaps.Remove(layer.Id, out var stale) && !ReferenceEquals(stale.Bitmap, raw))
+            {
+                stale.Bitmap.Dispose();
+            }
+
+            return raw;
+        }
+
+        _processedBitmaps[layer.Id] = (signature, processed);
+        return processed;
     }
 
     /// <summary>逐像素处理（裁剪 + 颜色调整）的缓存签名。</summary>
@@ -1296,17 +1312,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         _islandOutline.InvalidateVisual();
     }
 
-    private static Color TryParse(string text, Color fallback)
-    {
-        try
-        {
-            return Color.Parse(text);
-        }
-        catch (FormatException)
-        {
-            return fallback;
-        }
-    }
+    private static Color TryParse(string text, Color fallback) => ColorUtil.Parse(text, fallback);
 
     /// <summary>
     /// 构建舞台棋盘格：跟随主题时按深浅色自动选择（深 = 深棋盘格，浅 = 白/浅灰 fff/ccc）；
@@ -1578,7 +1584,9 @@ internal sealed class WallpaperLayerCanvas : UserControl
         UpdateBrushCursor(pos);
         // 触摸屏不再提供「单指平移视图」与「双指捏合缩放」：手指只执行当前工具的操作，
         // 平移视图请用手型工具（H），缩放用右下角滑条 / 缩放工具 / Ctrl+滚轮。
-        if (!point.Properties.IsLeftButtonPressed)
+        // 缩放工具额外支持右键缩小，因此右键按下也允许进入（其它工具仍仅响应左键）。
+        var isZoomRightClick = _tool == WallpaperEditorTool.Zoom && point.Properties.IsRightButtonPressed;
+        if (!point.Properties.IsLeftButtonPressed && !isZoomRightClick)
         {
             return;
         }
@@ -1879,8 +1887,13 @@ internal sealed class WallpaperLayerCanvas : UserControl
             }
         }
 
-        // 先压撤销再改动图层（含铺满→自定义的切换），保证「撤销」能完整恢复原始状态。
-        EditStarted?.Invoke();
+        // 仅当按下会立即修改（FillIsland→自定义切换）时才立即压撤销；
+        // 纯点击 / 普通拖动延迟到 UpdateMove 首次实际移动时压，避免空操作污染撤销栈。
+        var modifiedOnPress = moving.Any(sel => sel.SizeMode == WallpaperLayerSizeMode.FillIsland);
+        if (modifiedOnPress)
+        {
+            EditStarted?.Invoke();
+        }
 
         // 铺满主界面的图层被拖动时自动切换为自定义尺寸（以当前主界面大小为初始尺寸）。
         foreach (var sel in moving)
@@ -1909,7 +1922,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
             StartRect = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer)),
             StartIslandW = _islandWidth,
             StartIslandH = _islandHeight,
-            StartRects = startRects
+            StartRects = startRects,
+            UndoPushed = modifiedOnPress
         };
         e.Pointer.Capture(_stage);
         e.Handled = true;
@@ -1941,7 +1955,6 @@ internal sealed class WallpaperLayerCanvas : UserControl
         _drag = new DragState
         {
             Kind = DragKind.Pan,
-            Pointer = e.Pointer,
             StartPointer = pos,
             StartScrollOffset = _panOffset
         };
@@ -2879,6 +2892,35 @@ internal sealed class WallpaperLayerCanvas : UserControl
         _selPath.AddRange(translated);
         _selStageRect = BoundingBox(translated);
         _selOverlay.SetPath(translated, _selPathClosed);
+        // 掩码随内容平移，保持与蚂蚁线/选区边界一致（Delete / 二次移动 / 建图层都依赖它）。
+        if (dpx != 0 || dpy != 0)
+        {
+            var shiftedMask = new byte[mask.Length];
+            for (var y = 0; y < oh; y++)
+            {
+                var row = y * ow;
+                for (var x = 0; x < ow; x++)
+                {
+                    var src = row + x;
+                    if (mask[src] == 0)
+                    {
+                        continue;
+                    }
+
+                    var nx = x + dpx;
+                    var ny = y + dpy;
+                    if (nx < 0 || ny < 0 || nx >= ow || ny >= oh)
+                    {
+                        continue;
+                    }
+
+                    shiftedMask[ny * ow + nx] = mask[src];
+                }
+            }
+
+            _selMask = shiftedMask;
+        }
+
         _selCut = null;
         _selCutBase = null;
     }
@@ -3275,6 +3317,13 @@ internal sealed class WallpaperLayerCanvas : UserControl
 
     private void UpdateMove(DragState drag, Point pointer)
     {
+        // 首次实际移动才压撤销（快照 = 按下前状态）；纯点击选中不会产生撤销记录。
+        if (!drag.UndoPushed)
+        {
+            drag.UndoPushed = true;
+            EditStarted?.Invoke();
+        }
+
         var delta = pointer - drag.StartPointer;
         var rect = new Rect(drag.StartRect.X + delta.X, drag.StartRect.Y + delta.Y,
             drag.StartRect.Width, drag.StartRect.Height);
@@ -3337,8 +3386,13 @@ internal sealed class WallpaperLayerCanvas : UserControl
             return;
         }
 
-        // 先压撤销再改动图层（含铺满→自定义的切换），保证「撤销」能完整恢复原始状态。
-        EditStarted?.Invoke();
+        // 仅当按下会立即修改（FillIsland→自定义切换）时才立即压撤销；
+        // 普通缩放延迟到 UpdateResize 首次实际缩放时压，避免空操作污染撤销栈。
+        var modifiedOnPress = layer.SizeMode == WallpaperLayerSizeMode.FillIsland;
+        if (modifiedOnPress)
+        {
+            EditStarted?.Invoke();
+        }
 
         // 铺满主界面的图层被拖动时自动切换为自定义尺寸（以当前主界面大小为初始尺寸）。
         if (layer.SizeMode == WallpaperLayerSizeMode.FillIsland)
@@ -3357,7 +3411,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
             StartPointer = e.GetPosition(_stage),
             StartRect = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer)),
             StartIslandW = _islandWidth,
-            StartIslandH = _islandHeight
+            StartIslandH = _islandHeight,
+            UndoPushed = modifiedOnPress
         };
         e.Pointer.Capture(handle);
         e.Handled = true;
@@ -3391,6 +3446,13 @@ internal sealed class WallpaperLayerCanvas : UserControl
 
     private void UpdateResize(DragState drag, Point pointer, bool keepAspect)
     {
+        // 首次实际缩放才压撤销（快照 = 按下前状态）；点一下手柄不产生撤销记录。
+        if (!drag.UndoPushed)
+        {
+            drag.UndoPushed = true;
+            EditStarted?.Invoke();
+        }
+
         // 旋转后八向缩放：把「手柄框选的区域（旋转后的 AABB）」当成一张图片来缩放——
         // 被拖动的 AABB 边/角跟随鼠标、对边/对角固定（跟手）；再把新 AABB 反解回
         // 图层的本地宽高（W = w·|cos| + h·|sin|，H = w·|sin| + h·|cos|）。
@@ -3530,8 +3592,13 @@ internal sealed class WallpaperLayerCanvas : UserControl
             return;
         }
 
-        // 先压撤销再改动图层（含铺满→自定义的切换），保证「撤销」能完整恢复原始状态。
-        EditStarted?.Invoke();
+        // 仅当按下会立即修改（FillIsland→自定义切换）时才立即压撤销；
+        // 普通旋转延迟到 UpdateRotate 首次实际旋转时压，避免空操作污染撤销栈。
+        var modifiedOnPress = layer.SizeMode == WallpaperLayerSizeMode.FillIsland;
+        if (modifiedOnPress)
+        {
+            EditStarted?.Invoke();
+        }
 
         // 铺满主界面的图层被拖动时自动切换为自定义尺寸（以当前主界面大小为初始尺寸）。
         if (layer.SizeMode == WallpaperLayerSizeMode.FillIsland)
@@ -3550,7 +3617,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
             StartRect = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer)),
             StartRotation = layer.Rotation,
             StartIslandW = _islandWidth,
-            StartIslandH = _islandHeight
+            StartIslandH = _islandHeight,
+            UndoPushed = modifiedOnPress
         };
         e.Pointer.Capture(_rotationHandle);
         e.Handled = true;
@@ -3582,6 +3650,13 @@ internal sealed class WallpaperLayerCanvas : UserControl
 
     private void UpdateRotate(DragState drag, Point pointer)
     {
+        // 首次实际旋转才压撤销（快照 = 按下前状态）；点一下旋转手柄不产生撤销记录。
+        if (!drag.UndoPushed)
+        {
+            drag.UndoPushed = true;
+            EditStarted?.Invoke();
+        }
+
         var center = new Point(CanvasMargin + drag.StartRect.Center.X, CanvasMargin + drag.StartRect.Center.Y);
         var v0 = drag.StartPointer - center;
         var v1 = pointer - center;
@@ -4226,7 +4301,6 @@ internal sealed class WallpaperLayerCanvas : UserControl
         public WallpaperLayerItem? Layer;
         public DragKind Kind;
         public Point StartPointer;
-        public IPointer? Pointer;
         public Vector StartScrollOffset;
         public Rect StartRect;
         public double StartIslandW;
@@ -4235,6 +4309,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
         public double StartRotation;
         /// <summary>缩放工具：单击时是否缩小（Alt / 右键）。</summary>
         public bool ZoomOut;
+        /// <summary>移动 / 缩放 / 旋转：是否已压过撤销（首次实际操作时才压，纯点击不压）。</summary>
+        public bool UndoPushed;
         /// <summary>裁剪工具：当前裁剪框（舞台坐标）。</summary>
         public Rect CropRect;
         /// <summary>整组/多选移动：按下时各参与成员的原始矩形（按 id）。

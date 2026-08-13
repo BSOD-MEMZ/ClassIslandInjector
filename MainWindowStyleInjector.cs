@@ -65,7 +65,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private DateTime _prepareOnClassPreviewUntil = DateTime.MinValue;
     private DateTime _lastOverlayDebugLog = DateTime.MinValue;
 
-    /// <summary>临时诊断日志（定位「即将上课样式预览不生效」，定位后移除）。</summary>
+    /// <summary>调试日志（写入 preview-debug.log，统一经 DiagnosticLog 门面，受「输出诊断日志」开关控制）。</summary>
     internal static void DebugLog(string message)
     {
         var dir = InjectorRuntime.ConfigDirectory;
@@ -122,6 +122,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     private readonly DispatcherTimer _wallpaperTimer;
     private Border? _wallpaperHost;
+    /// <summary>宿主 GridRoot 的 SizeChanged 处理器引用（重建注入器 / 恢复宿主时注销，避免叠加订阅）。</summary>
+    private EventHandler<SizeChangedEventArgs>? _islandGridSizeChangedHandler;
     private BlurEffect? _wallpaperBlur;
     /// <summary>每行主界面的底纹宿主（键为 MainWindowLine 模板 GridRoot），
     /// 插在底色填充之上、组件内容之下。</summary>
@@ -140,8 +142,15 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private int _wallpaperFront;
     private Bitmap? _wallpaperBitmap;
     private MemoryStream? _wallpaperStream;
+    // 交叉淡化期间持有「旧图」引用：淡入完成前旧图仍被前层 ImageBrush 引用，
+    // 完成后统一 Dispose（非死代码，属延迟释放语义）。
     private Bitmap? _wallpaperRetiredBitmap;
     private MemoryStream? _wallpaperRetiredStream;
+    // 默认颜色常量：多处在代码里重复的初始色，收敛为常量。
+    private static readonly Color DefaultBackgroundColor = Color.FromArgb(0xCC, 0x20, 0x20, 0x20);
+    private static readonly Color DefaultBorderColor = Color.FromArgb(0x99, 0xFF, 0xFF, 0xFF);
+    private static readonly Color DefaultShadowColor = Color.FromArgb(0x99, 0, 0, 0);
+    private static readonly Color DefaultTextureColor = Color.FromArgb(0x2E, 0xFF, 0xFF, 0xFF);
     private WallpaperSource _wallpaperLoadedSource = WallpaperSource.None;
     private string _wallpaperLoadedPath = string.Empty;
     private readonly List<string> _wallpaperSlideshow = [];
@@ -495,7 +504,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
             UpdateSpectrum();
         }
 
-        var phase = _animationClock.Elapsed.TotalSeconds / _settings.AnimationPeriodSeconds * Math.Tau;
+        var period = Math.Max(_settings.AnimationPeriodSeconds, 0.01);
+        var phase = _animationClock.Elapsed.TotalSeconds / period * Math.Tau;
         ApplyTransform(Math.Sin(phase));
         AdvanceRipples();
         AdvancePrepareOnClassOverlays();
@@ -816,9 +826,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
-        _dynamicBackgroundColor = ParseColorOrDefault(_settings.BackgroundColor, Color.FromArgb(0xCC, 0x20, 0x20, 0x20));
-        _dynamicBorderColor = ParseColorOrDefault(_settings.BorderColor, Color.FromArgb(0x99, 0xFF, 0xFF, 0xFF));
-        _dynamicShadowColor = ParseColorOrDefault(_settings.ShadowColor, Color.FromArgb(0x99, 0, 0, 0));
+        _dynamicBackgroundColor = ParseColorOrDefault(_settings.BackgroundColor, DefaultBackgroundColor);
+        _dynamicBorderColor = ParseColorOrDefault(_settings.BorderColor, DefaultBorderColor);
+        _dynamicShadowColor = ParseColorOrDefault(_settings.ShadowColor, DefaultShadowColor);
         _dynamicColorsInitialized = true;
     }
 
@@ -827,8 +837,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
         EnsureDynamicColorsInitialized();
 
         // 边框与阴影保留用户在设置里配置的透明度，只替换色调。
-        var borderAlpha = ParseColorOrDefault(_settings.BorderColor, Color.FromArgb(0x99, 0xFF, 0xFF, 0xFF)).A;
-        var shadowAlpha = ParseColorOrDefault(_settings.ShadowColor, Color.FromArgb(0x99, 0, 0, 0)).A;
+        var borderAlpha = ParseColorOrDefault(_settings.BorderColor, DefaultBorderColor).A;
+        var shadowAlpha = ParseColorOrDefault(_settings.ShadowColor, DefaultShadowColor).A;
         StartColorTransition(colors.Background, WithAlpha(colors.Border, borderAlpha), WithAlpha(colors.Shadow, shadowAlpha));
     }
 
@@ -839,9 +849,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
     {
         EnsureDynamicColorsInitialized();
         StartColorTransition(
-            ParseColorOrDefault(_settings.BackgroundColor, Color.FromArgb(0xCC, 0x20, 0x20, 0x20)),
-            ParseColorOrDefault(_settings.BorderColor, Color.FromArgb(0x99, 0xFF, 0xFF, 0xFF)),
-            ParseColorOrDefault(_settings.ShadowColor, Color.FromArgb(0x99, 0, 0, 0)));
+            ParseColorOrDefault(_settings.BackgroundColor, DefaultBackgroundColor),
+            ParseColorOrDefault(_settings.BorderColor, DefaultBorderColor),
+            ParseColorOrDefault(_settings.ShadowColor, DefaultShadowColor));
     }
 
     // ============ 动态修改 ClassIsland 全局主题色 ============
@@ -1227,7 +1237,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     private void OnHostSettingsPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == "LastWeatherInfo" && _settings.FakeWeatherEnabled)
+        if (e.PropertyName == HostContract.LastWeatherInfoProperty && _settings.FakeWeatherEnabled)
         {
             InjectFakeWeather();
         }
@@ -1457,7 +1467,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
         foreach (var (borderControl, backgroundBrush, borderBrush) in _decorations)
         {
-            if (borderControl.Name == "BackgroundBorder" && backgroundBrush != null)
+            if (borderControl.Name == HostContract.BackgroundBorder && backgroundBrush != null)
             {
                 UpdateBrushColor(backgroundBrush, background);
             }
@@ -1594,7 +1604,14 @@ internal sealed class MainWindowStyleInjector : IDisposable
             UpdateWallpaperClip();
             LayoutWallpaperLayers();
         };
-        islandGrid.SizeChanged += (_, _) => UpdateWallpaperBounds();
+        // 宿主 GridRoot 为长生命周期控件：先注销旧的再订阅，避免多次 Apply / 重建注入器后叠加订阅。
+        if (_islandGridSizeChangedHandler != null)
+        {
+            islandGrid.SizeChanged -= _islandGridSizeChangedHandler;
+        }
+
+        _islandGridSizeChangedHandler = (_, _) => UpdateWallpaperBounds();
+        islandGrid.SizeChanged += _islandGridSizeChangedHandler;
         islandGrid.Children.Insert(0, _wallpaperHost);
         _wallpaperHostMode = mode;
         ApplyWallpaperBlur();
@@ -2031,6 +2048,27 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
     }
 
+    /// <summary>把字节解码为位图（流保持打开供位图引用，成功返回两者）。失败返回 null。</summary>
+    private static (Bitmap Bitmap, MemoryStream Stream)? TryDecodeBitmap(byte[] bytes)
+    {
+        if (bytes.Length == 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            var stream = new MemoryStream(bytes);
+            stream.Position = 0;
+            var bitmap = new Bitmap(stream);
+            return (bitmap, stream);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private void LoadLayerImage(WallpaperLayerView view, string path)
     {
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
@@ -2039,37 +2077,24 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
-        try
-        {
-            var stream = new MemoryStream(File.ReadAllBytes(path));
-            stream.Position = 0;
-            var bitmap = new Bitmap(stream);
-            SetLayerImage(view, bitmap, stream);
-        }
-        catch
+        if (TryDecodeBitmap(File.ReadAllBytes(path)) is not { } decoded)
         {
             ClearLayerImage(view);
+            return;
         }
+
+        SetLayerImage(view, decoded.Bitmap, decoded.Stream);
     }
 
     private void LoadLayerImage(WallpaperLayerView view, byte[] bytes)
     {
-        if (bytes.Length == 0)
+        if (TryDecodeBitmap(bytes) is not { } decoded)
         {
+            ClearLayerImage(view);
             return;
         }
 
-        try
-        {
-            var stream = new MemoryStream(bytes);
-            stream.Position = 0;
-            var bitmap = new Bitmap(stream);
-            SetLayerImage(view, bitmap, stream);
-        }
-        catch
-        {
-            ClearLayerImage(view);
-        }
+        SetLayerImage(view, decoded.Bitmap, decoded.Stream);
     }
 
     /// <summary>SMTC 图层的占位封面路径（插件 Assets/album.jpg）。</summary>
@@ -2117,10 +2142,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
-        var extensions = new[] { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp" };
-        view.SlideshowFiles.AddRange(Directory.EnumerateFiles(directory)
-            .Where(f => extensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
-            .OrderBy(f => f, StringComparer.OrdinalIgnoreCase));
+        view.SlideshowFiles.AddRange(ImageFiles.EnumerateSorted(directory));
     }
 
     private void AdvanceLayerSlideshow(WallpaperLayerView view)
@@ -2457,10 +2479,32 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return null;
         }
 
-        var minX = borders.Min(b => b.Bounds.X);
-        var minY = borders.Min(b => b.Bounds.Y);
-        var maxX = borders.Max(b => b.Bounds.X + b.Bounds.Width);
-        var maxY = borders.Max(b => b.Bounds.Y + b.Bounds.Height);
+        // 各 Border 的 Bounds 相对各自父容器，坐标系不同（多行主界面下各行父容器各异）；
+        // 统一换算到主窗口坐标系后再求包围盒，避免多行模式下尺寸计算错误。
+        var minX = double.MaxValue;
+        var minY = double.MaxValue;
+        var maxX = double.MinValue;
+        var maxY = double.MinValue;
+        foreach (var border in borders)
+        {
+            var topLeft = border.TranslatePoint(new Point(0, 0), _mainWindow);
+            var bottomRight = border.TranslatePoint(new Point(border.Bounds.Width, border.Bounds.Height), _mainWindow);
+            if (topLeft == null || bottomRight == null)
+            {
+                continue;
+            }
+
+            minX = Math.Min(minX, topLeft.Value.X);
+            minY = Math.Min(minY, topLeft.Value.Y);
+            maxX = Math.Max(maxX, bottomRight.Value.X);
+            maxY = Math.Max(maxY, bottomRight.Value.Y);
+        }
+
+        if (maxX <= minX || maxY <= minY)
+        {
+            return null;
+        }
+
         return new Size(maxX - minX, maxY - minY);
     }
 
@@ -2503,7 +2547,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
             var color = TryParseColor(_settings.BackgroundTextureColor, out var parsed)
                 ? parsed
-                : Color.FromArgb(0x2E, 0xFF, 0xFF, 0xFF);
+                : DefaultTextureColor;
             _textureBrush = BuildTextureBrush(_settings.BackgroundTextureType, color, _settings.BackgroundTextureSize);
             foreach (var host in _textureHosts.Values)
             {
@@ -2524,7 +2568,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
         var color = TryParseColor(_settings.BackgroundTextureColor, out var parsed)
             ? parsed
-            : Color.FromArgb(0x2E, 0xFF, 0xFF, 0xFF);
+            : DefaultTextureColor;
         _textureBrush = BuildTextureBrush(_settings.BackgroundTextureType, color, _settings.BackgroundTextureSize);
     }
 
@@ -2695,7 +2739,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
         var color = TryParseColor(_settings.BackgroundTextureColor, out var parsed)
             ? parsed
-            : Color.FromArgb(0x2E, 0xFF, 0xFF, 0xFF);
+            : DefaultTextureColor;
         var bars = Math.Clamp(_settings.BackgroundTextureSpectrumBars, 4, 64);
         var sensitivity = _settings.BackgroundTextureSpectrumSensitivity;
         var mirrored = _settings.BackgroundTextureSpectrumMirrored;
@@ -2851,10 +2895,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
-        var extensions = new[] { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp" };
-        _wallpaperSlideshow.AddRange(Directory.EnumerateFiles(directory)
-            .Where(f => extensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
-            .OrderBy(f => f, StringComparer.OrdinalIgnoreCase));
+        _wallpaperSlideshow.AddRange(ImageFiles.EnumerateSorted(directory));
     }
 
     private void AdvanceSlideshow()
@@ -2890,37 +2931,24 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
-        try
-        {
-            var stream = new MemoryStream(File.ReadAllBytes(path));
-            stream.Position = 0;
-            var bitmap = new Bitmap(stream);
-            SetWallpaperImage(bitmap, stream);
-        }
-        catch
+        if (TryDecodeBitmap(File.ReadAllBytes(path)) is not { } decoded)
         {
             DisposeWallpaperBitmap();
+            return;
         }
+
+        SetWallpaperImage(decoded.Bitmap, decoded.Stream);
     }
 
     private void LoadWallpaperImage(byte[] bytes)
     {
-        if (bytes.Length == 0)
+        if (TryDecodeBitmap(bytes) is not { } decoded)
         {
+            DisposeWallpaperBitmap();
             return;
         }
 
-        try
-        {
-            var stream = new MemoryStream(bytes);
-            stream.Position = 0;
-            var bitmap = new Bitmap(stream);
-            SetWallpaperImage(bitmap, stream);
-        }
-        catch
-        {
-            DisposeWallpaperBitmap();
-        }
+        SetWallpaperImage(decoded.Bitmap, decoded.Stream);
     }
 
     private void SetWallpaperImage(Bitmap bitmap, MemoryStream stream)
@@ -3259,6 +3287,15 @@ internal sealed class MainWindowStyleInjector : IDisposable
             _marqueeWindow?.Host.Children.Remove(warning);
             _prepareWarningOverlay = null;
             _marqueeWindow?.HideWhenEmpty();
+        }
+
+        // 强制点亮的 GridOverlay 一律还原：预览期间禁用插件 / 窗口重建时
+        // OnStateTick 提前返回导致 SyncPrepareOnClassOverlayHosts 不再执行，
+        // 这里兜底清空，避免残留「永远点亮」的覆盖层宿主。
+        foreach (var (line, host) in _prepareOnClassOverlayHosts.ToArray())
+        {
+            _prepareOnClassOverlayHosts.Remove(line);
+            host.Opacity = 0;
         }
     }
 
@@ -4167,8 +4204,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
         var settings = GetHostSettings();
         if (settings != null)
         {
-            WriteHostRadius(settings, "RadiusX", _originalHostRadiusX);
-            WriteHostRadius(settings, "RadiusY", _originalHostRadiusY);
+            WriteHostRadius(settings, HostContract.RadiusXProperty, _originalHostRadiusX);
+            WriteHostRadius(settings, HostContract.RadiusYProperty, _originalHostRadiusY);
             _effectiveCornerRadius = _originalHostRadiusX;
         }
 
@@ -4220,7 +4257,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
             // 让背景样式、内容裁切与遮罩全部同步到同一圆角。
 
             IBrush? backgroundBrush = null;
-            if (borderControl.Name == "BackgroundBorder")
+            if (borderControl.Name == HostContract.BackgroundBorder)
             {
                 if (fullscreenActive)
                 {
@@ -4390,6 +4427,17 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
         _observedLines.Clear();
         RestoreNativeRipplePlayers();
+
+        // 注销宿主长生命周期控件上的订阅，避免旧注入器实例被宿主控件强引用（泄漏 + 事件叠加）。
+        if (_islandGridSizeChangedHandler != null)
+        {
+            if (_mainWindow?.FindControl<Grid>(HostContract.GridRoot) is { } grid)
+            {
+                grid.SizeChanged -= _islandGridSizeChangedHandler;
+            }
+
+            _islandGridSizeChangedHandler = null;
+        }
 
         if (_mainWindow != null && _loadedStyles != null)
         {

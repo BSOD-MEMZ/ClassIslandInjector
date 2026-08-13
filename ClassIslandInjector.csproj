@@ -20,6 +20,27 @@
     <PackageReference Include="System.Drawing.Common" Version="8.0.25" />
   </ItemGroup>
 
+  <!--
+    cipx 包体优化：宿主 ClassIsland 自带 Microsoft.Windows.SDK.NET.dll / WinRT.Runtime.dll，
+    且 PluginLoadContext 强制使用宿主版本（拒绝从插件目录加载）——这两个 DLL 打进插件包
+    是纯冗余（约 24.8MB）。调试符号 pdb 也无需随包分发。
+    打包前把它们临时移出 OutputPath，打包后移回，保证 bin 产物完整（本地部署依赖）。
+  -->
+  <Target Name="TrimCipxInput" BeforeTargets="CreateCipx">
+    <PropertyGroup>
+      <_CipxStaging>$(BaseIntermediateOutputPath)cipx-staging\</_CipxStaging>
+    </PropertyGroup>
+    <MakeDir Directories="$(_CipxStaging)" />
+    <Move SourceFiles="$(OutputPath)Microsoft.Windows.SDK.NET.dll" DestinationFolder="$(_CipxStaging)" Condition="Exists('$(OutputPath)Microsoft.Windows.SDK.NET.dll')" />
+    <Move SourceFiles="$(OutputPath)WinRT.Runtime.dll" DestinationFolder="$(_CipxStaging)" Condition="Exists('$(OutputPath)WinRT.Runtime.dll')" />
+    <Move SourceFiles="$(OutputPath)$(AssemblyName).pdb" DestinationFolder="$(_CipxStaging)" Condition="Exists('$(OutputPath)$(AssemblyName).pdb')" />
+  </Target>
+  <Target Name="RestoreCipxInput" AfterTargets="CreateCipx">
+    <Move SourceFiles="$(_CipxStaging)Microsoft.Windows.SDK.NET.dll" DestinationFolder="$(OutputPath)" Condition="Exists('$(_CipxStaging)Microsoft.Windows.SDK.NET.dll')" />
+    <Move SourceFiles="$(_CipxStaging)WinRT.Runtime.dll" DestinationFolder="$(OutputPath)" Condition="Exists('$(_CipxStaging)WinRT.Runtime.dll')" />
+    <Move SourceFiles="$(_CipxStaging)$(AssemblyName).pdb" DestinationFolder="$(OutputPath)" Condition="Exists('$(_CipxStaging)$(AssemblyName).pdb')" />
+  </Target>
+
   <ItemGroup>
     <None Update="manifest.yml" CopyToOutputDirectory="PreserveNewest" />
     <None Update="README.md" CopyToOutputDirectory="PreserveNewest" />

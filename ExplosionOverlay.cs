@@ -134,7 +134,7 @@ internal sealed class ExplosionOverlay : Control, IRippleEffect
         }
 
         var elapsedMs = (DateTime.UtcNow - _startedAt).TotalMilliseconds;
-        var (frame, _) = FindFrame(elapsedMs);
+        var frame = FindFrame(elapsedMs);
         if (frame < 0)
         {
             return;
@@ -157,19 +157,19 @@ internal sealed class ExplosionOverlay : Control, IRippleEffect
         }
     }
 
-    private (int Index, double StartMs) FindFrame(double elapsedMs)
+    private int FindFrame(double elapsedMs)
     {
         var acc = 0.0;
         for (var i = 0; i < _delaysMs.Length; i++)
         {
             if (elapsedMs < acc + _delaysMs[i])
             {
-                return (i, acc);
+                return i;
             }
 
             acc += _delaysMs[i];
         }
 
-        return (-1, acc);
+        return -1;
     }
 }

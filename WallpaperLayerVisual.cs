@@ -19,6 +19,10 @@ public sealed class WallpaperLayerVisual : Control
     private WallpaperLayerItem? _layer;
     private string? _overrideText;
     private EventHandler<ThemeUpdatedEventArgs>? _themeHandler;
+    /// <summary>文本换行缓存键（文本 + 字号 + 字体 + 粗细 + 宽度）。</summary>
+    private string _wrapCacheKey = string.Empty;
+    /// <summary>文本换行缓存结果：键变化时才重新测量，避免拖拽/重绘时每帧重复二分换行。</summary>
+    private readonly List<string> _wrapCacheLines = [];
 
     /// <summary>临时覆盖的文本内容（运行时「显示媒体标题」用）；为 null 时使用图层 Text。</summary>
     public string? OverrideText
@@ -39,8 +43,19 @@ public sealed class WallpaperLayerVisual : Control
     public WallpaperLayerVisual()
     {
         ClipToBounds = true;
-        // 「跟随主题色」的图层需要随 ClassIsland 主题色变化实时重绘；
-        // 订阅宿主主题更新事件（服务不可用时静默忽略，主题色回退系统蓝）。
+        // 「跟随主题色」的图层需要随 ClassIsland 主题色变化实时重绘。
+        // 采用惰性订阅：仅挂到视觉树后订阅主题事件（OnAttachedToVisualTree）、分离时退订，
+        // 这样 RasterizeLayer 等从不挂树的临时实例不会泄漏订阅，重挂载后也会重新订阅。
+    }
+
+    /// <summary>订阅宿主主题更新事件（服务不可用时静默忽略，主题色回退系统蓝）。</summary>
+    private void SubscribeTheme()
+    {
+        if (_themeHandler != null)
+        {
+            return;
+        }
+
         try
         {
             var theme = IAppHost.TryGetService<IThemeService>();
@@ -56,27 +71,42 @@ public sealed class WallpaperLayerVisual : Control
         }
     }
 
-    /// <summary>从视觉树分离时退订主题事件，避免被宿主单例持有的委托强引用而泄漏。</summary>
+    /// <summary>退订主题事件，避免被宿主单例持有的委托强引用而泄漏。</summary>
+    private void UnsubscribeTheme()
+    {
+        if (_themeHandler == null)
+        {
+            return;
+        }
+
+        try
+        {
+            var theme = IAppHost.TryGetService<IThemeService>();
+            if (theme != null)
+            {
+                theme.ThemeUpdated -= _themeHandler;
+            }
+        }
+        catch
+        {
+            // 忽略退订失败。
+        }
+
+        _themeHandler = null;
+    }
+
+    /// <summary>挂到视觉树时订阅主题事件（重挂载后重新订阅，保持「跟随主题色」始终生效）。</summary>
+    protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnAttachedToVisualTree(e);
+        SubscribeTheme();
+    }
+
+    /// <summary>从视觉树分离时退订主题事件。</summary>
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
         base.OnDetachedFromVisualTree(e);
-        if (_themeHandler != null)
-        {
-            try
-            {
-                var theme = IAppHost.TryGetService<IThemeService>();
-                if (theme != null)
-                {
-                    theme.ThemeUpdated -= _themeHandler;
-                }
-            }
-            catch
-            {
-                // 忽略退订失败。
-            }
-
-            _themeHandler = null;
-        }
+        UnsubscribeTheme();
     }
 
     /// <summary>当前渲染的图层（形状/文本内容）。</summary>
@@ -281,11 +311,20 @@ public sealed class WallpaperLayerVisual : Control
         };
         var maxWidth = Bounds.Width;
         // 该 Avalonia 版本 FormattedText 无约束属性，这里按字符宽度手动换行。
-        var lines = new List<string>();
-        foreach (var hardLine in text.Replace("\r\n", "\n").Split('\n'))
+        // 换行结果按「文本 + 字号 + 字体 + 粗细 + 宽度」缓存：拖拽 / 重绘时避免每帧
+        // 二分测量构造大量 FormattedText（长文本下成本极高）。
+        var wrapKey = $"{text}\u0001{size}\u0001{layer.TextFontFamily ?? string.Empty}\u0001{layer.TextBold}\u0001{maxWidth}";
+        if (wrapKey != _wrapCacheKey)
         {
-            lines.AddRange(WrapLine(hardLine, maxWidth, typeface, size));
+            _wrapCacheKey = wrapKey;
+            _wrapCacheLines.Clear();
+            foreach (var hardLine in text.Replace("\r\n", "\n").Split('\n'))
+            {
+                _wrapCacheLines.AddRange(WrapLine(hardLine, maxWidth, typeface, size));
+            }
         }
+
+        var lines = _wrapCacheLines;
 
         var lineHeight = size * 1.25;
         var total = lines.Count * lineHeight;
@@ -380,17 +419,7 @@ public sealed class WallpaperLayerVisual : Control
         return ft.Width;
     }
 
-    private static Color ParseColor(string text, Color fallback)
-    {
-        try
-        {
-            return Color.Parse(text);
-        }
-        catch (FormatException)
-        {
-            return fallback;
-        }
-    }
+    private static Color ParseColor(string text, Color fallback) => ColorUtil.Parse(text, fallback);
 
     /// <summary>按图层设置取固定颜色或当前主题色，同时保留配置颜色的透明度。</summary>
     private static Color ResolveColor(string text, Color fallback, bool useThemeColor)
