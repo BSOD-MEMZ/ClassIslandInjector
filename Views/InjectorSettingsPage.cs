@@ -809,7 +809,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             {
                 Severity = InfoBarSeverity.Warning,
                 Title = "检测到分体主界面",
-                Message = "本插件暂不支持 ClassIsland 的分体主界面模式，请立即关闭分体主界面。",
+                Message = "本插件暂不支持 ClassIsland 的分体主界面模式，请关闭分体主界面。",
                 IsOpen = true,
                 IsClosable = false,
                 ActionButton = Button("去关闭分体主界面", OpenAppearanceSettings)
@@ -847,7 +847,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         };
         panel.Children.Add(_pluginUpdateInfoBar);
         UpdatePluginUpdateInfoBar(null);
-        panel.Children.Add(Setting("\uE813", "实时预览", "开启后，下方对设置项的修改会立即保存并应用到主界面；关闭时需手动点击「保存并应用」。", _livePreview));
+        panel.Children.Add(Setting("\uE813", "实时预览", "开启后，下方对设置项的修改会立即保存并应用到主界面。", _livePreview));
         if (!SystemCapabilities.SmtcAvailable)
         {
             panel.Children.Add(new InfoBar
@@ -891,12 +891,12 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _dynamicBackgroundColor.Name = "BackgroundDynamicToggle";
         EnabledWhenManualColor(backgroundColorItem, _customBackground, _dynamicBackgroundColor);
         panel.Children.Add(_backgroundGroup);
-        var textureSizeItem = Item("纹理大小", "单个纹理单元的大小（像素）；动态频谱不使用该项。", _backgroundTextureSize);
+        var textureSizeItem = Item("纹理大小", "单个纹理单元的大小（像素）。", _backgroundTextureSize);
         var spectrumSensitivityItem = Item("频谱灵敏度", "动态频谱柱条的放大倍率（越大跳动越剧烈）。", _backgroundTextureSpectrumSensitivity);
-        var spectrumBarsItem = Item("频谱柱条数", "主界面约 400 像素宽时的柱条数；主界面变宽时柱条自动增多、变窄时自动减少，柱条宽度保持恒定。", _backgroundTextureSpectrumBars);
+        var spectrumBarsItem = Item("频谱柱条数", "主界面约 400 像素宽时的柱条数，柱条宽度保持恒定。", _backgroundTextureSpectrumBars);
         var spectrumMirroredItem = Item("双面对称", "同时向上和向下绘制镜像频谱。", _backgroundTextureSpectrumMirrored);
-        var spectrumAutoWidthItem = Item("自动匹配宽度", "开启后柱条数随主界面宽度自动增减（柱宽恒定）；关闭时使用固定柱条数，柱条随主界面拉伸。", _backgroundTextureSpectrumAutoWidth);
-        _textureGroup = SwitchableGroup("\uE92B", "底纹纹理", "在底色之上叠加可平铺的纹理图案；选择「动态频谱」可实时展示系统声音输出的频谱。", _backgroundTextureEnabled,
+        var spectrumAutoWidthItem = Item("自动匹配宽度", "开启后柱条数随主界面宽度自动增减（柱宽恒定）。", _backgroundTextureSpectrumAutoWidth);
+        _textureGroup = SwitchableGroup("\uE92B", "底纹纹理", "在底色之上叠加可平铺的纹理图案。", _backgroundTextureEnabled,
             Item("纹理图案", "选择填充纹理的类型。", _backgroundTextureType),
             Item("纹理颜色", "支持透明度的纹理线条颜色。", _backgroundTextureColor),
             textureSizeItem,
@@ -1000,14 +1000,14 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("动画类型", "选择循环动画的运动方式。", _animationMode),
             Item("动画幅度", "控制循环动画的强弱。", _animationAmount),
             Item("动画周期", "完成一次循环所需的时间（秒）。", _animationPeriod)));
-        panel.Children.Add(SwitchableGroup("\uEFED", "主界面显示动画", "选择主界面出现或消失时使用的动画；总开关关闭时不播放显示动画。", _visibilityAnimationEnabled,
+        panel.Children.Add(SwitchableGroup("\uEFED", "主界面显示动画", "选择主界面出现或消失时使用的动画。", _visibilityAnimationEnabled,
             Item("动画类型", "选择主界面出现或消失时使用的动画。", _visibilityAnimation),
             Item("显示动画时长", "主界面显示动画的时长（秒）。", _visibilityDuration)));
         AutoSelectOnEnable(_visibilityAnimationEnabled, _visibilityAnimation, VisibilityAnimations);
         panel.Children.Add(SwitchableGroup("\uEFED", "列表翻页动画", "自定义 ClassIsland 列表/轮播容器的上翻切换动画（轮播容器、上课提醒横幅等）。", _carouselAnimation,
             Item("动画类型", "列表切换时的动画方式。", _carouselAnimationType),
             Item("动画时长", "单次翻页动画的时长（秒）。", _carouselAnimationDuration),
-            Item("翻页距离", "滑动/上翻类动画的位移距离（像素）；淡入淡出不受影响。", _carouselAnimationOffset)));
+            Item("翻页距离", "滑动/上翻类动画的位移距离（像素）。", _carouselAnimationOffset)));
 
         AddSection(panel, "\uE025", "提醒");
         panel.Children.Add(Setting("\uEFFE", "预览提醒", "一次性预览强调动画、遮罩过渡与 Ripple 效果。", Button("预览提醒", PreviewNotification)));
@@ -1178,7 +1178,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(Setting("\uE817", "降低视觉负担", "隐藏设置项的说明文字，只保留名称，减少视觉干扰。", _reduceVisualBurden));
         panel.Children.Add(Setting("\uEF25", "关闭版本检查和提醒", "不再检查插件版本，也不提示去 GitHub 更新。", _disableVersionCheck));
         panel.Children.Add(Setting("\uEF4F", "关闭宿主定位点失效检查", "不再检测宿主点位失效，也不显示降级提示。", _disableDegradationCheck));
-        panel.Children.Add(Setting("\uE480", "输出诊断日志", "写入 album-color / preview-debug / canvas-debug / crash 等日志文件用于排查问题；关闭可减少磁盘写入（crash 崩溃日志仍会记录）。", _diagnosticLogging));
+        panel.Children.Add(Setting("\uE480", "输出诊断日志", "写入日志文件用于排查问题。", _diagnosticLogging));
 
         AddSection(panel, "\uE9E4", "关于");
         var manifest = Plugin.Manifest;
@@ -1229,7 +1229,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     {
         InjectorRuntime.Settings.ResetToDefaults();
         LoadFromSettings();
-        _status.Text = "已恢复插件默认设置；Overrides.axaml 未被修改。";
+        _status.Text = "已恢复插件默认设置。";
     }
 
     private void SaveCurrentPreset()
@@ -1496,7 +1496,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
         _pluginUpdateInfoBar.Message =
             $"当前插件版本 {currentText} 低于「{entry!.Name}」要求的最低版本 {minText}，部分功能可能无法正常工作。" +
-            "前往 GitHub 更新插件即可；不更新也可继续使用当前版本。";
+            "前往 GitHub 更新插件即可，如果你愿意的话。";
         _pluginUpdateInfoBar.IsOpen = true;
     }
 
