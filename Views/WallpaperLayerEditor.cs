@@ -208,6 +208,14 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private Control _layerPanelHost = null!;
     /// <summary>左侧工具栏 StackPanel（供按钮逐个进场）。</summary>
     private StackPanel _toolPanel = null!;
+    /// <summary>工具栏宿主（按钮面板 + 选中高亮滑块叠加）。</summary>
+    private Grid _toolHighlightHost = null!;
+    /// <summary>工具栏选中高亮滑块（切换工具时滑动到新位置）。</summary>
+    private Border _toolHighlight = null!;
+    /// <summary>高亮滑块是否已定位（首次直接放置，之后滑动）。</summary>
+    private bool _toolHighlightPositioned;
+    /// <summary>各工具按钮的悬停状态（已选中工具 hover 用主题色高亮块表达）。</summary>
+    private readonly Dictionary<WallpaperEditorTool, bool> _toolHovered = [];
     /// <summary>首次构建时收集的图层行（窗口打开时逐行滑入）。</summary>
     private readonly List<LayerRowControl> _pendingLayerRows = [];
     /// <summary>上次刷新时的图层 id（用于识别新增图层做入场动画）。</summary>
@@ -326,6 +334,11 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 TimeSpan.FromMilliseconds(60 + i * EditorAnimations.StaggerStep.TotalMilliseconds));
         }
 
+        // 选中高亮滑块：布局完成后定位到当前工具位置，并随第一个按钮淡入。
+        SlideToolHighlight(false);
+        EditorAnimations.FadeIn(_toolHighlight, 0, 1, EditorAnimations.InDuration, EditorAnimations.Interaction,
+            TimeSpan.FromMilliseconds(60));
+
         // 图层列表逐行滑入（首个图层行稍晚于工具栏按钮）。
         for (var i = 0; i < _pendingLayerRows.Count; i++)
         {
@@ -398,6 +411,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _canvas.ToolChanged += _ =>
         {
             UpdateToolBarSelection();
+            // 选中高亮滑块滑动到新工具的位置。
+            SlideToolHighlight(true);
             // 切换工具后刷新检查器，显示 / 隐藏「画笔」设置。
             RefreshInspector();
         };
@@ -1143,7 +1158,30 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         panel.Children.Add(new Separator { Margin = new Thickness(2, 5) });
         panel.Children.Add(ToolActionButton("\uEBCA", "添加 SMTC 图层", "把当前播放的专辑封面作为新的底图图层（无播放时显示占位封面）", AddSmtcLayer));
         panel.Children.Add(ToolActionButton("\uE7DC", "添加贴纸", "在线获取 Project Sekai 角色贴纸，插入为新的底图图层", OpenStickerPicker));
-        return panel;
+
+        // 选中高亮滑块：独立圆角块，切换工具时滑动到新位置（位于按钮面板之下，按钮透明露出）。
+        _toolHighlight = new Border
+        {
+            IsHitTestVisible = false,
+            // 圆角与按钮自带 hover 样式对齐（Fluent ControlCornerRadius = 4）。
+            CornerRadius = new CornerRadius(4),
+            Background = new SolidColorBrush(ThemePalette.AccentColorWithAlpha(190)),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Top,
+            Opacity = 0
+        };
+        // 宿主 Grid：高亮块在前（底层），按钮面板在后（顶层，按钮透明底露出高亮）。
+        var host = new Grid { Children = { _toolHighlight, panel } };
+        _toolHighlightHost = host;
+        // 首次布局完成后定位高亮（此前 Bounds 未测量）。
+        host.SizeChanged += (_, _) =>
+        {
+            if (!_toolHighlightPositioned)
+            {
+                SlideToolHighlight(false);
+            }
+        };
+        return host;
     }
 
     private Button ToolButton(WallpaperEditorTool tool, string glyph, string tip)
@@ -1177,6 +1215,17 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         EditorAnimations.AddPressFeedback(button);
         // 初始不可见，打开窗口时逐个弹性进场。
         button.Opacity = 0;
+        // 悬停：已选中的工具保持透明（主题色高亮块表达选中），其它工具显示半透明悬停底色。
+        button.PointerEntered += (_, _) =>
+        {
+            _toolHovered[tool] = true;
+            UpdateToolBarSelection();
+        };
+        button.PointerExited += (_, _) =>
+        {
+            _toolHovered[tool] = false;
+            UpdateToolBarSelection();
+        };
 
         ToolTip.SetTip(button, tip);
         button.Click += (_, _) =>
@@ -1209,15 +1258,25 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         return button;
     }
 
-    /// <summary>按当前工具刷新工具栏按钮的选中态（强调色底 + 白色图标；选中用实心图标，未选中用空心图标）。</summary>
+    /// <summary>按当前工具刷新工具栏按钮状态：选中态由高亮滑块表达（按钮透明露底），
+    /// 已选中工具悬停保持主题色（高亮块），其它工具悬停显示半透明底色。</summary>
     private void UpdateToolBarSelection()
     {
+        var activeTool = _canvas.Tool;
+        if (_toolHighlight != null)
+        {
+            _toolHighlight.Background = new SolidColorBrush(ThemePalette.AccentColorWithAlpha(190));
+        }
+
         foreach (var (tool, button) in _toolButtons)
         {
-            var active = tool == _canvas.Tool;
+            var active = tool == activeTool;
+            // 选中态背景交给高亮滑块：按钮本身 = 已选中 ? 透明 : (悬停 ? 半透明 : 透明)。
             button.Background = active
-                ? ThemeBrush("AccentFillColorDefaultBrush") ?? new SolidColorBrush(ThemePalette.AccentColorWithAlpha(150))
-                : Brushes.Transparent;
+                ? Brushes.Transparent
+                : _toolHovered.GetValueOrDefault(tool)
+                    ? ThemePalette.SubtleFill()
+                    : Brushes.Transparent;
             button.Foreground = active
                 ? new SolidColorBrush(Colors.White)
                 : new SolidColorBrush(ThemePalette.ForegroundColor());
@@ -1227,6 +1286,50 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 icon.Glyph = active ? glyphs.Filled : glyphs.Regular;
             }
         }
+    }
+
+    /// <summary>
+    /// 把选中高亮滑块移动到当前工具的按钮位置：首次直接放置，之后用弹性缓动滑动。
+    /// </summary>
+    private void SlideToolHighlight(bool animate)
+    {
+        if (_toolHighlight == null || !_toolButtons.TryGetValue(_canvas.Tool, out var button))
+        {
+            return;
+        }
+
+        var pos = button.TranslatePoint(new Point(0, 0), _toolHighlightHost);
+        if (pos == null || button.Bounds.Height <= 0)
+        {
+            return; // 尚未布局，稍后由 SizeChanged / 入场动画补齐。
+        }
+
+        var targetY = pos.Value.Y;
+        if (_toolHighlight.RenderTransform is not TranslateTransform translate)
+        {
+            translate = new TranslateTransform();
+            _toolHighlight.RenderTransform = translate;
+        }
+
+        // 首次测量时把高度对齐到按钮（与自带 hover 样式同高、同宽：无内缩边距）。
+        // 注意：Border.Height 默认是 NaN（Auto），比较必须用 IsNaN。
+        if (double.IsNaN(_toolHighlight.Height) || _toolHighlight.Height <= 0)
+        {
+            _toolHighlight.Height = Math.Max(20, button.Bounds.Height);
+        }
+
+        if (animate && _toolHighlightPositioned)
+        {
+            // 平滑非线性移动（CubicEaseOut），不弹跳。
+            EditorAnimations.AnimateValue(v => translate.Y = v, translate.Y, targetY,
+                EditorAnimations.InDuration, EditorAnimations.Interaction);
+        }
+        else
+        {
+            translate.Y = targetY;
+        }
+
+        _toolHighlightPositioned = true;
     }
 
     /// <summary>左侧工具栏各工具的实心/空心图标码点（FluentSystemIcons，filled/regular 成对）。</summary>
@@ -2726,6 +2829,35 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             ? _canvas.SelectedLayers.Where(l => !_canvas.IsLocked(l.Id)).ToList()
             : [layer];
         PushUndo();
+
+        // 画布元素移除动画（淡出 + 缩小）。
+        foreach (var l in toDelete)
+        {
+            _canvas.AnimateLayerOut(l.Id);
+        }
+
+        // 图层面板行移除动画（淡出 + 上滑），动画结束后再真正删除。
+        var rows = _layerStack.Children.OfType<LayerRowControl>()
+            .Where(r => r.LayerId != null && toDelete.Any(l => l.Id == r.LayerId)).ToList();
+        foreach (var row in rows)
+        {
+            EditorAnimations.FadeIn(row, 1, 0, EditorAnimations.InDuration, EditorAnimations.Interaction);
+            EditorAnimations.SlideOut(row, 0, -12, EditorAnimations.InDuration, EditorAnimations.Interaction);
+        }
+
+        if (rows.Count > 0)
+        {
+            EditorAnimations.After(TimeSpan.FromMilliseconds(240), () => FinishDelete(toDelete));
+        }
+        else
+        {
+            FinishDelete(toDelete);
+        }
+    }
+
+    /// <summary>实际执行删除：从列表移除、刷新画布与检查器（在移除动画之后调用）。</summary>
+    private void FinishDelete(List<WallpaperLayerItem> toDelete)
+    {
         foreach (var l in toDelete)
         {
             _layers.Remove(l);
@@ -3141,10 +3273,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     };
 
     private static T Selected<T>(ComboBox box, T fallback) => box.SelectedItem is Pick<T> choice ? choice.Value : fallback;
-
-    /// <summary>查找主题画刷（插件窗口解析不到时返回 null，调用方回退到深色）。</summary>
-    private static IBrush? ThemeBrush(string key) =>
-        Application.Current?.TryFindResource(key, out var value) == true ? value as IBrush : null;
 
     private static string DisplayModeName(WallpaperDisplayMode mode) => mode switch
     {

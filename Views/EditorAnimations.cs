@@ -71,6 +71,50 @@ internal static class EditorAnimations
         return timer;
     }
 
+    /// <summary>动画化一个数值（from → to），每帧回调 apply。用于自定义属性（如高亮滑块位移）。</summary>
+    internal static void AnimateValue(Action<double> apply, double from, double to,
+        TimeSpan? duration = null, Easing? easing = null, TimeSpan? delay = null)
+    {
+        var d = duration ?? InDuration;
+        var ms = d.TotalMilliseconds;
+        var dm = delay?.TotalMilliseconds ?? 0;
+        Drive(v => apply(from + (to - from) * v), ms, dm, easing ?? Interaction);
+    }
+
+    /// <summary>滑出（位移 当前值 → 目标偏移）。用于移除动画（配合 FadeIn 反向淡出）。</summary>
+    internal static void SlideOut(Control control, double toX, double toY,
+        TimeSpan? duration = null, Easing? easing = null, TimeSpan? delay = null)
+    {
+        var translate = Ensure<TranslateTransform>(control);
+        var ms = (duration ?? InDuration).TotalMilliseconds;
+        var dm = delay?.TotalMilliseconds ?? 0;
+        var fromX = translate.X;
+        var fromY = translate.Y;
+        Drive(v =>
+        {
+            translate.X = fromX + (toX - fromX) * v;
+            translate.Y = fromY + (toY - fromY) * v;
+        }, ms, dm, easing ?? Interaction);
+    }
+
+    /// <summary>延迟后回到 UI 线程执行（DispatcherTimer，确定性时序）。</summary>
+    internal static void After(TimeSpan delay, Action action)
+    {
+        if (delay <= TimeSpan.Zero)
+        {
+            action();
+            return;
+        }
+
+        var timer = new DispatcherTimer { Interval = delay };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            action();
+        };
+        timer.Start();
+    }
+
     /// <summary>不透明度淡入（初值 → 终值）。调用方需先把控件 Opacity 置为初值。</summary>
     internal static void FadeIn(Control control, double from = 0, double to = 1,
         TimeSpan? duration = null, Easing? easing = null, TimeSpan? delay = null)
@@ -111,6 +155,23 @@ internal static class EditorAnimations
             scale.ScaleX = from + (1 - from) * v;
             scale.ScaleY = from + (1 - from) * v;
         }, ms, dm, easing ?? Entrance);
+    }
+
+    /// <summary>缩放（当前值 → 目标）。用于移除动画的缩小。</summary>
+    internal static void ScaleTo(Control control, double to,
+        TimeSpan? duration = null, Easing? easing = null, TimeSpan? delay = null)
+    {
+        var scale = Ensure<ScaleTransform>(control);
+        control.RenderTransformOrigin = new RelativePoint(0.5, 0.5, RelativeUnit.Relative);
+        var ms = (duration ?? InDuration).TotalMilliseconds;
+        var dm = delay?.TotalMilliseconds ?? 0;
+        var fromX = scale.ScaleX;
+        var fromY = scale.ScaleY;
+        Drive(v =>
+        {
+            scale.ScaleX = fromX + (to - fromX) * v;
+            scale.ScaleY = fromY + (to - fromY) * v;
+        }, ms, dm, easing ?? Interaction);
     }
 
     /// <summary>滑入 + 缩放 + 淡入的组合入场。缩放复用按压反馈的 ScaleTransform（同一变换）。

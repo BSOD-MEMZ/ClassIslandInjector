@@ -72,6 +72,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
     };
     /// <summary>画布入场动画已播放。</summary>
     private bool _entrancePlayed;
+    /// <summary>已做过画布入场动画的图层 id（新增图层的视觉控件弹入用）。</summary>
+    private readonly HashSet<string> _canvasEntryAnimatedIds = [];
     private readonly ScaleTransform _zoomTransform = new(1, 1);
     private readonly TranslateTransform _panTransform = new();
     /// <summary>当前视口平移量（逻辑像素，0 = 画布左上角对齐视口左上角）。</summary>
@@ -197,7 +199,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
     private readonly List<Point> _lassoPoints = [];
     /// <summary>像素选区蚂蚁线叠加层。</summary>
     private readonly PixelSelectionOverlay _selOverlay = new() { IsHitTestVisible = false, IsVisible = false, ZIndex = 210 };
-    private readonly DispatcherTimer _antsTimer = new() { Interval = TimeSpan.FromMilliseconds(180) };
+    private readonly DispatcherTimer _antsTimer = new() { Interval = TimeSpan.FromMilliseconds(75) };
     private Color _activeColor = Colors.White;
     /// <summary>当前取色 / 默认颜色（新建形状、文本、画笔都用它；吸管取色后更新）。</summary>
     public Color ActiveColor
@@ -223,7 +225,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
     /// <summary>画笔 / 橡皮擦大小（屏幕 DIP）。</summary>
     public double BrushSize { get; set; } = 8;
     /// <summary>浮动工具条是否已显示（用于首次显示后按真实尺寸重定位）。</summary>
-    private bool _floatToolbarShown;
+    /// <summary>上次浮动操作条弹出时的选中集合签名（切换选中元素时重新弹跳）。</summary>
+    private string _floatToolbarLastSignature = string.Empty;
     /// <summary>当前工具（Photoshop 式左侧工具栏）。</summary>
     private WallpaperEditorTool _tool = WallpaperEditorTool.Move;
     /// <summary>形状工具当前形状类型。</summary>
@@ -789,6 +792,59 @@ internal sealed class WallpaperLayerCanvas : UserControl
         EditorAnimations.ScaleIn(_stageScaleHost, 0.94, EditorAnimations.InDuration, EditorAnimations.Entrance);
     }
 
+    /// <summary>
+    /// 标记图层的画布视觉控件做入场动画：初始加载（入场未播）只登记不播；
+    /// 之后新增的图层在下一帧布局稳定后轻微缩放 + 上滑 + 淡入。
+    /// </summary>
+    private void MarkLayerEntryAnim(Control control, string layerId)
+    {
+        if (!_entrancePlayed)
+        {
+            // 初始加载：整体画布已由 _stageScaleHost 淡入，不再逐个动画。
+            _canvasEntryAnimatedIds.Add(layerId);
+            return;
+        }
+
+        if (_canvasEntryAnimatedIds.Add(layerId))
+        {
+            EditorAnimations.After(TimeSpan.FromMilliseconds(30), () =>
+            {
+                // 图层仍存在（未在等待期间被删除）才播。
+                if (_layerHosts.ContainsKey(layerId) || _layerVisuals.ContainsKey(layerId) || _layerNineSlices.ContainsKey(layerId))
+                {
+                    AnimateLayerEntry(control);
+                }
+            });
+        }
+    }
+
+    /// <summary>新图层视觉的入场动画：轻微缩放 + 上滑 + 淡入。</summary>
+    private static void AnimateLayerEntry(Control control)
+    {
+        control.Opacity = 0;
+        EditorAnimations.PopIn(control, 0, 8, 0.92, EditorAnimations.InDuration, EditorAnimations.Entrance);
+    }
+
+    /// <summary>取图层在画布上的视觉控件（图片 host / 矢量 visual / 全屏 nine）。</summary>
+    private Control? GetLayerControl(string layerId) =>
+        (Control?)_layerHosts.GetValueOrDefault(layerId)
+        ?? (Control?)_layerVisuals.GetValueOrDefault(layerId)
+        ?? (Control?)_layerNineSlices.GetValueOrDefault(layerId);
+
+    /// <summary>播放图层视觉的移除动画（淡出 + 缩小），供删除流程在真正移除前调用。</summary>
+    public void AnimateLayerOut(string layerId)
+    {
+        var control = GetLayerControl(layerId);
+        if (control == null)
+        {
+            return;
+        }
+
+        var from = control.Opacity;
+        EditorAnimations.FadeIn(control, from, 0, EditorAnimations.InDuration, EditorAnimations.Interaction);
+        EditorAnimations.ScaleTo(control, 0.9, EditorAnimations.InDuration, EditorAnimations.Interaction);
+    }
+
     public void Refresh()
     {
         UpdateStageSize();
@@ -997,6 +1053,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
                     };
                     _layerNineSlices[layer.Id] = nine;
                     _stage.Children.Add(nine);
+                    MarkLayerEntryAnim(nine, layer.Id);
                 }
 
                 nine.Bitmap = DisplayBitmap(layer);
@@ -1024,6 +1081,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
                     };
                     _layerHosts[layer.Id] = host;
                     _stage.Children.Add(host);
+                    MarkLayerEntryAnim(host, layer.Id);
                 }
 
                 if (!_layerImages.TryGetValue(layer.Id, out var image))
@@ -1044,6 +1102,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 };
                 _layerVisuals[layer.Id] = visual;
                 _stage.Children.Add(visual);
+                // 矢量图层（形状/文本）在创建过程中会被 LayoutImages 反复重置，不做入场动画。
+                _canvasEntryAnimatedIds.Add(layer.Id);
             }
         }
     }
@@ -1407,6 +1467,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
         // 舞台可能被缩放/滚动，先把选中框顶部中心换算到本控件坐标，再用 Margin 定位。
         var showToolbar = !locked;
         _floatToolbar.IsVisible = showToolbar;
+        // 当前选中集合签名：主选中 + 全部选中 id（切换元素时重新弹跳）。
+        var signature = SelectedLayer?.Id + "|" + string.Join(",", SelectedLayers.Select(l => l.Id).OrderBy(id => id, StringComparer.Ordinal));
         if (showToolbar)
         {
             var tw = _floatToolbar.Bounds.Width > 0 ? _floatToolbar.Bounds.Width : 250;
@@ -1424,20 +1486,17 @@ internal sealed class WallpaperLayerCanvas : UserControl
             }
 
             _floatToolbar.Margin = new Thickness(left, top, 0, 0);
-            if (!_floatToolbarShown)
+            // 切换到了新的选中元素：轻微放大（不重置不透明度，避免闪动；不用弹性弹跳）。
+            if (_floatToolbarLastSignature != signature)
             {
-                // 首次显示时 Bounds 尚未测量，下一帧按真实尺寸重定位。
-                _floatToolbarShown = true;
-                // 弹性弹出：缩放 0.8 → 1 + 淡入（BackEase）。
-                _floatToolbar.Opacity = 0;
-                EditorAnimations.FadeIn(_floatToolbar, 0, 1, EditorAnimations.InDuration, EditorAnimations.Entrance);
-                EditorAnimations.ScaleIn(_floatToolbar, 0.8, EditorAnimations.InDuration, EditorAnimations.Entrance);
+                _floatToolbarLastSignature = signature;
+                EditorAnimations.ScaleIn(_floatToolbar, 0.95, EditorAnimations.InDuration, EditorAnimations.Interaction);
                 Dispatcher.UIThread.Post(Refresh);
             }
         }
         else
         {
-            _floatToolbarShown = false;
+            _floatToolbarLastSignature = string.Empty;
         }
     }
 
@@ -1834,6 +1893,13 @@ internal sealed class WallpaperLayerCanvas : UserControl
             }
         }
 
+        // 记录所有参与移动成员的原始矩形（含主拖拽层），供 UpdateMove 按原始位置 + 总位移计算。
+        var startRects = new Dictionary<string, Rect>();
+        foreach (var m in moving)
+        {
+            startRects[m.Id] = WallpaperLayerLayout.ComputeRect(m, _islandWidth, _islandHeight, AspectOf(m));
+        }
+
         // 转换后再取初始矩形（此时 ComputeRect 反映图层当前实际位置，避免拖动瞬间跳变）。
         _drag = new DragState
         {
@@ -1842,7 +1908,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
             StartPointer = pos,
             StartRect = WallpaperLayerLayout.ComputeRect(layer, _islandWidth, _islandHeight, AspectOf(layer)),
             StartIslandW = _islandWidth,
-            StartIslandH = _islandHeight
+            StartIslandH = _islandHeight,
+            StartRects = startRects
         };
         e.Pointer.Capture(_stage);
         e.Handled = true;
@@ -3230,6 +3297,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
         }
 
         // 整组移动：其它选中 + 组内成员按相同位移同步移动（跳过锁定、去重，保持组内相对位置）。
+        // 关键：必须用「按下时的原始矩形 + 总位移」，绝不能用「当前矩形 + 总位移」——
+        // 后者会让上一帧的位移被重复累加，成员逐帧加速飞出去。
         var handled = new HashSet<WallpaperLayerItem>();
         foreach (var other in SelectedLayers.Concat(GroupMembers(layer)))
         {
@@ -3238,7 +3307,11 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 continue;
             }
 
-            var or = WallpaperLayerLayout.ComputeRect(other, _islandWidth, _islandHeight, AspectOf(other));
+            if (!drag.StartRects.TryGetValue(other.Id, out var or))
+            {
+                or = WallpaperLayerLayout.ComputeRect(other, _islandWidth, _islandHeight, AspectOf(other));
+            }
+
             var moved = new Rect(or.X + delta.X, or.Y + delta.Y, or.Width, or.Height);
             var (oox, ooy) = WallpaperLayerLayout.ToOffsets(other, moved, _islandWidth, _islandHeight);
             other.OffsetX = oox;
@@ -4164,6 +4237,9 @@ internal sealed class WallpaperLayerCanvas : UserControl
         public bool ZoomOut;
         /// <summary>裁剪工具：当前裁剪框（舞台坐标）。</summary>
         public Rect CropRect;
+        /// <summary>整组/多选移动：按下时各参与成员的原始矩形（按 id）。
+        /// 拖拽中按「原始位置 + 总位移」计算，避免用「当前矩形 + 总位移」导致位移逐帧叠加飞出去。</summary>
+        public Dictionary<string, Rect> StartRects = [];
     }
 
     private sealed record Guide(bool Vertical, double Position, string Label, bool IsCenter);
@@ -4305,8 +4381,8 @@ internal sealed class PixelSelectionOverlay : Control
 
     public void Tick()
     {
-        // 虚线相位前进，形成「蚂蚁行军」动画。
-        _phase -= 1.5;
+        // 虚线相位前进，虚线沿整条轨迹连续流动（蚂蚁行军）。
+        _phase -= 2;
         InvalidateVisual();
     }
 
@@ -4318,19 +4394,26 @@ internal sealed class PixelSelectionOverlay : Control
             return;
         }
 
+        // 把整条路径合成一个 StreamGeometry 一次性描边：虚线模式沿全程连续，
+        // 每节 5px 实 + 4px 空的长度与间隔固定，相位推进让虚线沿轨迹转动——
+        // 不再逐线段绘制（否则每个转角处虚线从头开始，看起来断裂不齐）。
+        var geometry = new StreamGeometry();
+        using (var ctx = geometry.Open())
+        {
+            ctx.BeginFigure(_path[0], _closed);
+            for (var i = 1; i < _path.Count; i++)
+            {
+                ctx.LineTo(_path[i]);
+            }
+
+            ctx.EndFigure(_closed);
+        }
+
         var pen = new Pen(new SolidColorBrush(ThemePalette.AccentColorWithAlpha(230)), 1.5)
         {
             DashStyle = new DashStyle([5, 4], _phase)
         };
-        for (var i = 0; i < _path.Count - 1; i++)
-        {
-            context.DrawLine(pen, _path[i], _path[i + 1]);
-        }
-
-        if (_closed && _path.Count > 2)
-        {
-            context.DrawLine(pen, _path[^1], _path[0]);
-        }
+        context.DrawGeometry(null, pen, geometry);
     }
 }
 
