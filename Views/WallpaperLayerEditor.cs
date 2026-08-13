@@ -1,4 +1,5 @@
 using Avalonia;
+using Avalonia.Animation;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Controls.Templates;
@@ -194,6 +195,26 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     /// <summary>左侧工具栏按钮（按工具选中态更新）。</summary>
     private readonly Dictionary<WallpaperEditorTool, Button> _toolButtons = [];
 
+    // ---- 入场动画 ----
+    /// <summary>入场动画已播放（只播一次）。</summary>
+    private bool _entrancePlayed;
+    /// <summary>顶部命令栏（入场动画目标）。</summary>
+    private Control _commandBarHost = null!;
+    /// <summary>左侧工具栏容器（入场动画目标）。</summary>
+    private Control _toolbarHost = null!;
+    /// <summary>右侧检查器列（入场动画目标）。</summary>
+    private Control _rightColumn = null!;
+    /// <summary>底部图层面板（入场动画目标）。</summary>
+    private Control _layerPanelHost = null!;
+    /// <summary>左侧工具栏 StackPanel（供按钮逐个进场）。</summary>
+    private StackPanel _toolPanel = null!;
+    /// <summary>首次构建时收集的图层行（窗口打开时逐行滑入）。</summary>
+    private readonly List<LayerRowControl> _pendingLayerRows = [];
+    /// <summary>上次刷新时的图层 id（用于识别新增图层做入场动画）。</summary>
+    private readonly HashSet<string> _knownLayerIds = [];
+    /// <summary>编辑器入场动画诊断日志（配置目录）。</summary>
+    private static readonly string EditorAnimLog = Path.Combine(InjectorRuntime.ConfigDirectory, "editor-anim.log");
+
     /// <summary>当前打开的编辑器实例。同一时刻只允许一个编辑器窗口（多开会造成关闭确认
     /// 的 ContentDialog 找不到 TopLevel 而崩溃）。</summary>
     public static WallpaperLayerEditorWindow? Current { get; private set; }
@@ -227,6 +248,15 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
 
         WireCanvas();
         BuildContent();
+        // 状态栏文字更新时做淡入过渡（集中订阅 Text 变化，覆盖所有状态提示）。
+        _statusText.PropertyChanged += (_, e) =>
+        {
+            if (e.Property == TextBlock.TextProperty)
+            {
+                _statusText.Opacity = 0.4;
+                EditorAnimations.FadeIn(_statusText, 0.4, 0.85, EditorAnimations.TapDuration, EditorAnimations.Interaction);
+            }
+        };
         RefreshLayerList();
         RefreshInspector();
         UpdateStatus();
@@ -250,8 +280,74 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     {
         Dispatcher.UIThread.Post(() =>
         {
+            PlayEntranceAnimations();
             HostTutorial.BeginNotCompletedTutorials("classislandInjector.tutorials.wallpaperEditor/prologue");
         }, DispatcherPriority.Background);
+    }
+
+    /// <summary>
+    /// 打开窗口时播放的入场动画（非线性，快速利落）：
+    /// 顶部命令栏下滑淡入、左侧工具栏左滑淡入 + 工具按钮逐个弹性进场、右侧检查器右滑淡入、
+    /// 底部图层面板上滑（稍晚）、画布内容缩放淡入、图层列表逐行滑入。
+    /// 错峰统一用 Animation.Delay（UI 线程同步调度，确定性时序），不依赖 Task/挂载检查。
+    /// </summary>
+    private void PlayEntranceAnimations()
+    {
+        if (_entrancePlayed)
+        {
+            return;
+        }
+
+        _entrancePlayed = true;
+        DiagnosticLog.Write(EditorAnimLog, "PlayEntranceAnimations 开始");
+
+        // 顶部命令栏：自上而下滑入 + 淡入（不透明度柔滑，位移弹性）。
+        EditorAnimations.FadeIn(_commandBarHost, 0, 1, EditorAnimations.InDuration, EditorAnimations.Interaction);
+        EditorAnimations.SlideIn(_commandBarHost, 0, -14, EditorAnimations.InDuration, EditorAnimations.Entrance);
+
+        // 左侧工具栏：自左滑入 + 淡入（按钮再逐个进场）。
+        EditorAnimations.FadeIn(_toolbarHost, 0, 1, EditorAnimations.InDuration, EditorAnimations.Interaction);
+        EditorAnimations.SlideIn(_toolbarHost, -24, 0, EditorAnimations.InDuration, EditorAnimations.Entrance);
+
+        // 右侧检查器：自右滑入 + 淡入。
+        EditorAnimations.FadeIn(_rightColumn, 0, 1, EditorAnimations.InDuration, EditorAnimations.Interaction);
+        EditorAnimations.SlideIn(_rightColumn, 28, 0, EditorAnimations.InDuration, EditorAnimations.Entrance);
+
+        // 底部图层面板：自下而上（稍晚于检查器）。
+        var panelDelay = TimeSpan.FromMilliseconds(70);
+        EditorAnimations.FadeIn(_layerPanelHost, 0, 1, EditorAnimations.InDuration, EditorAnimations.Interaction, panelDelay);
+        EditorAnimations.SlideIn(_layerPanelHost, 0, 20, EditorAnimations.InDuration, EditorAnimations.Entrance, panelDelay);
+
+        // 左侧工具栏按钮逐个进场（错峰 + 弹性缩放弹出，用 Animation.Delay 同步错峰）。
+        var toolButtons = _toolPanel.Children.OfType<Button>().ToList();
+        for (var i = 0; i < toolButtons.Count; i++)
+        {
+            EditorAnimations.PopIn(toolButtons[i], -12, 0, 0.85, EditorAnimations.InDuration, EditorAnimations.Entrance,
+                TimeSpan.FromMilliseconds(60 + i * EditorAnimations.StaggerStep.TotalMilliseconds));
+        }
+
+        // 图层列表逐行滑入（首个图层行稍晚于工具栏按钮）。
+        for (var i = 0; i < _pendingLayerRows.Count; i++)
+        {
+            EditorAnimations.PopIn(_pendingLayerRows[i], 18, 0, 0.94, EditorAnimations.InDuration, EditorAnimations.Entrance,
+                TimeSpan.FromMilliseconds(120 + i * EditorAnimations.StaggerStep.TotalMilliseconds));
+        }
+        _pendingLayerRows.Clear();
+
+        // 画布内容（主界面 + 图层）：缩放淡入。
+        _canvas.PlayEntranceAnimation();
+        DiagnosticLog.Write(EditorAnimLog, $"PlayEntranceAnimations 完成：工具栏按钮 {toolButtons.Count} 个、图层行已调度");
+
+        // 诊断：入场结束后（约 900ms）复查各按钮实际不透明度，确认动画真实执行到位。
+        var checkTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(900) };
+        checkTimer.Tick += (_, _) =>
+        {
+            checkTimer.Stop();
+            var hidden = toolButtons.Where(b => b.Opacity < 0.5).Select(b => b.Name ?? b.GetType().Name).ToList();
+            DiagnosticLog.Write(EditorAnimLog,
+                $"入场后 900ms 复查：按钮 {toolButtons.Count} 个，仍不可见 {hidden.Count} 个：{string.Join(",", hidden)}");
+        };
+        checkTimer.Start();
     }
 
     /// <summary>按标签向前推动教程（仅当教程正停在该标签的等待句时生效）。</summary>
@@ -352,6 +448,9 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 saveButton
             }
         };
+        // 入场动画目标；先置 Opacity=0 保证首帧不闪烁，Opened 后再淡入。
+        _commandBarHost = commandBar;
+        commandBar.Opacity = 0;
 
         // ---- 右侧：上 = 属性检查器（可滚动），下 = 图层面板（固定在底部），
         // 两区之间用水平手柄分割高度。----
@@ -394,6 +493,9 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         };
         // 供教程 TargetSelector 定位（#EditorLayerPanel）。
         layerPanel.Name = "EditorLayerPanel";
+        // 入场动画目标；先置 Opacity=0 保证首帧不闪烁，Opened 后再上滑淡入。
+        _layerPanelHost = layerPanel;
+        layerPanel.Opacity = 0;
         Grid.SetRow(layerActions, 1);
         // 上下区之间的水平分割手柄（高度与横向间隙一致）。
         var rowSplitter = new GridSplitter
@@ -412,6 +514,9 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         };
         Grid.SetRow(rowSplitter, 1);
         Grid.SetRow(layerPanel, 2);
+        // 入场动画目标；先置 Opacity=0 保证首帧不闪烁，Opened 后再右滑淡入。
+        _rightColumn = rightColumn;
+        rightColumn.Opacity = 0;
 
         // 左侧工具栏（Photoshop 式）+ 舞台 + 右侧设置区之间加垂直分割手柄，可左右拖动调整宽度。
         var toolbar = new Border
@@ -423,6 +528,9 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         };
         // 供教程 TargetSelector 定位（#EditorToolBar）。
         toolbar.Name = "EditorToolBar";
+        // 入场动画目标；先置 Opacity=0 保证首帧不闪烁，Opened 后再左滑淡入。
+        _toolbarHost = toolbar;
+        toolbar.Opacity = 0;
         var stageHost = new Border
         {
             ClipToBounds = true,
@@ -519,6 +627,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             Content = new IconText { Glyph = glyph, Text = string.Empty },
             Padding = new Thickness(8, 5)
         };
+        EditorAnimations.AddPressFeedback(button);
         ToolTip.SetTip(button, tooltip);
         button.Click += (_, _) => action();
         return button;
@@ -1018,6 +1127,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private Control BuildToolBar()
     {
         var panel = new StackPanel { Spacing = 2 };
+        _toolPanel = panel;
         panel.Children.Add(ToolButton(WallpaperEditorTool.Move, "\uE113", "移动工具（V）：拖拽图层移动；有像素选区时拖动选区内容"));
         panel.Children.Add(ToolButton(WallpaperEditorTool.Hand, "\uE941", "抓手工具（H）：按住拖动平移画布，查看画布任意区域"));
         panel.Children.Add(ToolButton(WallpaperEditorTool.Select, "\uE5BF", "选择工具（S）：点击只选中图层，不拖拽"));
@@ -1057,6 +1167,17 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             button.Name = "EditorTextTool";
         }
 
+        // 选中态过渡：背景 / 前景切换时平滑渐变（非线性）。
+        button.Transitions = new Transitions
+        {
+            new BrushTransition { Property = Avalonia.Controls.Button.BackgroundProperty, Duration = EditorAnimations.TapDuration },
+            new BrushTransition { Property = Avalonia.Controls.Button.ForegroundProperty, Duration = EditorAnimations.TapDuration }
+        };
+        // 按压缩放反馈（Fluent 风格）。
+        EditorAnimations.AddPressFeedback(button);
+        // 初始不可见，打开窗口时逐个弹性进场。
+        button.Opacity = 0;
+
         ToolTip.SetTip(button, tip);
         button.Click += (_, _) =>
         {
@@ -1080,6 +1201,9 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             BorderThickness = new Thickness(0),
             Foreground = new SolidColorBrush(ThemePalette.ForegroundColor())
         };
+        // 按压缩放反馈；初始不可见，打开窗口时逐个弹性进场。
+        EditorAnimations.AddPressFeedback(button);
+        button.Opacity = 0;
         ToolTip.SetTip(button, $"{label}：{tip}");
         button.Click += (_, _) => action();
         return button;
@@ -2130,6 +2254,12 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
 
     private void RefreshLayerList()
     {
+        // 识别本次刷新「新增」的图层（用于弹跳 + 闪光入场；正常刷新不会重播）。
+        var addedIds = new HashSet<string>(_layers.Select(l => l.Id));
+        addedIds.ExceptWith(_knownLayerIds);
+        _knownLayerIds.Clear();
+        _knownLayerIds.UnionWith(_layers.Select(l => l.Id));
+
         _layerStack.Children.Clear();
 
         var islandRow = new LayerRowControl
@@ -2204,6 +2334,30 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         if (!islandAtTop)
         {
             _layerStack.Children.Add(islandRow);
+        }
+
+        // 首次构建（窗口尚未打开）：把图层行收集起来，供打开时逐行滑入。
+        // 之后刷新：仅对「新增」的图层行做弹跳 + 强调色闪光入场。
+        if (_entrancePlayed)
+        {
+            foreach (var row in _layerStack.Children.OfType<LayerRowControl>())
+            {
+                if (row.LayerId != null && addedIds.Contains(row.LayerId))
+                {
+                    row.Opacity = 0;
+                    EditorAnimations.PopIn(row, 24, 0, 0.92, EditorAnimations.InDuration, EditorAnimations.Entrance);
+                    row.PlayAddedFlash();
+                }
+            }
+        }
+        else
+        {
+            _pendingLayerRows.Clear();
+            foreach (var row in _layerStack.Children.OfType<LayerRowControl>())
+            {
+                row.Opacity = 0;
+                _pendingLayerRows.Add(row);
+            }
         }
     }
 
@@ -2942,6 +3096,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private static Button ActionButton(string glyph, string text, Action action)
     {
         var button = new Button { Content = new IconText { Glyph = glyph, Text = text } };
+        EditorAnimations.AddPressFeedback(button);
         button.Click += (_, _) => action();
         return button;
     }
@@ -2954,6 +3109,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             IconSource = new FluentIconSource(glyph),
             Label = label
         };
+        // 按压缩放反馈（与 FAUI 自带的按压态叠加，更灵动）。
+        EditorAnimations.AddPressFeedback(button);
         ToolTip.SetTip(button, tooltip);
         button.Click += (_, _) => action();
         return button;
@@ -2967,6 +3124,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             Content = new IconText { Glyph = glyph, Text = string.Empty },
             Padding = new Thickness(9, 5)
         };
+        EditorAnimations.AddPressFeedback(button);
         ToolTip.SetTip(button, tooltip);
         button.Click += (_, _) => action();
         return button;
@@ -3116,6 +3274,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         private DateTime _lastPressUtc = DateTime.MinValue;
         private double _lastPressX;
         private double _lastPressY;
+        /// <summary>当前是否悬停（用于新增闪光结束后的底色正确回落）。</summary>
+        private bool _hovered;
 
         public LayerRowControl WithHandlers(Action<bool>? select, Action? visibility, Action? lockAction, Action? delete)
         {
@@ -3133,21 +3293,16 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             // 无边框（参考 ClassIsland 组件库卡片的框子样式），选中仅用底色高亮。
             BorderThickness = new Thickness(0);
             Padding = new Thickness(8, 6);
+            // 背景色平滑过渡：悬停微高亮 / 选中强调色 / 新增闪光都渐变（非线性）。
+            Transitions = new Transitions
+            {
+                new BrushTransition { Property = BackgroundProperty, Duration = EditorAnimations.TapDuration }
+            };
 
             // 原生风格：透明底 + 悬停微高亮 + 选中强调色（跟随主题，不手搓深色卡片）。
-            void ApplyBackground(bool hover)
-            {
-                Background = Selected
-                    ? new SolidColorBrush(ThemePalette.AccentColorWithAlpha(70))
-                    : hover
-                        ? ThemePalette.SubtleFill()
-                        : Brushes.Transparent;
-                BorderBrush = Brushes.Transparent;
-            }
-
             ApplyBackground(false);
-            PointerEntered += (_, _) => ApplyBackground(true);
-            PointerExited += (_, _) => ApplyBackground(false);
+            PointerEntered += (_, _) => { _hovered = true; ApplyBackground(true); };
+            PointerExited += (_, _) => { _hovered = false; ApplyBackground(false); };
 
             Control preview;
             if (Thumbnail != null)
@@ -3325,6 +3480,33 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             Child = grid;
         }
 
+        /// <summary>应用底色（透明 / 悬停微高亮 / 选中强调色，跟随主题）。</summary>
+        private void ApplyBackground(bool hover)
+        {
+            Background = Selected
+                ? new SolidColorBrush(ThemePalette.AccentColorWithAlpha(70))
+                : hover
+                    ? ThemePalette.SubtleFill()
+                    : Brushes.Transparent;
+            BorderBrush = Brushes.Transparent;
+        }
+
+        /// <summary>
+        /// 新增图层的入场闪光：强调色底色短暂高亮后平滑回落到当前状态（悬停 / 选中）。
+        /// 背景渐变由 Transitions 自动完成，不会与悬停 / 选中底色冲突。
+        /// </summary>
+        public void PlayAddedFlash()
+        {
+            Background = new SolidColorBrush(ThemePalette.AccentColorWithAlpha(64));
+            var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(420) };
+            timer.Tick += (_, _) =>
+            {
+                timer.Stop();
+                ApplyBackground(_hovered);
+            };
+            timer.Start();
+        }
+
         private static Button IconButton(string glyph, string tooltip, Action? action)
         {
             var button = new Button
@@ -3333,6 +3515,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 Padding = new Thickness(7, 4),
                 VerticalAlignment = VerticalAlignment.Center
             };
+            EditorAnimations.AddPressFeedback(button);
             ToolTip.SetTip(button, tooltip);
             button.IsEnabled = action != null;
             if (action != null)

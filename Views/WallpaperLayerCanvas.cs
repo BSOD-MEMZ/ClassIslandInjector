@@ -60,6 +60,18 @@ internal sealed class WallpaperLayerCanvas : UserControl
     // 触摸平移/缩放频繁设置 Offset 极易触发，转储栈已证实）。
     private readonly Border _viewport = new() { ClipToBounds = true };
     private readonly Canvas _stage = new();
+    /// <summary>
+    /// 舞台缩放淡入容器：打开编辑器时主界面 + 图层从 0.94 缩放淡入。
+    /// 初值（Opacity=0 + 缩放 0.94）在构造时写入本地值，保证首帧不闪烁。
+    /// </summary>
+    private readonly Canvas _stageScaleHost = new()
+    {
+        Opacity = 0,
+        RenderTransform = new ScaleTransform(0.94, 0.94),
+        RenderTransformOrigin = new RelativePoint(0.5, 0.5, RelativeUnit.Relative)
+    };
+    /// <summary>画布入场动画已播放。</summary>
+    private bool _entrancePlayed;
     private readonly ScaleTransform _zoomTransform = new(1, 1);
     private readonly TranslateTransform _panTransform = new();
     /// <summary>当前视口平移量（逻辑像素，0 = 画布左上角对齐视口左上角）。</summary>
@@ -407,7 +419,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
         _stage.AddHandler(DragDrop.DragOverEvent, StageOnDragOver);
         _stage.AddHandler(DragDrop.DropEvent, StageOnDrop);
 
-        _viewport.Child = _stage;
+        _stageScaleHost.Children.Add(_stage);
+        _viewport.Child = _stageScaleHost;
         // 舞台左上角对齐视口（0 平移 = 看到画布左上角），与旧 ScrollViewer 行为一致。
         _stage.HorizontalAlignment = HorizontalAlignment.Left;
         _stage.VerticalAlignment = VerticalAlignment.Top;
@@ -453,6 +466,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
             BorderThickness = new Thickness(0),
             Foreground = new SolidColorBrush(isDanger ? Color.FromRgb(205, 92, 92) : foreground)
         };
+        EditorAnimations.AddPressFeedback(button);
         var hover = Color.FromArgb(36, foreground.R, foreground.G, foreground.B);
         button.PointerEntered += (_, _) => button.Background = new SolidColorBrush(hover);
         button.PointerExited += (_, _) => button.Background = Brushes.Transparent;
@@ -756,6 +770,23 @@ internal sealed class WallpaperLayerCanvas : UserControl
         _islandHeight = Math.Clamp(height, 40, 500);
         UpdateStageSize();
         Refresh();
+    }
+
+    /// <summary>
+    /// 编辑器打开时的舞台入场动画：主界面 + 图层从 0.94 缩放淡入（BackEase 弹性）。
+    /// 只播放一次；初值已在构造时写入本地值。
+    /// </summary>
+    public void PlayEntranceAnimation()
+    {
+        if (_entrancePlayed)
+        {
+            return;
+        }
+
+        _entrancePlayed = true;
+        // 不透明度柔滑、缩放弹性，避免文本快速闪过。
+        EditorAnimations.FadeIn(_stageScaleHost, 0, 1, EditorAnimations.InDuration, EditorAnimations.Interaction);
+        EditorAnimations.ScaleIn(_stageScaleHost, 0.94, EditorAnimations.InDuration, EditorAnimations.Entrance);
     }
 
     public void Refresh()
@@ -1397,6 +1428,10 @@ internal sealed class WallpaperLayerCanvas : UserControl
             {
                 // 首次显示时 Bounds 尚未测量，下一帧按真实尺寸重定位。
                 _floatToolbarShown = true;
+                // 弹性弹出：缩放 0.8 → 1 + 淡入（BackEase）。
+                _floatToolbar.Opacity = 0;
+                EditorAnimations.FadeIn(_floatToolbar, 0, 1, EditorAnimations.InDuration, EditorAnimations.Entrance);
+                EditorAnimations.ScaleIn(_floatToolbar, 0.8, EditorAnimations.InDuration, EditorAnimations.Entrance);
                 Dispatcher.UIThread.Post(Refresh);
             }
         }
