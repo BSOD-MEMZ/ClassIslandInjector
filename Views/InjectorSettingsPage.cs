@@ -251,7 +251,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
     private static readonly Choice<IslandAnimationMode>[] IslandAnimationModes =
     [
-        new(IslandAnimationMode.None, "无"),
         new(IslandAnimationMode.Breathe, "呼吸"),
         new(IslandAnimationMode.Float, "浮动"),
         new(IslandAnimationMode.Wave, "波浪"),
@@ -909,8 +908,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _backgroundTextureEnabled.Name = "BackgroundTextureEnabled";
         panel.Children.Add(_textureGroup);
         AutoSelectOnEnable(_backgroundTextureEnabled, _backgroundTextureType, BackgroundTextures);
-        // 动态频谱不使用纹理单元大小：选中频谱时禁用该项。
-        EnabledWhenNotAny(textureSizeItem, _backgroundTextureType, _backgroundTextureEnabled, BackgroundTexture.Spectrum);
+        // 动态频谱不使用纹理单元大小：选中频谱时隐藏该项。
+        VisibleWhenNotAny(textureSizeItem, _backgroundTextureType, BackgroundTexture.Spectrum);
         VisibleWhen(spectrumSensitivityItem, _backgroundTextureType, BackgroundTexture.Spectrum);
         VisibleWhen(spectrumBarsItem, _backgroundTextureType, BackgroundTexture.Spectrum);
         VisibleWhen(spectrumMirroredItem, _backgroundTextureType, BackgroundTexture.Spectrum);
@@ -1000,6 +999,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("动画类型", "选择循环动画的运动方式。", _animationMode),
             Item("动画幅度", "控制循环动画的强弱。", _animationAmount),
             Item("动画周期", "完成一次循环所需的时间（秒）。", _animationPeriod)));
+        AutoSelectOnEnable(_animationEnabled, _animationMode, IslandAnimationModes);
         panel.Children.Add(SwitchableGroup("\uEFED", "主界面显示动画", "选择主界面出现或消失时使用的动画。", _visibilityAnimationEnabled,
             Item("动画类型", "选择主界面出现或消失时使用的动画。", _visibilityAnimation),
             Item("显示动画时长", "主界面显示动画的时长（秒）。", _visibilityDuration)));
@@ -1025,7 +1025,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         var rippleThicknessItem = Item("Ripple 线宽", "线性 Ripple 的线条粗细。", _rippleThickness);
         var rippleOpacityItem = Item("全局不透明度", "全局降低 Ripple 效果的透明度，避免上课时分心。", _rippleOpacity);
         var rippleConstraintItem = Item("限制扩散范围", "以主界面中心为圆心创建圆形裁剪，约束所有类型 Ripple 的扩散范围。", _rippleConstraint);
-        var rippleConstraintRadiusItem = Item("约束半径", "Ripple 扩散的圆形约束半径（像素），0 为自动按主界面大小计算。", _rippleConstraintRadius, _rippleConstraint);
+        // 约束半径的显隐由下方 VisibleWhenNotAny 单一控制（约束开关开且类型非 Cinematic），
+        // 不再用 Item 的 dependency 参数，避免两套逻辑同时写 IsEnabled/IsVisible 互相覆盖。
+        var rippleConstraintRadiusItem = Item("约束半径", "Ripple 扩散的圆形约束半径（像素），0 为自动按主界面大小计算。", _rippleConstraintRadius);
         // 屏幕涟漪（高级）的专属设置，随 Ripple 组一起展开，仅选中「屏幕涟漪」时可用。
         var cinematicShakeItem = Item("晃动幅度", "提醒时画面晃动的最远位移（像素），0 为关闭晃动。", _cinematicShake);
         var cinematicBlurItem = Item("模糊半径", "起始模糊半径。", _cinematicBlur);
@@ -1034,13 +1036,13 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("Ripple 类型", "选择提醒时的扩散效果。", _rippleType),
             rippleColorItem, rippleDurationItem, rippleThicknessItem, rippleOpacityItem, rippleConstraintItem, rippleConstraintRadiusItem,
             cinematicShakeItem, cinematicBlurItem, cinematicFlashItem);
-        EnabledWhenNotAny(rippleColorItem, _rippleType, _rippleEnabled, RippleType.Hanabi, RippleType.Explode, RippleType.Cinematic);
-        EnabledWhenNotAny(rippleThicknessItem, _rippleType, _rippleEnabled, RippleType.Hanabi, RippleType.Explode, RippleType.Particle, RippleType.Cinematic);
-        EnabledWhenNotAny(rippleConstraintItem, _rippleType, _rippleEnabled, RippleType.Cinematic);
-        EnabledWhenNotAny(rippleConstraintRadiusItem, _rippleType, _rippleEnabled, RippleType.Cinematic);
-        EnabledWhen(cinematicShakeItem, _rippleType, _rippleEnabled, RippleType.Cinematic);
-        EnabledWhen(cinematicBlurItem, _rippleType, _rippleEnabled, RippleType.Cinematic);
-        EnabledWhen(cinematicFlashItem, _rippleType, _rippleEnabled, RippleType.Cinematic);
+        VisibleWhenNotAny(rippleColorItem, _rippleType, RippleType.Hanabi, RippleType.Explode, RippleType.Cinematic);
+        VisibleWhenNotAny(rippleThicknessItem, _rippleType, RippleType.Hanabi, RippleType.Explode, RippleType.Particle, RippleType.Cinematic);
+        VisibleWhenNotAny(rippleConstraintItem, _rippleType, RippleType.Cinematic);
+        VisibleWhenNotAny(rippleConstraintRadiusItem, _rippleType, _rippleConstraint, RippleType.Cinematic);
+        VisibleWhen(cinematicShakeItem, _rippleType, RippleType.Cinematic);
+        VisibleWhen(cinematicBlurItem, _rippleType, RippleType.Cinematic);
+        VisibleWhen(cinematicFlashItem, _rippleType, RippleType.Cinematic);
         AutoSelectOnEnable(_rippleEnabled, _rippleType, RippleTypes);
         panel.Children.Add(rippleGroup);
         var hanabiInfoBar = new InfoBar
@@ -2403,42 +2405,27 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         Sync();
     }
 
-    private static void EnabledWhenNot<T>(Control target, ComboBox selector, T disabledValue)
-    {
-        void Sync() => target.IsEnabled = !EqualityComparer<T>.Default.Equals(Selected(selector, disabledValue), disabledValue);
-        selector.SelectionChanged += (_, _) => Sync();
-        Sync();
-    }
-
-    private static void EnabledWhenNotAny<T>(Control target, ComboBox selector, ToggleSwitch? masterToggle, params T[] disabledValues)
+    /// <summary>仅当下拉框选中值不在指定集合内时显示目标（不匹配项直接隐藏）。</summary>
+    private static void VisibleWhenNotAny<T>(Control target, ComboBox selector, params T[] hiddenValues)
     {
         void Sync()
         {
-            var on = masterToggle == null || masterToggle.IsChecked == true;
             var selected = selector.SelectedItem is Choice<T> choice ? choice.Value : default!;
-            target.IsEnabled = on && selected != null && Array.IndexOf(disabledValues, selected) < 0;
-        }
-
-        if (masterToggle != null)
-        {
-            masterToggle.PropertyChanged += (_, _) => Sync();
+            target.IsVisible = selected != null && Array.IndexOf(hiddenValues, selected) < 0;
         }
 
         selector.SelectionChanged += (_, _) => Sync();
         Sync();
     }
 
-    /// <summary>仅当下拉框选中指定值（且总开关打开）时启用目标。</summary>
-    private static void EnabledWhen<T>(Control target, ComboBox selector, ToggleSwitch? masterToggle, T enabledValue)
+    /// <summary>总开关打开且下拉框选中值不在指定集合内时显示目标。</summary>
+    private static void VisibleWhenNotAny<T>(Control target, ComboBox selector, ToggleSwitch masterToggle, params T[] hiddenValues)
     {
-        void Sync() => target.IsEnabled =
-            (masterToggle == null || masterToggle.IsChecked == true) &&
-            EqualityComparer<T>.Default.Equals(Selected(selector, enabledValue), enabledValue);
-        if (masterToggle != null)
-        {
-            masterToggle.PropertyChanged += (_, _) => Sync();
-        }
-
+        void Sync() => target.IsVisible =
+            masterToggle.IsChecked == true &&
+            selector.SelectedItem is Choice<T> choice &&
+            Array.IndexOf(hiddenValues, choice.Value) < 0;
+        masterToggle.PropertyChanged += (_, _) => Sync();
         selector.SelectionChanged += (_, _) => Sync();
         Sync();
     }
@@ -2472,18 +2459,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private static void VisibleWhen<T>(Control target, ComboBox selector, T visibleValue)
     {
         void Sync() => target.IsVisible = EqualityComparer<T>.Default.Equals(Selected(selector, visibleValue), visibleValue);
-        selector.SelectionChanged += (_, _) => Sync();
-        Sync();
-    }
-
-    private static void VisibleWhenAny<T>(Control target, ComboBox selector, params T[] visibleValues)
-    {
-        void Sync()
-        {
-            var selected = selector.SelectedItem is Choice<T> choice ? choice.Value : default!;
-            target.IsVisible = selected != null && visibleValues.Contains(selected);
-        }
-
         selector.SelectionChanged += (_, _) => Sync();
         Sync();
     }

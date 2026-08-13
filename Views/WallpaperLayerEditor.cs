@@ -57,6 +57,15 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         Opacity = 0.75,
         FontSize = 12
     };
+    /// <summary>名称行 / 不透明度行（未选中图层时隐藏）。</summary>
+    private Control _nameItem = null!;
+    private Control _opacityItem = null!;
+    /// <summary>铺满主界面 / 旋转 / 锚点 / 偏移行（未选中图层与 SMTC 默认模式时隐藏）。</summary>
+    private Control _fillIslandItem = null!;
+    private Control _rotationItem = null!;
+    private Control _anchorItem = null!;
+    private Control _offsetXItem = null!;
+    private Control _offsetYItem = null!;
     /// <summary>自定义尺寸的两行（铺满主界面关闭时显示）。</summary>
     private Control _widthItem = null!;
     private Control _heightItem = null!;
@@ -1729,11 +1738,13 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         var layerPanel = new StackPanel { Spacing = 8 };
         _layerPanel = layerPanel;
         layerPanel.Children.Add(GroupSubtitle("\uE9B2", "图层"));
-        layerPanel.Children.Add(SettingsRow("名称", _nameBox));
+        _nameItem = SettingsRow("名称", _nameBox);
+        layerPanel.Children.Add(_nameItem);
         layerPanel.Children.Add(GroupSubtitle("\uEC4A", "外观"));
         _smtcModeItem = SettingsRow("SMTC 模式", _smtcModeBox);
         layerPanel.Children.Add(_smtcModeItem);
-        layerPanel.Children.Add(SettingsRow("不透明度", _opacitySlider));
+        _opacityItem = SettingsRow("不透明度", _opacitySlider);
+        layerPanel.Children.Add(_opacityItem);
         _displayModeItem = SettingsRow("显示方式", _displayModeBox);
         layerPanel.Children.Add(_displayModeItem);
         // 全屏扩展 + 九宫格切图（仅图片图层）
@@ -1825,15 +1836,20 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _widthItem = SettingsRow("宽度 (px)", _widthSpin);
         _heightItem = SettingsRow("高度 (px)", _heightSpin);
         layerPanel.Children.Add(GroupSubtitle("\uE27E", "尺寸"));
-        layerPanel.Children.Add(SettingsRow("铺满主界面", _fillIslandToggle));
+        _fillIslandItem = SettingsRow("铺满主界面", _fillIslandToggle);
+        layerPanel.Children.Add(_fillIslandItem);
         layerPanel.Children.Add(_widthItem);
         layerPanel.Children.Add(_heightItem);
         layerPanel.Children.Add(GroupSubtitle("\uEEA5", "旋转"));
-        layerPanel.Children.Add(SettingsRow("角度 (°)", _rotationSpin));
+        _rotationItem = SettingsRow("角度 (°)", _rotationSpin);
+        layerPanel.Children.Add(_rotationItem);
         layerPanel.Children.Add(GroupSubtitle("\uE113", "相对定位"));
-        layerPanel.Children.Add(SettingsRow("锚点", _anchorPicker));
-        layerPanel.Children.Add(SettingsRow("水平偏移 (px)", _offsetXSpin));
-        layerPanel.Children.Add(SettingsRow("垂直偏移 (px)", _offsetYSpin));
+        _anchorItem = SettingsRow("锚点", _anchorPicker);
+        layerPanel.Children.Add(_anchorItem);
+        _offsetXItem = SettingsRow("水平偏移 (px)", _offsetXSpin);
+        layerPanel.Children.Add(_offsetXItem);
+        _offsetYItem = SettingsRow("垂直偏移 (px)", _offsetYSpin);
+        layerPanel.Children.Add(_offsetYItem);
         layerPanel.Children.Add(_relativeHint);
         layerPanel.Children.Add(SettingsRow("重置变换", Button("重置变换", ResetLayerTransform)));
 
@@ -2895,12 +2911,10 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             var layer = _canvas.SelectedLayer;
             if (layer == null)
             {
-                _nameBox.IsEnabled = false;
-                _opacitySlider.IsEnabled = false;
-                _displayModeBox.IsEnabled = false;
-                _smtcModeBox.IsEnabled = false;
-                _smtcModeItem.IsVisible = false;
+                _nameItem.IsVisible = false;
+                _opacityItem.IsVisible = false;
                 _displayModeItem.IsVisible = false;
+                _smtcModeItem.IsVisible = false;
                 _fullscreenItem.IsVisible = false;
                 _sliceItem.IsVisible = false;
                 _editSliceItem.IsVisible = false;
@@ -2915,13 +2929,13 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 _shadowOffsetYItem.IsVisible = false;
                 _shadowColorItem.IsVisible = false;
                 _shadowOpacityItem.IsVisible = false;
-                _fillIslandToggle.IsEnabled = false;
-                _widthSpin.IsEnabled = false;
-                _heightSpin.IsEnabled = false;
-                _rotationSpin.IsEnabled = false;
-                _offsetXSpin.IsEnabled = false;
-                _offsetYSpin.IsEnabled = false;
-                _anchorPicker.IsEnabled = false;
+                _fillIslandItem.IsVisible = false;
+                _widthItem.IsVisible = false;
+                _heightItem.IsVisible = false;
+                _rotationItem.IsVisible = false;
+                _offsetXItem.IsVisible = false;
+                _offsetYItem.IsVisible = false;
+                _anchorItem.IsVisible = false;
                 _shapeTypeItem.IsVisible = false;
                 _shapeCornerRadiusItem.IsVisible = false;
                 _shapeStarPointsItem.IsVisible = false;
@@ -3007,14 +3021,12 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             _textUseSmtcTitleItem.IsVisible = isText;
             _textBoldItem.IsVisible = isText;
             _textAlignItem.IsVisible = isText;
-            // 默认处理模式：锁定尺寸/位移/旋转，强制铺满主界面。
-            _fillIslandToggle.IsEnabled = !smtcDefault;
-            _rotationSpin.IsEnabled = !smtcDefault;
-            _offsetXSpin.IsEnabled = !smtcDefault;
-            _offsetYSpin.IsEnabled = !smtcDefault;
-            _anchorPicker.IsEnabled = !smtcDefault;
-            _widthSpin.IsEnabled = !smtcDefault;
-            _heightSpin.IsEnabled = !smtcDefault;
+            // 默认处理模式：隐藏尺寸/位移/旋转/锚点，强制铺满主界面（宽高行由 RefreshCustomSizePanel 隐藏）。
+            _fillIslandItem.IsVisible = !smtcDefault;
+            _rotationItem.IsVisible = !smtcDefault;
+            _offsetXItem.IsVisible = !smtcDefault;
+            _offsetYItem.IsVisible = !smtcDefault;
+            _anchorItem.IsVisible = !smtcDefault;
             _nameBox.Text = layer.Name;
             _opacitySlider.Value = layer.Opacity;
             _displayModeBox.SelectedItem = DisplayModeChoices.FirstOrDefault(c => c.Value == layer.DisplayMode) ?? DisplayModeChoices[0];
