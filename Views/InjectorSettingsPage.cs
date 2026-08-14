@@ -1181,6 +1181,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(Setting("\uEF25", "关闭版本检查和提醒", "不再检查插件版本，也不提示去 GitHub 更新。", _disableVersionCheck));
         panel.Children.Add(Setting("\uEF4F", "关闭宿主定位点失效检查", "不再检测宿主点位失效，也不显示降级提示。", _disableDegradationCheck));
         panel.Children.Add(Setting("\uE480", "输出诊断日志", "写入日志文件用于排查问题。", _diagnosticLogging));
+        panel.Children.Add(Setting("\uE958", "重置插件教学", "清除本插件全部教学（SMTC / 底图编辑器）的完成状态，下次打开相关窗口即可重新播放。", Button("重置教学", ResetPluginTutorials)));
 
         AddSection(panel, "\uE9E4", "关于");
         var manifest = Plugin.Manifest;
@@ -1232,6 +1233,13 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         InjectorRuntime.Settings.ResetToDefaults();
         LoadFromSettings();
         _status.Text = "已恢复插件默认设置。";
+    }
+
+    /// <summary>重置本插件全部教学（SMTC / 底图编辑器）的完成状态，使其可以重新播放。</summary>
+    private void ResetPluginTutorials()
+    {
+        HostTutorial.ResetPluginTutorials();
+        _status.Text = "已重置本插件全部教学的完成状态，重新打开相关窗口即可重新播放。";
     }
 
     private void SaveCurrentPreset()

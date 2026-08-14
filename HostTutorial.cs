@@ -191,6 +191,99 @@ internal static class HostTutorial
         }
     }
 
+    /// <summary>本插件教程组 Id（与 Defaults/Tutorials 下 JSON 的 TutorialGroup.Id 一致）。</summary>
+    private const string PluginTutorialGroupId = "classislandInjector.tutorials";
+
+    /// <summary>
+    /// 重置本插件全部教程的完成状态（宿主 <c>ITutorialService.SetIsTutorialCompleted=false</c>），
+    /// 使其可以重新播放。教程完成状态由宿主持久化在 <c>data\Config\Tutorial.json</c>，
+    /// 独立于插件数据（清除插件数据不会重置它），因此需显式调用宿主重置。
+    /// </summary>
+    public static void ResetPluginTutorials()
+    {
+        try
+        {
+            if (TutorialGroupType == null || TutorialServiceType == null || IAppHostType == null)
+            {
+                Log("重置教程：宿主教程类型不可用，忽略。");
+                return;
+            }
+
+            var groups = TutorialServiceType
+                .GetProperty("RegisteredTutorialGroups", BindingFlags.Public | BindingFlags.Static)
+                ?.GetValue(null);
+            if (groups is not System.Collections.IEnumerable enumerable)
+            {
+                return;
+            }
+
+            // 收集本插件组内全部段落路径（{Tutorial.Id}/{Paragraph.Id}）。
+            var paths = new List<string>();
+            foreach (var existing in enumerable)
+            {
+                if (existing == null)
+                {
+                    continue;
+                }
+
+                var groupId = existing.GetType().GetProperty("Id")?.GetValue(existing) as string;
+                if (groupId != PluginTutorialGroupId)
+                {
+                    continue;
+                }
+
+                if (existing.GetType().GetProperty("Tutorials")?.GetValue(existing) is System.Collections.IEnumerable tutorials)
+                {
+                    foreach (var tutorial in tutorials)
+                    {
+                        var tutorialId = tutorial?.GetType().GetProperty("Id")?.GetValue(tutorial) as string;
+                        if (tutorial?.GetType().GetProperty("Paragraphs")?.GetValue(tutorial) is System.Collections.IEnumerable paragraphs)
+                        {
+                            foreach (var paragraph in paragraphs)
+                            {
+                                var paragraphId = paragraph?.GetType().GetProperty("Id")?.GetValue(paragraph) as string;
+                                if (!string.IsNullOrEmpty(tutorialId) && !string.IsNullOrEmpty(paragraphId))
+                                {
+                                    paths.Add($"{tutorialId}/{paragraphId}");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (paths.Count == 0)
+            {
+                Log("重置教程：未找到本插件的教程段落，忽略。");
+                return;
+            }
+
+            var tryGetService = IAppHostType.GetMethod("TryGetService", BindingFlags.Public | BindingFlags.Static);
+            var service = tryGetService?.MakeGenericMethod(TutorialServiceType).Invoke(null, null);
+            if (service == null)
+            {
+                return;
+            }
+
+            var setMethod = service.GetType().GetMethod("SetIsTutorialCompleted");
+            if (setMethod == null)
+            {
+                return;
+            }
+
+            foreach (var path in paths)
+            {
+                setMethod.Invoke(service, [path, false]);
+            }
+
+            Log($"已重置 {paths.Count} 个教程段落的完成状态。");
+        }
+        catch (Exception e)
+        {
+            Log($"重置教程完成状态失败：{e}");
+        }
+    }
+
     private static void InvokeOnService(string methodName, object?[] args)
     {
         try
