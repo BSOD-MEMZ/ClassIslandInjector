@@ -1,6 +1,7 @@
 # ClassIsland 样式注入器
 
 让 ClassIsland 再次伟大！自定义 ClassIsland 的显示行为和动画效果！
+访问神秘链接继续赤石：[xxtsoft.top](https://xxtsoft.top)
 
 ## 它能做什么
 
@@ -17,7 +18,7 @@
 
 ### 跟着音乐变颜色
 - 播放音乐时，主界面的背景、边框、阴影会自动变为专辑封面的配色
-- **动态主题色**：把当前专辑的主色调应用到 ClassIsland 全局主题强调色（专辑封面显示来自 MediaIsland，取色可以独立运行）
+- **动态主题色**：把当前专辑的主色调应用到 ClassIsland 全局主题强调色（专辑封面显示来自 [MediaIsland](https://github.com/bywhite0/MediaIsland)，取色可以独立运行）
 
 ![截图](./Assets/Readme/allsmtc.png)
 
