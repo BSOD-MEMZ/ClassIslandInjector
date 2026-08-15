@@ -352,30 +352,26 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         var seconds = _settings.NotificationTransitionDurationSeconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
-        var (fromX, fromY) = _settings.NotificationTransition switch
-        {
-            NotificationTransition.SlideDown => ("0", "-80"),
-            NotificationTransition.SlideUp => ("0", "80"),
-            NotificationTransition.SlideLeft => ("-120", "0"),
-            NotificationTransition.SlideRight => ("120", "0"),
-            _ => ("0", "0")
-        };
+        // 仅动画 Opacity。注意：不要在遮罩上动画 TranslateTransform.X/Y —— 该附加属性
+        // 会自动在 Border#OverlayMask 上创建 RenderTransform，与主界面根变换叠加成
+        // 双重嵌套变换，在旧显卡上触发 Skia 文本渲染故障（提醒文字不显示，Issue #1）。
+        // 为了文字可见性优先，滑动类过渡统一退化为淡入淡出。
         var xaml = $"""
                     <Styles xmlns="https://github.com/avaloniaui"
                             xmlns:controls="clr-namespace:ClassIsland.Controls;assembly=ClassIsland">
                       <Style Selector="controls|MainWindowLine:mask-in /template/ Border#OverlayMask, controls|MainWindowLine:mask-in /template/ Border#BackgroundBorderOverlayMask">
                         <Style.Animations>
                           <Animation Duration="0:0:{seconds}" FillMode="Both">
-                            <KeyFrame Cue="0%"><Setter Property="Opacity" Value="0"/><Setter Property="TranslateTransform.X" Value="{fromX}"/><Setter Property="TranslateTransform.Y" Value="{fromY}"/></KeyFrame>
-                            <KeyFrame Cue="100%"><Setter Property="Opacity" Value="1"/><Setter Property="TranslateTransform.X" Value="0"/><Setter Property="TranslateTransform.Y" Value="0"/></KeyFrame>
+                            <KeyFrame Cue="0%"><Setter Property="Opacity" Value="0"/></KeyFrame>
+                            <KeyFrame Cue="100%"><Setter Property="Opacity" Value="1"/></KeyFrame>
                           </Animation>
                         </Style.Animations>
                       </Style>
                       <Style Selector="controls|MainWindowLine:mask-out /template/ Border#OverlayMask, controls|MainWindowLine:mask-out /template/ Border#BackgroundBorderOverlayMask">
                         <Style.Animations>
                           <Animation Duration="0:0:{seconds}" FillMode="Forward">
-                            <KeyFrame Cue="0%"><Setter Property="Opacity" Value="1"/><Setter Property="TranslateTransform.X" Value="0"/><Setter Property="TranslateTransform.Y" Value="0"/></KeyFrame>
-                            <KeyFrame Cue="100%"><Setter Property="Opacity" Value="0"/><Setter Property="TranslateTransform.X" Value="{-double.Parse(fromX, System.Globalization.CultureInfo.InvariantCulture)}"/><Setter Property="TranslateTransform.Y" Value="{-double.Parse(fromY, System.Globalization.CultureInfo.InvariantCulture)}"/></KeyFrame>
+                            <KeyFrame Cue="0%"><Setter Property="Opacity" Value="1"/></KeyFrame>
+                            <KeyFrame Cue="100%"><Setter Property="Opacity" Value="0"/></KeyFrame>
                           </Animation>
                         </Style.Animations>
                       </Style>
@@ -546,21 +542,37 @@ internal sealed class MainWindowStyleInjector : IDisposable
         ApplyEmphasisAnimation(ref scale, ref x, ref y, ref opacity);
         ApplyBounceToTransform(ref scale, ref y);
 
-        var transforms = new TransformGroup
+        // 恒等变换（缩放=1 / 旋转=0 / 偏移=0）时恢复宿主原始变换（通常为 null），
+        // 而不是继续写入一个恒等的 TransformGroup。此前主界面根上永久残留的
+        // RenderTransform，与提醒遮罩文字自身的 ScaleTransform（宿主 mask-in 动画）
+        // 构成双重嵌套变换——在旧显卡（如 Intel HD 5500）上会触发 Skia 文本
+        // 渲染故障：遮罩背景正常绘制、文字字形不渲染（Issue #1）。
+        // 无动画/无自定义形变时移除该变换即可恢复文字显示。
+        if (scale == 1.0 && rotation == 0 && x == 0 && y == 0)
         {
-            Children =
+            if (!ReferenceEquals(_islandRoot.RenderTransform, _originalTransform))
             {
-                new ScaleTransform(scale, scale),
-                new RotateTransform(rotation),
-                new TranslateTransform(x, y)
+                _islandRoot.RenderTransform = _originalTransform;
             }
-        };
-        if (_originalTransform is Transform hostTransform)
-        {
-            transforms.Children.Add(hostTransform);
         }
-        _islandRoot.RenderTransform = transforms;
-        _islandRoot.RenderTransformOrigin = RelativePoint.Center;
+        else
+        {
+            var transforms = new TransformGroup
+            {
+                Children =
+                {
+                    new ScaleTransform(scale, scale),
+                    new RotateTransform(rotation),
+                    new TranslateTransform(x, y)
+                }
+            };
+            if (_originalTransform is Transform hostTransform)
+            {
+                transforms.Children.Add(hostTransform);
+            }
+            _islandRoot.RenderTransform = transforms;
+            _islandRoot.RenderTransformOrigin = RelativePoint.Center;
+        }
         _islandRoot.Opacity = Math.Clamp(_originalOpacity * opacity, 0, 1);
     }
 
@@ -596,6 +608,13 @@ internal sealed class MainWindowStyleInjector : IDisposable
     {
         var progress = GetEffectProgress(_emphasisStartedAt, _settings.EmphasisDurationSeconds);
         if (progress >= 1)
+        {
+            return;
+        }
+
+        // 强调动画的延迟窗口内（等待宿主遮罩文字淡入完成）不施加任何效果，
+        // 避免在这段时间给主界面根引入 RenderTransform（见 TriggerEmphasis 注释）。
+        if (_emphasisStartedAt > DateTime.UtcNow)
         {
             return;
         }
@@ -3400,7 +3419,11 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     private void TriggerEmphasis(object mask)
     {
-        _emphasisStartedAt = DateTime.UtcNow;
+        // 强调动画延迟到宿主遮罩文字淡入完成后再开始：宿主的 mask-in 文字动画在
+        // 0.26s 延迟后播放 0.25s（共 ~0.51s）。若强调动画立刻把主界面根变成非恒等
+        // RenderTransform，会与遮罩文字自身的 ScaleTransform 动画构成双重嵌套变换，
+        // 在旧显卡上导致提醒文字不渲染（Issue #1）。延迟 0.55s 避开文字淡入窗口。
+        _emphasisStartedAt = DateTime.UtcNow.AddMilliseconds(550);
         CreateRipple();
         CreateMarquee();
         UpdateAnimationTimer();
