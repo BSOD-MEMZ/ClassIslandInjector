@@ -30,7 +30,7 @@ internal sealed class SliceEditorWindow : MyWindow
         Height = 600;
         MinWidth = 480;
         MinHeight = 420;
-        Background = ThemePalette.WindowBackground();
+        EditorMica.EnableMica(this);
 
         var bw = Math.Max(1, bitmap.PixelSize.Width);
         var bh = Math.Max(1, bitmap.PixelSize.Height);

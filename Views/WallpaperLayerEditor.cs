@@ -253,9 +253,10 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         MinWidth = 980;
         MinHeight = 640;
         SystemDecorations = SystemDecorations.Full;
-        // 插件窗口里 Mica 背景不可靠（会导致整窗半透明看不清），
-        // 用主题感知的实色基底；侧栏和画布再使用独立表面，避免深色主题整窗一片灰。
-        Background = ThemePalette.WindowBackground();
+        // 在 Show 之前设置透明级别启用 Mica（不走宿主 EnableMicaWindow，其在 Loaded 才设置、
+        // 太晚会整窗半透明看不清）；用半透明主题基底分层，侧栏和画布再使用独立表面，
+        // 避免深色主题整窗一片灰。
+        EditorMica.EnableMica(this);
 
         _layers = InjectorRuntime.Settings.WallpaperLayers.Select(l => l.Clone()).ToList();
         var islandSize = InjectorRuntime.GetCurrentIslandSize();
@@ -496,7 +497,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         // 上：属性检查器面板（无边框，仅用背景区分）。
         var inspectorPanel = new Border
         {
-            Background = ThemePalette.PanelBackground(),
+            Background = ThemePalette.MicaPanelBackground(),
             Padding = new Thickness(12),
             Child = new ScrollViewer
             {
@@ -510,7 +511,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         var layerActions = BuildLayerActions();
         var layerPanel = new Border
         {
-            Background = ThemePalette.PanelBackground(),
+            Background = ThemePalette.MicaPanelBackground(),
             Padding = new Thickness(12),
             MaxHeight = 340,
             Child = new Grid
@@ -560,7 +561,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         {
             Padding = new Thickness(6),
             VerticalAlignment = VerticalAlignment.Top,
-            Background = ThemePalette.PanelBackground(),
+            Background = ThemePalette.MicaPanelBackground(),
             Child = BuildToolBar()
         };
         // 供教程 TargetSelector 定位（#EditorToolBar）。
@@ -571,7 +572,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         var stageHost = new Border
         {
             ClipToBounds = true,
-            Background = ThemePalette.PanelBackground(),
+            Background = ThemePalette.MicaPanelBackground(),
             Child = _canvas
         };
         var columnSplitter = new GridSplitter

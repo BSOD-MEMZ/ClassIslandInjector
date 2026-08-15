@@ -410,6 +410,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private bool _musicDialogShowing;
     /// <summary>「放歌看效果」选择对话框实例（点「我看到了」后自动关闭）。</summary>
     private ContentDialog? _musicDialog;
+    /// <summary>当前「放歌看效果」句是否已弹过选择对话框（防句切换间隙误关后重弹）。</summary>
+    private bool _musicDialogShown;
     /// <summary>当前打开的示例播放器窗口（点「我看到了」后自动关闭）。</summary>
     private FakePlayerWindow? _fakePlayerWindow;
 
@@ -537,25 +539,39 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         if (tag == null)
         {
             _previousGuardTag = null;
-            // 教程结束/被跳过时兜底关闭播放器与对话框。
-            if (_fakePlayerWindow != null || _musicDialog != null)
+            // 仅当教程确实结束/被跳过时兜底关闭播放器与对话框；教程仍在运行但暂时取不到
+            // 当前句（句切换间隙）时保持现状，避免对话框被误关后再次弹出。
+            if (!HostTutorial.IsTutorialRunning())
             {
-                CloseFakePlayerAndDialog();
+                _musicDialogShown = false;
+                if (_fakePlayerWindow != null || _musicDialog != null)
+                {
+                    CloseFakePlayerAndDialog();
+                }
             }
 
             return;
         }
 
-        // 离开「放歌/频谱」步骤块（放歌看效果 → 展开底纹 → 选动态频谱）时才关闭播放器与
-        // 对话框；块内保持播放器开着，让动态频谱能实时看到歌声跳动的效果。
+        // 刚离开「放歌看效果」句（用户点「我看到了」推进）时关闭选择对话框并允许下次再弹；
+        // 示例播放器保留到离开整个「放歌/频谱」块，让动态频谱能实时看到歌声跳动的效果。
+        if (_previousGuardTag == "play-music" && tag != "play-music")
+        {
+            CloseMusicDialog();
+            _musicDialogShown = false;
+        }
+
+        // 离开「放歌/频谱」步骤块（放歌看效果 → 展开底纹 → 选动态频谱）时才关闭播放器。
         if (IsMusicBlockTag(_previousGuardTag) && !IsMusicBlockTag(tag))
         {
             CloseFakePlayerAndDialog();
         }
 
-        // 句子刚变成「放歌看效果」时弹一次选择对话框。
-        if (tag == "play-music" && _previousGuardTag != "play-music")
+        // 句子刚变成「放歌看效果」时弹一次选择对话框（每个 play-music 句只弹一次，
+        // 不依赖 _previousGuardTag，防止句切换间隙取不到 tag 导致误关后重弹）。
+        if (tag == "play-music" && !_musicDialogShown)
         {
+            _musicDialogShown = true;
             ShowMusicChoiceDialog();
         }
 
@@ -687,7 +703,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     /// </summary>
     private void ShowMusicChoiceDialog()
     {
-        if (_musicDialogShowing || HostTutorial.GetCurrentSentenceTag() != "play-music")
+        if (_musicDialogShowing)
         {
             return;
         }
@@ -783,12 +799,18 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         }
     }
 
-    /// <summary>关闭「放歌」选择对话框与示例播放器（用户点「我看到了」/教程离开放歌句时）。</summary>
-    private void CloseFakePlayerAndDialog()
+    /// <summary>关闭「放歌」选择对话框（保留示例播放器，供后续频谱演示）。</summary>
+    private void CloseMusicDialog()
     {
         _musicDialog?.Hide();
         _musicDialog = null;
         _musicDialogShowing = false;
+    }
+
+    /// <summary>关闭「放歌」选择对话框与示例播放器（用户点「我看到了」/教程离开放歌句时）。</summary>
+    private void CloseFakePlayerAndDialog()
+    {
+        CloseMusicDialog();
         _fakePlayerWindow?.Close();
         _fakePlayerWindow = null;
     }

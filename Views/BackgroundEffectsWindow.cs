@@ -59,7 +59,7 @@ internal sealed class BackgroundEffectsWindow : MyWindow
         Height = 600;
         MinWidth = 320;
         MinHeight = 420;
-        Background = ThemePalette.WindowBackground();
+        EditorMica.EnableMica(this);
 
         _shapeBox.ItemsSource = ShapeChoices;
         _shapeBox.SelectedItem = ShapeChoices[0];

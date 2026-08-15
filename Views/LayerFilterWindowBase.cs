@@ -38,7 +38,7 @@ internal abstract class LayerFilterWindowBase : MyWindow
         Height = height;
         MinWidth = Math.Max(300, width - 60);
         MinHeight = Math.Max(260, height - 80);
-        Background = ThemePalette.WindowBackground();
+        EditorMica.EnableMica(this);
         _okButton.Click += (_, _) => Ok();
         _cancelButton.Click += (_, _) => Cancel();
         PreviewToggle.PropertyChanged += (_, e) =>

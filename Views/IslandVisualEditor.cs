@@ -535,9 +535,9 @@ internal sealed class IslandVisualEditorWindow : MyWindow
         Height = 720;
         MinWidth = 820;
         MinHeight = 560;
-        // 插件窗口里 Mica 背景不可靠（会导致整窗半透明看不清），
-        // 直接给一个跟随主题的实色背景；内部面板保持透明以露出它。
-        Background = ThemePalette.PanelBackground();
+        // 在 Show 之前设置透明级别启用 Mica（不走宿主 EnableMicaWindow，其在 Loaded 才设置、
+        // 太晚会整窗半透明看不清）；用半透明主题基底，内部面板保持透明以露出它。
+        EditorMica.EnableMica(this);
 
         ConfigureInspectorEvents();
         _undoButton = IconButton("\uE195", "撤销", () => UndoRequested?.Invoke(this, EventArgs.Empty));

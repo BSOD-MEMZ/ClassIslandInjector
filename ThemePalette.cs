@@ -99,10 +99,27 @@ public static class ThemePalette
         ? Color.FromRgb(24, 26, 30)
         : Color.FromRgb(244, 246, 248));
 
+    /// <summary>
+    /// Mica 窗口的基底背景：半透明主题色，让 Mica 纹理透出的同时保证内容可读。
+    /// 深色主题透明度略低（Mica 本身偏暗），浅色主题略高。
+    /// </summary>
+    public static IBrush MicaWindowBackground() => new SolidColorBrush(IsDarkTheme()
+        ? Color.FromArgb(0xB8, 24, 26, 30)
+        : Color.FromArgb(0xD9, 244, 246, 248));
+
     /// <summary>编辑器侧栏、缩放浮层等抬升表面的背景。</summary>
     public static IBrush PanelBackground() => new SolidColorBrush(IsDarkTheme()
         ? Color.FromRgb(37, 40, 46)
         : Color.FromRgb(255, 255, 255));
+
+    /// <summary>
+    /// Mica 窗口内的表面背景：半透明主题色，让 Mica 透出。
+    /// 用于编辑器的大区块（工具栏 / 舞台 / 右侧栏），避免大块实心色盖住 Mica；
+    /// 小控件与浮动条仍用实心的 <see cref="PanelBackground"/> 保证可读性。
+    /// </summary>
+    public static IBrush MicaPanelBackground() => new SolidColorBrush(IsDarkTheme()
+        ? Color.FromArgb(0x70, 37, 40, 46)
+        : Color.FromArgb(0xC0, 255, 255, 255));
 
     /// <summary>编辑器表面的描边，避免深色主题下整窗混成一片灰色。</summary>
     public static IBrush SurfaceBorder() => new SolidColorBrush(IsDarkTheme()

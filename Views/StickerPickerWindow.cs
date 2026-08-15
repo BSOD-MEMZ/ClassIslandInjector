@@ -92,7 +92,7 @@ internal sealed class StickerPickerWindow : MyWindow
         Height = 580;
         MinWidth = 500;
         MinHeight = 400;
-        Background = ThemePalette.WindowBackground();
+        EditorMica.EnableMica(this);
         _cacheDir = Path.Combine(InjectorRuntime.ConfigDirectory, "stickers");
         _listCacheDir = Path.Combine(_cacheDir, "lists");
         _thumbCacheDir = Path.Combine(_cacheDir, "thumbs");
