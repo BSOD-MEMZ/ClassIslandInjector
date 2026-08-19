@@ -5,7 +5,7 @@ entranceAssembly: "ClassIslandInjector.dll"
 icon: icon.png
 url: https://github.com/BSOD-MEMZ/ClassIslandInjector
 apiVersion: 2.0.0.0
-version: 1.1.0.2
+version: 1.1.0.3
 author: xxt8582753
 repoOwner: BSOD-MEMZ
 repoName: ClassIslandInjector
