@@ -77,6 +77,9 @@ internal static class HostContract
     /// <summary>鼠标移入淡出开关（悬停保持可见用）。</summary>
     public static string IsMouseInFadingEnabledProperty { get; private set; } = "IsMouseInFadingEnabled";
 
+    /// <summary>宿主全局「启用提醒特效」总开关（关闭时插件不再播放自己的提醒特效）。</summary>
+    public static string AllowNotificationEffectProperty { get; private set; } = "AllowNotificationEffect";
+
     /// <summary>天气数据（虚假天气用）。</summary>
     public static string LastWeatherInfoProperty { get; private set; } = "LastWeatherInfo";
 
@@ -176,6 +179,7 @@ internal static class HostContract
         ApplyString(catalog.MemberNames, nameof(RadiusXProperty), v => RadiusXProperty = v);
         ApplyString(catalog.MemberNames, nameof(RadiusYProperty), v => RadiusYProperty = v);
         ApplyString(catalog.MemberNames, nameof(IsMouseInFadingEnabledProperty), v => IsMouseInFadingEnabledProperty = v);
+        ApplyString(catalog.MemberNames, nameof(AllowNotificationEffectProperty), v => AllowNotificationEffectProperty = v);
         ApplyString(catalog.MemberNames, nameof(LastWeatherInfoProperty), v => LastWeatherInfoProperty = v);
         ApplyString(catalog.MemberNames, nameof(ThemeProperty), v => ThemeProperty = v);
         ApplyString(catalog.MemberNames, nameof(ColorSourceProperty), v => ColorSourceProperty = v);
@@ -226,6 +230,7 @@ internal static class HostContract
         RadiusXProperty = "RadiusX";
         RadiusYProperty = "RadiusY";
         IsMouseInFadingEnabledProperty = "IsMouseInFadingEnabled";
+        AllowNotificationEffectProperty = "AllowNotificationEffect";
         LastWeatherInfoProperty = "LastWeatherInfo";
         ThemeProperty = "Theme";
         ColorSourceProperty = "ColorSource";

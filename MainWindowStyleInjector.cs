@@ -44,6 +44,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private double _effectiveCornerRadius;
     private Type? _hostSettingsType;
     private PropertyInfo? _hostSettingsProperty;
+    /// <summary>宿主全局「启用提醒特效」开关属性（缓存，避免重复反射）。</summary>
+    private PropertyInfo? _hostAllowEffectProperty;
     private Styles? _loadedStyles;
     private Styles? _notificationStyles;
     /// <summary>自定义「轮播容器」切换上翻动画时注入的样式。</summary>
@@ -3156,7 +3158,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private void UpdatePrepareOnClassOverlay(Control line)
     {
         var style = _settings.PrepareOnClassStyle;
-        if (style == PrepareOnClassStyle.None || !(IsPrepareOnClassCountdown(line) || IsPreviewingPrepareOnClass()))
+        // 宿主「启用提醒特效」总开关关闭时不再显示即将上课样式（已有覆盖层走下方淡出逻辑）。
+        if (!IsHostEffectEnabled() ||
+            style == PrepareOnClassStyle.None || !(IsPrepareOnClassCountdown(line) || IsPreviewingPrepareOnClass()))
         {
             // 离开即将上课状态：先淡出，淡出完成后由动画时钟移除。
             if (_prepareOnClassOverlays.TryGetValue(line, out var leaving) && !leaving.IsFadingOut)
@@ -3324,7 +3328,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
     /// </summary>
     private void UpdatePrepareWarningOverlay()
     {
-        var shouldShow = _settings.PrepareWarningEnabled &&
+        // 宿主「启用提醒特效」总开关关闭时不再显示上课警告（已有覆盖层走下方淡出逻辑）。
+        var shouldShow = _settings.PrepareWarningEnabled && IsHostEffectEnabled() &&
                          (IsPreviewingPrepareOnClass() || IsWithinWarningWindow());
         if (!shouldShow)
         {
@@ -3419,6 +3424,13 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     private void TriggerEmphasis(object mask)
     {
+        // 宿主「启用提醒特效」总开关关闭时不再播放插件的强调动画/Ripple/流光，
+        // 与 CI 原生行为保持一致（宿主原生 Ripple 同样受该开关控制）。
+        if (!IsHostEffectEnabled())
+        {
+            return;
+        }
+
         // 强调动画延迟到宿主遮罩文字淡入完成后再开始：宿主的 mask-in 文字动画在
         // 0.26s 延迟后播放 0.25s（共 ~0.51s）。若强调动画立刻把主界面根变成非恒等
         // RenderTransform，会与遮罩文字自身的 ScaleTransform 动画构成双重嵌套变换，
@@ -4137,6 +4149,32 @@ internal sealed class MainWindowStyleInjector : IDisposable
         catch
         {
             return null;
+        }
+    }
+
+    /// <summary>
+    /// 宿主是否启用提醒特效（设置页「启用提醒特效」总开关 Settings.AllowNotificationEffect）。
+    /// 宿主关闭特效时插件不再播放自己的提醒特效（强调动画/Ripple/流光/即将上课/上课警告），
+    /// 与 CI 原生行为保持一致（宿主原生 Ripple 也受该开关控制）。
+    /// 宿主设置不可得时按「已启用」处理，避免新版宿主结构变化时意外禁用插件特效。
+    /// </summary>
+    private bool IsHostEffectEnabled()
+    {
+        var settings = GetHostSettings();
+        if (settings == null)
+        {
+            return true;
+        }
+
+        try
+        {
+            _hostAllowEffectProperty ??= settings.GetType()
+                .GetProperty(HostContract.AllowNotificationEffectProperty, BindingFlags.Instance | BindingFlags.Public);
+            return _hostAllowEffectProperty?.GetValue(settings) is not bool enabled || enabled;
+        }
+        catch
+        {
+            return true;
         }
     }
 

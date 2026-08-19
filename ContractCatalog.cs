@@ -240,6 +240,7 @@ public sealed class ContractCatalog
         catalog.MemberNames["RadiusX"] = new("RadiusX", "原生圆角 X", "settings");
         catalog.MemberNames["RadiusY"] = new("RadiusY", "原生圆角 Y", "settings");
         catalog.MemberNames["IsMouseInFadingEnabled"] = new("IsMouseInFadingEnabled", "鼠标悬停淡出开关", "settings");
+        catalog.MemberNames["AllowNotificationEffect"] = new("AllowNotificationEffect", "启用提醒特效总开关（插件特效跟随）", "settings");
         catalog.MemberNames["LastWeatherInfo"] = new("LastWeatherInfo", "天气数据（虚假天气）", "settings");
         catalog.MemberNames["Theme"] = new("Theme", "主题模式（动态主题色）", "settings");
         catalog.MemberNames["ColorSource"] = new("ColorSource", "主题色来源（动态主题色）", "settings");
