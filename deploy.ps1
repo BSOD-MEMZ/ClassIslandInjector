@@ -36,6 +36,10 @@ if (-not (Test-Path $outputDir)) {
     Write-Host "未找到产物目录：$outputDir" -ForegroundColor Red
     exit 1
 }
+# 先清空插件目录再整体复制：避免旧布局残留（如资源平铺在顶层）与目录/文件同名冲突，
+# 导致 Copy-Item 报「Container cannot be copied onto existing leaf item」。
+# 插件目录只含构建产物（用户数据在 data\Config\Plugins\classisland.injector），可安全清空。
+Remove-Item (Join-Path $pluginDir "*") -Recurse -Force -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $outputDir "*") $pluginDir -Recurse -Force
 
 if (-not $NoStart) {

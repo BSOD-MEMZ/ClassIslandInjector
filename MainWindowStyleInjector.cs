@@ -718,7 +718,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
                 _lineMasks[line] = mask;
                 if (mask != null)
                 {
-                    TriggerEmphasis(mask);
+                    TriggerEmphasis(line, mask);
                 }
                 continue;
             }
@@ -728,7 +728,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
                 _lineMasks[line] = mask;
                 if (mask != null)
                 {
-                    TriggerEmphasis(mask);
+                    TriggerEmphasis(line, mask);
                 }
             }
         }
@@ -3418,16 +3418,18 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _lineMasks[line] = e.NewValue;
         if (e.NewValue != null)
         {
-            TriggerEmphasis(e.NewValue);
+            TriggerEmphasis(line, e.NewValue);
         }
     }
 
-    private void TriggerEmphasis(object mask)
+    private void TriggerEmphasis(Control line, object mask)
     {
-        // 宿主「启用提醒特效」总开关关闭时不再播放插件的强调动画/Ripple/流光，
-        // 与 CI 原生行为保持一致（宿主原生 Ripple 同样受该开关控制）。
-        if (!IsHostEffectEnabled())
+        // 宿主「启用提醒特效」总开关关闭，或该条通知自带的特效开关关闭时，
+        // 不再播放插件的强调动画/Ripple/流光，与宿主原生 Ripple 判断链一致
+        // （MainWindowLine: settings.IsNotificationEffectEnabled && AllowNotificationEffect）。
+        if (!IsHostEffectEnabled() || !IsLineNotificationEffectEnabled(line))
         {
+            LogEffectGateState(false, "宿主特效已关闭或该通知未启用特效，跳过强调/Ripple/流光");
             return;
         }
 
@@ -4154,15 +4156,17 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     /// <summary>
     /// 宿主是否启用提醒特效（设置页「启用提醒特效」总开关 Settings.AllowNotificationEffect）。
+    /// 优先从宿主 DI 的 SettingsService.Settings 读取（设置页绑定的实时对象），回退到 App.Settings。
     /// 宿主关闭特效时插件不再播放自己的提醒特效（强调动画/Ripple/流光/即将上课/上课警告），
     /// 与 CI 原生行为保持一致（宿主原生 Ripple 也受该开关控制）。
     /// 宿主设置不可得时按「已启用」处理，避免新版宿主结构变化时意外禁用插件特效。
     /// </summary>
     private bool IsHostEffectEnabled()
     {
-        var settings = GetHostSettings();
+        var settings = GetLiveHostSettings();
         if (settings == null)
         {
+            LogEffectGateState(true, "宿主设置不可得，按已启用处理");
             return true;
         }
 
@@ -4170,11 +4174,126 @@ internal sealed class MainWindowStyleInjector : IDisposable
         {
             _hostAllowEffectProperty ??= settings.GetType()
                 .GetProperty(HostContract.AllowNotificationEffectProperty, BindingFlags.Instance | BindingFlags.Public);
-            return _hostAllowEffectProperty?.GetValue(settings) is not bool enabled || enabled;
+            var value = _hostAllowEffectProperty?.GetValue(settings);
+            var enabled = value is not bool b || b;
+            LogEffectGateState(enabled, $"value={value}, settingsType={settings.GetType().FullName}");
+            return enabled;
+        }
+        catch (Exception ex)
+        {
+            LogEffectGateState(null, $"读取异常 {ex.Message}");
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// 优先取宿主 DI 的 SettingsService.Settings（设置页「启用提醒特效」绑定的实时对象，
+    /// 与宿主原生 Ripple 判断同一来源），失败时回退到 App.Settings。
+    /// </summary>
+    private object? GetLiveHostSettings()
+    {
+        try
+        {
+            var services = IAppHost.Host?.Services;
+            var settingsServiceType = Type.GetType("ClassIsland.Services.SettingsService, ClassIsland");
+            if (settingsServiceType == null)
+            {
+                return GetHostSettings();
+            }
+
+            var settingsService = services?.GetService(settingsServiceType);
+            var settings = settingsService?.GetType().GetProperty(HostContract.SettingsProperty)?.GetValue(settingsService);
+            if (settings != null)
+            {
+                return settings;
+            }
+        }
+        catch
+        {
+            // 回退到 App.Settings。
+        }
+
+        return GetHostSettings();
+    }
+
+    /// <summary>特效门控诊断日志：仅在状态变化或异常时写入 preview-debug.log。</summary>
+    private bool? _lastEffectGateEnabled;
+    private void LogEffectGateState(bool? enabled, string detail)
+    {
+        if (_lastEffectGateEnabled == enabled)
+        {
+            return;
+        }
+
+        _lastEffectGateEnabled = enabled;
+        DebugLog($"IsHostEffectEnabled={enabled?.ToString() ?? "异常"}（{detail}）");
+    }
+
+    /// <summary>
+    /// 该行当前通知是否启用了特效（对应宿主 MainWindowLine 判断链里的
+    /// settings.IsNotificationEffectEnabled）。解析逻辑与宿主
+    /// NotificationWorkerService.CreateTicket 一致：依次取 ChannelSettings →
+    /// ProviderSettings → RequestNotificationSettings 中第一个 IsSettingsEnabled 的为准，
+    /// 否则回退全局设置；请求/设置不可得时按「已启用」处理，避免误屏蔽插件特效。
+    /// </summary>
+    private bool IsLineNotificationEffectEnabled(Control line)
+    {
+        try
+        {
+            var request = GetCurrentNotificationRequestProperty(line.GetType())?.GetValue(line);
+            if (request == null)
+            {
+                return true;
+            }
+
+            var settings = ResolveEffectiveNotificationSettings(request) ?? GetLiveHostSettings();
+            if (settings == null)
+            {
+                return true;
+            }
+
+            return settings.GetType()
+                .GetProperty("IsNotificationEffectEnabled", BindingFlags.Instance | BindingFlags.Public)
+                ?.GetValue(settings) is not bool b || b;
         }
         catch
         {
             return true;
+        }
+    }
+
+    /// <summary>
+    /// 按宿主优先级取通知请求的有效 NotificationSettings：
+    /// ChannelSettings → ProviderSettings → RequestNotificationSettings，取第一个 IsSettingsEnabled 的。
+    /// 全都没有启用时返回 null（调用方回退全局设置）。
+    /// </summary>
+    private static object? ResolveEffectiveNotificationSettings(object request)
+    {
+        var requestType = request.GetType();
+        foreach (var name in new[] { "ChannelSettings", "ProviderSettings", "RequestNotificationSettings" })
+        {
+            var settings = requestType.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                ?.GetValue(request);
+            if (settings != null && IsNotificationSettingsEnabled(settings))
+            {
+                return settings;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsNotificationSettingsEnabled(object settings)
+    {
+        try
+        {
+            return settings.GetType()
+                .GetProperty("IsSettingsEnabled", BindingFlags.Instance | BindingFlags.Public)
+                ?.GetValue(settings) is true;
+        }
+        catch
+        {
+            return false;
         }
     }
 
