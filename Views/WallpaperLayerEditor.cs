@@ -1036,11 +1036,13 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         }
     }
 
-    /// <summary>吸管最终取色：更新状态栏，并把取到的颜色设为默认色并自动记忆。</summary>
+    /// <summary>吸管最终取色：更新状态栏、把颜色设为默认色并自动记忆，同步刷新检查器。</summary>
     private void OnColorPicked(Color color)
     {
         _statusText.Text = $"已取色 RGB({color.R}, {color.G}, {color.B})  {color.ToString()}";
         RememberActiveColor(color);
+        // 吸管不自动跳回其它工具，检查器「画笔」组实时展示取到的颜色。
+        RefreshInspector();
     }
 
     /// <summary>吸管悬停预览：状态栏实时汇报 RGB。</summary>
@@ -2858,7 +2860,17 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _updatingInspector = true;
         try
         {
-            // 画笔 / 橡皮擦设置：值始终同步，可见性由底部工具上下文统一控制。
+            // 工具上下文：选区工具只显示选区操作；画笔 / 吸管显示「画笔」设置（取色后在检查器
+            // 展示颜色）；其余工具显示图层的常规设置。与是否选中图层无关，提前统一控制。
+            var selectionTool = _canvas.Tool is WallpaperEditorTool.RectSelect or WallpaperEditorTool.Lasso;
+            var brushTool = _canvas.Tool is WallpaperEditorTool.Brush or WallpaperEditorTool.Eraser or WallpaperEditorTool.Eyedropper;
+            var hasSelection = _canvas.HasSelection;
+            _selectionGroup.IsVisible = selectionTool || hasSelection;
+            _selectionToLayerButton.IsEnabled = hasSelection;
+            _clearSelectionButton.IsEnabled = hasSelection;
+            _brushGroup.IsVisible = brushTool;
+            _layerPanel.IsVisible = !selectionTool && !brushTool;
+            // 画笔 / 橡皮擦设置：值始终同步（吸管取色后这里展示当前颜色）。
             _brushColorPicker.Color = _canvas.ActiveColor;
             _brushSizeSlider.Value = _canvas.BrushSize;
             var layer = _canvas.SelectedLayer;
@@ -3045,16 +3057,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 ? $"已选中 {selected.Count} 个图层：对属性的修改将应用到全部选中图层（部分类型专属设置仅在全部同类型时可用）。"
                 : RelativeHintText(layer);
             RefreshCustomSizePanel();
-            // 工具上下文：选区工具只显示选区操作；画笔 / 橡皮擦只显示画笔设置；
-            // 其余工具显示图层的常规设置（把关键选项凸显出来，降低视觉负担）。
-            var selectionTool = _canvas.Tool is WallpaperEditorTool.RectSelect or WallpaperEditorTool.Lasso;
-            var brushTool = _canvas.Tool is WallpaperEditorTool.Brush or WallpaperEditorTool.Eraser;
-            var hasSelection = _canvas.HasSelection;
-            _selectionGroup.IsVisible = selectionTool || hasSelection;
-            _selectionToLayerButton.IsEnabled = hasSelection;
-            _clearSelectionButton.IsEnabled = hasSelection;
-            _brushGroup.IsVisible = brushTool;
-            _layerPanel.IsVisible = !selectionTool && !brushTool;
             // 画布图层操作（选中画布图层时显示）；画布尺寸固定为整张画布，强制隐藏宽高设置。
             var isCanvasLayer = layer is { IsCanvasLayer: true };
             _canvasGroup.IsVisible = isCanvasLayer;

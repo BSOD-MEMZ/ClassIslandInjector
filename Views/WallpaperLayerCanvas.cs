@@ -10,6 +10,7 @@ using Avalonia.Threading;
 using ClassIsland.Core.Controls;
 using System.Globalization;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace ClassIslandInjector.Views;
 
@@ -229,6 +230,10 @@ internal sealed class WallpaperLayerCanvas : UserControl
     private string _floatToolbarLastSignature = string.Empty;
     /// <summary>当前工具（Photoshop 式左侧工具栏）。</summary>
     private WallpaperEditorTool _tool = WallpaperEditorTool.Move;
+    /// <summary>移动工具悬停光标（平时默认箭头，悬停在图层上显示十字形）。</summary>
+    private StandardCursorType _moveHoverCursor = StandardCursorType.Arrow;
+    /// <summary>画笔工具光标：读取系统配置的笔形光标（尊重 main.cpl 自定义方案，含 .ani/.cur），失败回退系统十字光标。</summary>
+    private static readonly Cursor BrushCursor = LoadConfiguredPenCursor() ?? new Cursor(StandardCursorType.Cross);
     /// <summary>形状工具当前形状类型。</summary>
     private WallpaperShapeType _shapeToolType = WallpaperShapeType.Rectangle;
 
@@ -415,7 +420,16 @@ internal sealed class WallpaperLayerCanvas : UserControl
         _stage.PointerReleased += (s, e) => SafePointer(() => StageOnPointerReleased(s, e));
         _stage.PointerCaptureLost += (s, e) => SafePointer(() => StageOnPointerCaptureLost(s, e));
         _stage.PointerWheelChanged += (s, e) => SafePointer(() => StageOnPointerWheelChanged(s, e));
-        _stage.PointerExited += (_, _) => _brushCursor.IsVisible = false;
+        _stage.PointerExited += (_, _) =>
+        {
+            _brushCursor.IsVisible = false;
+            // 移动工具移出画布时恢复默认箭头。
+            if (_tool == WallpaperEditorTool.Move && _moveHoverCursor != StandardCursorType.Arrow)
+            {
+                _moveHoverCursor = StandardCursorType.Arrow;
+                UpdateToolCursor();
+            }
+        };
         KeyDown += CanvasOnKeyDown;
         // 支持从系统文件管理器直接拖拽图片到画布创建图层。
         DragDrop.SetAllowDrop(_stage, true);
@@ -560,6 +574,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
         }
 
         _tool = tool;
+        // 移动工具悬停光标重置为默认箭头（下次悬停时再重新计算）。
+        _moveHoverCursor = StandardCursorType.Arrow;
         // 切换工具时若画笔 / 橡皮擦笔画尚未结束（触摸屏上第二根手指点工具栏等场景），
         // 先丢弃本次笔画，避免 _strokeBitmap 泄漏或 Image 残留引用已释放位图。
         if (_drag is { Kind: DragKind.Stroke })
@@ -584,20 +600,407 @@ internal sealed class WallpaperLayerCanvas : UserControl
     {
         Cursor = _tool switch
         {
-            WallpaperEditorTool.Move => new Cursor(StandardCursorType.SizeAll),
+            WallpaperEditorTool.Move => new Cursor(_moveHoverCursor),
             WallpaperEditorTool.Zoom => new Cursor(StandardCursorType.Cross),
             WallpaperEditorTool.Shape => new Cursor(StandardCursorType.Cross),
             WallpaperEditorTool.Text => new Cursor(StandardCursorType.Ibeam),
             WallpaperEditorTool.Crop => new Cursor(StandardCursorType.Cross),
             WallpaperEditorTool.RectSelect => new Cursor(StandardCursorType.Cross),
             WallpaperEditorTool.Lasso => new Cursor(StandardCursorType.Cross),
-            WallpaperEditorTool.Brush => new Cursor(StandardCursorType.Cross),
+            WallpaperEditorTool.Brush => BrushCursor,
             WallpaperEditorTool.Eraser => new Cursor(StandardCursorType.Cross),
             WallpaperEditorTool.Eyedropper => new Cursor(StandardCursorType.Cross),
             WallpaperEditorTool.Hand => new Cursor(StandardCursorType.Hand),
             _ => new Cursor(StandardCursorType.Arrow)
         };
     }
+
+    /// <summary>
+    /// 更新移动工具悬停光标：平时默认箭头，悬停在图层上时显示十字形。
+    /// 仅在状态变化时重设光标，避免指针移动时反复重建 Cursor 对象。
+    /// </summary>
+    private void UpdateMoveHoverCursor(Point stagePos)
+    {
+        if (_drag != null)
+        {
+            return;
+        }
+
+        var target = HitTestLayer(stagePos) != null ? StandardCursorType.Cross : StandardCursorType.Arrow;
+        if (_moveHoverCursor == target)
+        {
+            return;
+        }
+
+        _moveHoverCursor = target;
+        UpdateToolCursor();
+    }
+
+    /// <summary>
+    /// 读取系统配置的笔形光标（尊重 main.cpl 里自定义的光标方案）：路径来自
+    /// HKCU\Control Panel\Cursors\NWPen（支持 .ani / .cur）。未配置或加载失败返回 null，
+    /// 由调用方回退系统十字光标。
+    /// </summary>
+    private static Cursor? LoadConfiguredPenCursor()
+    {
+        try
+        {
+            var path = GetConfiguredPenPath();
+            if (string.IsNullOrEmpty(path) || !File.Exists(path))
+            {
+                return null;
+            }
+
+            var bytes = File.ReadAllBytes(path);
+            var frame = Path.GetExtension(path).ToLowerInvariant() == ".ani"
+                ? LoadAnimatedFrame(bytes)
+                : LoadStaticFrame(bytes);
+            if (frame is not { } f)
+            {
+                return null;
+            }
+
+            return BuildScaledCursor(f.Bgra, f.Width, f.Height, f.HotX, f.HotY);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>用户配置的笔形光标路径；未配置自定义方案时回退 Windows 默认（Aero）的 aero_pen.cur。</summary>
+    private static string? GetConfiguredPenPath()
+    {
+        var configured = ReadCursorsString("NWPen");
+        return string.IsNullOrWhiteSpace(configured)
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+                "Cursors", "aero_pen.cur")
+            : configured.Trim();
+    }
+
+    /// <summary>
+    /// 读取 HKCU\Control Panel\Cursors 下的字符串值（兼容 REG_SZ / REG_EXPAND_SZ）；失败返回 null。
+    /// 只取到第一个 '\0'：部分自定义光标方案（如 Moos）会在结尾多写垃圾字节，TrimEnd 会残留。
+    /// </summary>
+    private static string? ReadCursorsString(string name)
+    {
+        try
+        {
+            var buffer = new byte[1024];
+            var size = buffer.Length;
+            var handle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+            try
+            {
+                var rc = RegGetValueW(new IntPtr(HkeyCurrentUser), "Control Panel\\Cursors", name,
+                    RrfRtypeRegSz | RrfRtypeRegExpandSz, out _, handle.AddrOfPinnedObject(), ref size);
+                if (rc != 0 || size <= 0)
+                {
+                    return null;
+                }
+
+                var raw = Encoding.Unicode.GetString(buffer, 0, size);
+                var nullIdx = raw.IndexOf('\0');
+                var value = nullIdx >= 0 ? raw.Substring(0, nullIdx) : raw;
+                // REG_EXPAND_SZ 可能含 %SYSTEMROOT% 之类变量，展开成真实路径。
+                return string.IsNullOrEmpty(value) ? null : Environment.ExpandEnvironmentVariables(value);
+            }
+            finally
+            {
+                handle.Free();
+            }
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>读取 HKCU\Control Panel\Cursors 下的 DWORD 值；失败返回 fallback。</summary>
+    private static int ReadCursorsDword(string name, int fallback)
+    {
+        try
+        {
+            var buffer = new byte[4];
+            var size = 4;
+            var handle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+            try
+            {
+                var rc = RegGetValueW(new IntPtr(HkeyCurrentUser), "Control Panel\\Cursors", name,
+                    RrfRtypeDword, out _, handle.AddrOfPinnedObject(), ref size);
+                return rc == 0 && size >= 4 ? BitConverter.ToInt32(buffer, 0) : fallback;
+            }
+            finally
+            {
+                handle.Free();
+            }
+        }
+        catch
+        {
+            return fallback;
+        }
+    }
+
+    /// <summary>系统光标基准尺寸（main.cpl 的「指针大小」），默认 32。</summary>
+    private static int GetCursorBaseSize() => ReadCursorsDword("CursorBaseSize", 32);
+
+    /// <summary>解析 .cur / .ico 静态光标：挑最接近基准尺寸的条目并解析。</summary>
+    private static (byte[] Bgra, int Width, int Height, int HotX, int HotY)? LoadStaticFrame(byte[] bytes)
+    {
+        try
+        {
+            if (bytes.Length < 6)
+            {
+                return null;
+            }
+
+            var count = BitConverter.ToUInt16(bytes, 4);
+            var target = GetCursorBaseSize();
+            var best = -1;
+            var bestScore = int.MaxValue;
+            for (var i = 0; i < count; i++)
+            {
+                var entry = 6 + i * 16;
+                var w = bytes[entry] == 0 ? 256 : bytes[entry];
+                var score = Math.Abs(w - target);
+                if (score >= bestScore)
+                {
+                    continue;
+                }
+
+                bestScore = score;
+                best = i;
+            }
+
+            if (best < 0)
+            {
+                return null;
+            }
+
+            var off = 6 + best * 16;
+            return ParseDib(bytes,
+                BitConverter.ToInt32(bytes, off + 12),
+                BitConverter.ToInt32(bytes, off + 8),
+                BitConverter.ToUInt16(bytes, off + 4),
+                BitConverter.ToUInt16(bytes, off + 6));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>解析 .ani 动画光标的第一帧（RIFF/ACON 容器，帧内嵌 icon 块）。</summary>
+    private static (byte[] Bgra, int Width, int Height, int HotX, int HotY)? LoadAnimatedFrame(byte[] bytes)
+    {
+        try
+        {
+            if (bytes.Length < 12 || Encoding.ASCII.GetString(bytes, 0, 4) != "RIFF" ||
+                Encoding.ASCII.GetString(bytes, 8, 4) != "ACON")
+            {
+                return null;
+            }
+
+            var pos = 12;
+            while (pos + 8 <= bytes.Length)
+            {
+                var id = Encoding.ASCII.GetString(bytes, pos, 4);
+                var size = BitConverter.ToInt32(bytes, pos + 4);
+                var dataStart = pos + 8;
+                if (dataStart + size > bytes.Length)
+                {
+                    break;
+                }
+
+                if (id == "icon")
+                {
+                    // 某些 ANI 直接在顶层放 icon 块。
+                    return ParseEmbeddedIcon(bytes, dataStart, size);
+                }
+
+                if (id == "LIST" && Encoding.ASCII.GetString(bytes, dataStart, 4) == "fram")
+                {
+                    // 帧列表：取第一个 icon 子块。
+                    var sub = dataStart + 4;
+                    var listEnd = dataStart + size;
+                    while (sub + 8 <= listEnd)
+                    {
+                        if (Encoding.ASCII.GetString(bytes, sub, 4) != "icon")
+                        {
+                            var subSize = BitConverter.ToInt32(bytes, sub + 4);
+                            sub += 8 + subSize + (subSize & 1);
+                            continue;
+                        }
+
+                        return ParseEmbeddedIcon(bytes, sub + 8, BitConverter.ToInt32(bytes, sub + 4));
+                    }
+                }
+
+                pos += 8 + size + (size & 1);
+            }
+
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>解析 ANI 内嵌的 icon 块（6 字节 ICONDIR + 单个 ICONDIRENTRY + DIB）。</summary>
+    private static (byte[] Bgra, int Width, int Height, int HotX, int HotY)? ParseEmbeddedIcon(
+        byte[] bytes, int dataStart, int size)
+    {
+        if (size < 22)
+        {
+            return null;
+        }
+
+        var entry = dataStart + 6;
+        // ANI 内嵌帧的 imageOffset 相对 icon 块开头，热点写在 ICONDIRENTRY 里（有效）。
+        return ParseDib(bytes, dataStart + BitConverter.ToInt32(bytes, entry + 12),
+            BitConverter.ToInt32(bytes, entry + 8),
+            BitConverter.ToUInt16(bytes, entry + 4), BitConverter.ToUInt16(bytes, entry + 6));
+    }
+
+    /// <summary>
+    /// 解析单个 DIB 图像（BITMAPINFOHEADER + XOR 数据 + AND 掩码）为自上而下的预乘 BGRA 像素。
+    /// 光标文件的 biHeight = 图像高 ×2。热点：头部热点有效则用；否则（系统 .cur 文件头恒为 0）
+    /// 按「自下而上第一个不透明像素 = 笔尖」推算。失败返回 null。
+    /// </summary>
+    private static (byte[] Bgra, int Width, int Height, int HotX, int HotY)? ParseDib(
+        byte[] bytes, int imageOffset, int bytesInRes, int headerHotX, int headerHotY)
+    {
+        try
+        {
+            if (imageOffset < 0 || bytesInRes <= 0 || imageOffset + bytesInRes > bytes.Length)
+            {
+                return null;
+            }
+
+            var dibSize = BitConverter.ToInt32(bytes, imageOffset);
+            var width = BitConverter.ToInt32(bytes, imageOffset + 4);
+            var dibHeight = BitConverter.ToInt32(bytes, imageOffset + 8);
+            var bitCount = BitConverter.ToUInt16(bytes, imageOffset + 14);
+            var height = dibHeight / 2;
+            if (bitCount != 32 || width <= 0 || height <= 0 || dibSize < 40 || dibHeight % 2 != 0)
+            {
+                return null;
+            }
+
+            var xorStart = imageOffset + dibSize;
+            var stride = width * 4;
+            // 只校验 XOR 数据区（AND 掩码较短，不能按整高估算）。
+            if (xorStart + stride * height > imageOffset + bytesInRes)
+            {
+                return null;
+            }
+
+            // XOR 数据自下而上（bottom-up），翻转为自上而下并预乘 alpha（WriteableBitmap 用 Premul）。
+            var bgra = new byte[stride * height];
+            for (var y = 0; y < height; y++)
+            {
+                Array.Copy(bytes, xorStart + (height - 1 - y) * stride, bgra, y * stride, stride);
+            }
+
+            for (var i = 0; i < bgra.Length; i += 4)
+            {
+                var a = bgra[i + 3];
+                if (a != 255)
+                {
+                    bgra[i] = (byte)(bgra[i] * a / 255);
+                    bgra[i + 1] = (byte)(bgra[i + 1] * a / 255);
+                    bgra[i + 2] = (byte)(bgra[i + 2] * a / 255);
+                }
+            }
+
+            int hotX, hotY;
+            if (headerHotX > 0 && headerHotY > 0 && headerHotX < width && headerHotY < height)
+            {
+                hotX = headerHotX;
+                hotY = headerHotY;
+            }
+            else
+            {
+                // 系统 .cur 文件头热点恒为 (0,0)，按笔尖（自下而上第一个不透明像素）推算。
+                hotX = 0;
+                hotY = 0;
+                var found = false;
+                for (var y = height - 1; y >= 0 && !found; y--)
+                {
+                    for (var x = 0; x < width; x++)
+                    {
+                        if (bgra[y * stride + x * 4 + 3] <= 40)
+                        {
+                            continue;
+                        }
+
+                        hotX = x;
+                        hotY = y;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+
+            return (bgra, width, height, hotX, hotY);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 把源图像构建为位图光标：尺寸大于系统基准尺寸时缩放到基准尺寸（Avalonia 的 Win32
+    /// 后端不做 DPI 缩放，160×160 的 .ani 帧必须自己缩小），热点按比例缩放。
+    /// </summary>
+    private static Cursor? BuildScaledCursor(byte[] bgra, int width, int height, int hotX, int hotY)
+    {
+        try
+        {
+            var src = new WriteableBitmap(new PixelSize(width, height), new Vector(96, 96),
+                PixelFormat.Bgra8888, AlphaFormat.Premul);
+            using (var fb = src.Lock())
+            {
+                var stride = width * 4;
+                for (var y = 0; y < height; y++)
+                {
+                    Marshal.Copy(bgra, y * stride, fb.Address + y * fb.RowBytes, stride);
+                }
+            }
+
+            var target = GetCursorBaseSize();
+            if (width <= target && height <= target)
+            {
+                return new Cursor(src, new PixelPoint(hotX, hotY));
+            }
+
+            var scaled = new RenderTargetBitmap(new PixelSize(target, target), new Vector(96, 96));
+            using (var ctx = scaled.CreateDrawingContext())
+            {
+                ctx.DrawImage(src, new Rect(0, 0, target, target));
+            }
+
+            return new Cursor(scaled, new PixelPoint(
+                (int)Math.Round(hotX * target / (double)width),
+                (int)Math.Round(hotY * target / (double)height)));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    // ---- 读取注册表（HKCU\Control Panel\Cursors）的 P/Invoke ----
+    private const int HkeyCurrentUser = unchecked((int)0x80000001);
+    private const uint RrfRtypeRegSz = 0x00000002;
+    private const uint RrfRtypeRegExpandSz = 0x00000004;
+    private const uint RrfRtypeDword = 0x00000010;
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, EntryPoint = "RegGetValueW")]
+    private static extern int RegGetValueW(
+        IntPtr hkey, string? lpSubKey, string? lpValue, uint dwFlags,
+        out int pdwType, IntPtr pvData, ref int pcbData);
 
     /// <summary>
     /// 更新画笔 / 橡皮擦笔尖预览圆：颜色跟随当前画笔颜色（透明墨用红色标记提醒），
@@ -1654,6 +2057,11 @@ internal sealed class WallpaperLayerCanvas : UserControl
     {
         // 画笔 / 橡皮擦：实时更新笔尖预览圆（触摸屏没有悬停光标，靠它看笔刷位置与大小）。
         UpdateBrushCursor(e.GetPosition(_stage));
+        // 移动工具：悬停在图层上时显示十字形光标，平时默认箭头。
+        if (_tool == WallpaperEditorTool.Move)
+        {
+            UpdateMoveHoverCursor(e.GetPosition(_stage));
+        }
 
         if (_tool == WallpaperEditorTool.Eyedropper && _drag == null)
         {
@@ -3056,7 +3464,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
     /// <summary>吸管拖拽 / 悬停：读取指针所在屏幕像素并汇报预览。</summary>
     private void UpdateEyedrop(DragState drag, Point pointer) => PreviewEyedrop(pointer);
 
-    /// <summary>吸管松开：把最终取到的颜色设为当前默认色，并切回移动工具。</summary>
+    /// <summary>吸管松开：把最终取到的颜色设为当前默认色，保持吸管工具以便连续取色。</summary>
     private void FinishEyedrop(DragState drag, Point pointer)
     {
         var color = PickScreenColor(pointer);
@@ -3065,8 +3473,6 @@ internal sealed class WallpaperLayerCanvas : UserControl
             ActiveColor = c;
             ColorPicked?.Invoke(c);
         }
-
-        SwitchTool(WallpaperEditorTool.Move);
     }
 
     /// <summary>取指针所在位置的屏幕像素颜色并汇报（无法取色时静默忽略）。</summary>
