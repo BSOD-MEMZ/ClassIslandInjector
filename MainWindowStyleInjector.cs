@@ -824,12 +824,16 @@ internal sealed class MainWindowStyleInjector : IDisposable
                 else
                 {
                     // 无真实封面（暂停/停止/无缩略图）时显示占位专辑封面，保持图层可见。
+                    // （设置了「暂停/停止时隐藏」的图层随后在 LayoutWallpaperLayers 中被临时隐藏。）
                     foreach (var view in smtcLayers)
                     {
                         LoadLayerPlaceholder(view);
                     }
                 }
             }
+
+            // 播放状态变化后重排：应用「暂停/停止时隐藏」的临时隐藏与裁剪形状。
+            LayoutWallpaperLayers();
         }
         else if (_settings.WallpaperEnabled && _settings.WallpaperSource == WallpaperSource.SmtcAlbum)
         {
@@ -860,6 +864,10 @@ internal sealed class MainWindowStyleInjector : IDisposable
             }
         }
     }
+
+    /// <summary>SMTC 图层是否因「暂停/停止时隐藏」而临时隐藏（运行时隐藏，不修改 Visible 设置）。</summary>
+    private bool IsSmtcHidden(WallpaperLayerItem layer) =>
+        layer.Source == WallpaperSource.SmtcAlbum && layer.SmtcHideWhenPaused && !_smtcPlaying;
 
     private void EnsureDynamicColorsInitialized()
     {
@@ -2021,7 +2029,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
             Canvas.SetTop(control, rect.Y);
             control.RenderTransform = new RotateTransform(layer.Rotation);
             control.Opacity = layer.Opacity;
-            control.IsVisible = layer.Visible;
+            control.IsVisible = layer.Visible && !IsSmtcHidden(layer);
+            // 图片图层的裁剪形状（从选区新建的裁剪图层，如 SMTC 形状图层）。
+            control.Clip = WallpaperLayerEffects.BuildClipGeometry(layer.ClipPath);
             if (control is Border host)
             {
                 // 效果：外层容器挂投影，内层图片挂高斯模糊（两效果可同时启用）。

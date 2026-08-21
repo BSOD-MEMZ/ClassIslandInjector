@@ -1,3 +1,6 @@
+using Avalonia;
+using System.Globalization;
+using System.Text;
 using System.Text.Json;
 
 namespace ClassIslandInjector;
@@ -231,7 +234,9 @@ public enum WallpaperShapeType
     Hexagon,
     Star,
     Heart,
-    Parallelogram
+    Parallelogram,
+    /// <summary>自定义路径（布尔运算结果）：轮廓由 PathRings 描述。</summary>
+    Custom
 }
 
 /// <summary>
@@ -279,6 +284,9 @@ public sealed class WallpaperLayerItem
 
     /// <summary>SMTC 专辑封面图层的处理模式（仅 Source 为 SmtcAlbum 时生效）。</summary>
     public WallpaperLayerSmtcMode SmtcMode { get; set; } = WallpaperLayerSmtcMode.Default;
+
+    /// <summary>SMTC 专辑封面图层：暂停 / 停止播放时是否隐藏（运行时临时隐藏，不修改 Visible）。</summary>
+    public bool SmtcHideWhenPaused { get; set; }
 
     /// <summary>本地图片路径或幻灯片文件夹路径。</summary>
     public string Path { get; set; } = string.Empty;
@@ -389,6 +397,86 @@ public sealed class WallpaperLayerItem
     /// <summary>星形内凹比例（0.1-0.95，仅 ShapeType 为 Star 时生效）。</summary>
     public double ShapeStarInset { get; set; } = 0.5;
 
+    /// <summary>
+    /// 自定义路径环（仅 ShapeType 为 Custom 时生效）：紧凑字符串，每环 "x,y x,y ..."、多环用 | 分隔；
+    /// 坐标相对图层本地（0,0 为左上）。首个环为外轮廓，后续环为洞（渲染用 EvenOdd 填充）。
+    /// </summary>
+    public string PathRings { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 图片图层的裁剪形状（像素路径环，格式同 PathRings，坐标相对图层本地左上角）；
+    /// 非空时图片被裁剪显示在该形状内（用于「从选区新建图层」把 SMTC 封面放进选区形状）。
+    /// </summary>
+    public string ClipPath { get; set; } = string.Empty;
+
+    /// <summary>把路径环列表编码为紧凑字符串（坐标用不变区域文化）。</summary>
+    public static string EncodePathRings(List<List<Point>> rings)
+    {
+        var sb = new StringBuilder();
+        foreach (var ring in rings)
+        {
+            if (sb.Length > 0)
+            {
+                sb.Append('|');
+            }
+
+            for (var i = 0; i < ring.Count; i++)
+            {
+                if (i > 0)
+                {
+                    sb.Append(' ');
+                }
+
+                sb.Append(ring[i].X.ToString("0.###", CultureInfo.InvariantCulture));
+                sb.Append(',');
+                sb.Append(ring[i].Y.ToString("0.###", CultureInfo.InvariantCulture));
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>把紧凑字符串解码为路径环列表；格式非法返回 null。</summary>
+    public static List<List<Point>>? DecodePathRings(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        try
+        {
+            var rings = new List<List<Point>>();
+            foreach (var ringText in text.Split('|'))
+            {
+                var ring = new List<Point>();
+                foreach (var token in ringText.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var comma = token.IndexOf(',');
+                    if (comma <= 0)
+                    {
+                        return null;
+                    }
+
+                    var x = double.Parse(token.AsSpan(0, comma), CultureInfo.InvariantCulture);
+                    var y = double.Parse(token.AsSpan(comma + 1), CultureInfo.InvariantCulture);
+                    ring.Add(new Point(x, y));
+                }
+
+                if (ring.Count >= 3)
+                {
+                    rings.Add(ring);
+                }
+            }
+
+            return rings.Count > 0 ? rings : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     /// <summary>矢量形状填充色（仅 Kind 为 Shape 时生效；可为透明）。</summary>
     public string FillColor { get; set; } = "#66FFFFFF";
 
@@ -446,6 +534,7 @@ public sealed class WallpaperLayerItem
         Opacity = Opacity,
         Source = Source,
         SmtcMode = SmtcMode,
+        SmtcHideWhenPaused = SmtcHideWhenPaused,
         Path = Path,
         DisplayMode = DisplayMode,
         SizeMode = SizeMode,
@@ -485,6 +574,8 @@ public sealed class WallpaperLayerItem
         ShapeCornerRadius = ShapeCornerRadius,
         ShapeStarPoints = ShapeStarPoints,
         ShapeStarInset = ShapeStarInset,
+        PathRings = PathRings,
+        ClipPath = ClipPath,
         FillColor = FillColor,
         FillUsesThemeColor = FillUsesThemeColor,
         StrokeColor = StrokeColor,

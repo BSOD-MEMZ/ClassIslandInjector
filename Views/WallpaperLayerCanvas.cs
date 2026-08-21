@@ -225,6 +225,25 @@ internal sealed class WallpaperLayerCanvas : UserControl
     private Point _brushCursorPos;
     /// <summary>画笔 / 橡皮擦大小（屏幕 DIP）。</summary>
     public double BrushSize { get; set; } = 8;
+    private WallpaperBrushTip _brushTip = WallpaperBrushTip.Round;
+    /// <summary>画笔 / 橡皮擦笔头形状（圆形 / 方形 / 横线）；切换时原位刷新笔尖预览。</summary>
+    public WallpaperBrushTip BrushTip
+    {
+        get => _brushTip;
+        set
+        {
+            _brushTip = value;
+            if ((_tool is WallpaperEditorTool.Brush or WallpaperEditorTool.Eraser) && _brushCursor.IsVisible)
+            {
+                UpdateBrushCursor(_brushCursorPos);
+            }
+        }
+    }
+
+    /// <summary>画笔 / 橡皮擦笔锋（随速度收放笔宽），默认开启。</summary>
+    public bool BrushTaper { get; set; } = true;
+    /// <summary>画笔 / 橡皮擦抗锯齿（边缘软过渡），默认开启。</summary>
+    public bool BrushAntiAlias { get; set; } = true;
     /// <summary>浮动工具条是否已显示（用于首次显示后按真实尺寸重定位）。</summary>
     /// <summary>上次浮动操作条弹出时的选中集合签名（切换选中元素时重新弹跳）。</summary>
     private string _floatToolbarLastSignature = string.Empty;
@@ -257,6 +276,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
     public event Action<WallpaperEditorTool>? ToolChanged;
     /// <summary>选区创建 / 清除（供检查器显示选区操作）。</summary>
     public event Action? SelectionStateChanged;
+    /// <summary>画布操作被阻止时的提醒（供编辑器顶部 InfoBar 展示）。</summary>
+    public event Action<string>? HintRequested;
 
     public WallpaperLayerCanvas()
     {
@@ -1040,10 +1061,32 @@ internal sealed class WallpaperLayerCanvas : UserControl
         }
 
         var radius = Math.Max(2, BrushSize / 2);
-        _brushCursor.Width = radius * 2;
-        _brushCursor.Height = radius * 2;
-        Canvas.SetLeft(_brushCursor, stagePos.X - radius);
-        Canvas.SetTop(_brushCursor, stagePos.Y - radius);
+        switch (BrushTip)
+        {
+            case WallpaperBrushTip.Square:
+                _brushCursor.CornerRadius = new CornerRadius(0);
+                _brushCursor.Width = radius * 2;
+                _brushCursor.Height = radius * 2;
+                Canvas.SetLeft(_brushCursor, stagePos.X - radius);
+                Canvas.SetTop(_brushCursor, stagePos.Y - radius);
+                break;
+            case WallpaperBrushTip.Flat:
+                // 横线笔头：横向 3 倍宽（与 DrawTipStamp 的 halfW = radius*3 一致）。
+                _brushCursor.CornerRadius = new CornerRadius(0);
+                _brushCursor.Width = radius * 6;
+                _brushCursor.Height = radius * 2;
+                Canvas.SetLeft(_brushCursor, stagePos.X - radius * 3);
+                Canvas.SetTop(_brushCursor, stagePos.Y - radius);
+                break;
+            default:
+                _brushCursor.CornerRadius = new CornerRadius(50);
+                _brushCursor.Width = radius * 2;
+                _brushCursor.Height = radius * 2;
+                Canvas.SetLeft(_brushCursor, stagePos.X - radius);
+                Canvas.SetTop(_brushCursor, stagePos.Y - radius);
+                break;
+        }
+
         _brushCursor.IsVisible = true;
     }
 
@@ -1630,6 +1673,8 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 image.Width = rect.Width;
                 image.Height = rect.Height;
                 image.Stretch = WallpaperLayerLayout.ToStretch(layer.DisplayMode);
+                // 裁剪形状（从选区新建的裁剪图层，如 SMTC 形状图层）。
+                host.Clip = WallpaperLayerEffects.BuildClipGeometry(layer.ClipPath);
             }
             else if (_layerVisuals.TryGetValue(layer.Id, out var visual))
             {
@@ -2273,6 +2318,16 @@ internal sealed class WallpaperLayerCanvas : UserControl
         {
             // 锁定 / 全屏扩展 / 画布图层只允许选中，不进入拖拽（全屏图层固定铺满显示框架；
             // 画布图层固定铺满整张画布，要调整需先栅格化为图片）。
+            if (layer.IsCanvasLayer)
+            {
+                HintRequested?.Invoke("画布图层固定铺满整张画布，不能直接移动 / 缩放；请先栅格化（图层面板「栅格化」或 Ctrl+Shift+R）再调整。");
+            }
+            else if (layer.FullscreenExtend)
+            {
+                HintRequested?.Invoke("全屏扩展图层固定铺满显示框架，不能移动；请先关闭「扩展到整个显示框架」。");
+            }
+            // 锁定图层是用户主动行为，不打扰。
+
             return;
         }
 
@@ -2421,6 +2476,11 @@ internal sealed class WallpaperLayerCanvas : UserControl
             layer.FullscreenExtend || _lockedIds.Contains(layer.Id))
         {
             SelectWithGroup(layer?.Id);
+            HintRequested?.Invoke(layer == null || layer.Kind != WallpaperLayerKind.Image
+                ? "裁剪只能作用于图片图层；形状 / 文本请先栅格化。"
+                : layer.FullscreenExtend
+                    ? "全屏扩展图层不能裁剪，请先关闭「扩展到整个显示框架」。"
+                    : "该图层已锁定，无法裁剪。");
             return;
         }
 
@@ -2542,6 +2602,23 @@ internal sealed class WallpaperLayerCanvas : UserControl
             CanvasDebugLog($"BeginStroke 未开始：SelectedLayer={(layer?.Id ?? "null")} " +
                            $"Kind={layer?.Kind} Fullscreen={layer?.FullscreenExtend} " +
                            $"Locked={layer != null && _lockedIds.Contains(layer.Id)}");
+            if (layer == null)
+            {
+                HintRequested?.Invoke("画笔需要目标图层：请先选中一个图片图层，或点击图层面板第二个按钮（新建画布）创建透明画布再绘制。");
+            }
+            else if (layer.Kind != WallpaperLayerKind.Image)
+            {
+                HintRequested?.Invoke("画笔只能画在图片图层或画布上。");
+            }
+            else if (layer.FullscreenExtend)
+            {
+                HintRequested?.Invoke("全屏扩展图层不能直接绘制，请先关闭「扩展到整个显示框架」。");
+            }
+            else
+            {
+                HintRequested?.Invoke("该图层已锁定，无法绘制。");
+            }
+
             return;
         }
 
@@ -2590,8 +2667,10 @@ internal sealed class WallpaperLayerCanvas : UserControl
         _strokeBitmap = working;
         _strokeLayer = layer;
         _strokeLast = MapStrokePoint(layer, raw, pos);
-        // 笔锋：起笔半径取基准的 35%（细笔尖），随后随速度平滑变粗。
-        _strokeRadius = Math.Max(0.5, BrushRadiusFor(layer, w, h) * 0.35);
+        // 笔锋：起笔半径取基准的 35%（细笔尖），随后随速度平滑变粗；关闭则恒定基准宽。
+        _strokeRadius = BrushTaper
+            ? Math.Max(0.5, BrushRadiusFor(layer, w, h) * 0.35)
+            : Math.Max(0.5, BrushRadiusFor(layer, w, h));
         _strokeLastTimestamp = (ulong)e.Timestamp;
         _drag = new DragState { Kind = DragKind.Stroke, Layer = layer, StartPointer = pos };
         e.Pointer.Capture(_stage);
@@ -2620,17 +2699,21 @@ internal sealed class WallpaperLayerCanvas : UserControl
         var stride = w * 4;
         var radius = BrushRadiusFor(layer, w, h);
         var erasing = _tool == WallpaperEditorTool.Eraser;
-        // 笔锋：按指针移动速度调整本段笔宽（慢→粗、快→细），平滑过渡避免突变。
-        var nowTs = timestamp;
-        var dt = nowTs > _strokeLastTimestamp ? (double)(nowTs - _strokeLastTimestamp) : 1.0;
-        var dist = Math.Sqrt((p.X - last.X) * (p.X - last.X) + (p.Y - last.Y) * (p.Y - last.Y));
-        var speed = dist / dt;
-        var targetRadius = radius * Math.Clamp(1.35 - speed * 0.18, 0.45, 1.0);
-        _strokeRadius += (targetRadius - _strokeRadius) * 0.35;
-        _strokeLastTimestamp = nowTs;
-        var drawRadius = Math.Max(0.5, _strokeRadius);
+        if (BrushTaper)
+        {
+            // 笔锋：按指针移动速度调整本段笔宽（慢→粗、快→细），平滑过渡避免突变。
+            var nowTs = timestamp;
+            var dt = nowTs > _strokeLastTimestamp ? (double)(nowTs - _strokeLastTimestamp) : 1.0;
+            var dist = Math.Sqrt((p.X - last.X) * (p.X - last.X) + (p.Y - last.Y) * (p.Y - last.Y));
+            var speed = dist / dt;
+            var targetRadius = radius * Math.Clamp(1.35 - speed * 0.18, 0.45, 1.0);
+            _strokeRadius += (targetRadius - _strokeRadius) * 0.35;
+            _strokeLastTimestamp = nowTs;
+        }
+
+        var drawRadius = Math.Max(0.5, BrushTaper ? _strokeRadius : radius);
         WallpaperLayerEffects.DrawStroke(_strokeBytes, stride, w, h,
-            last.X, last.Y, p.X, p.Y, drawRadius, ActiveColor, erasing);
+            last.X, last.Y, p.X, p.Y, drawRadius, ActiveColor, erasing, BrushTip, BrushAntiAlias);
         _strokeLast = p;
 
         // 只把本次笔画的脏矩形区域拷回工作位图：大图整幅 Marshal.Copy 每次移动都要拷
@@ -2817,6 +2900,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
             layer.FullscreenExtend || _lockedIds.Contains(layer.Id))
         {
             ClearSelection();
+            HintRequested?.Invoke("选区工具需要选中图片图层（含画布图层）。");
             return;
         }
 
@@ -2856,6 +2940,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
             layer.FullscreenExtend || _lockedIds.Contains(layer.Id))
         {
             ClearSelection();
+            HintRequested?.Invoke("选区工具需要选中图片图层（含画布图层）。");
             return;
         }
 
@@ -3121,6 +3206,14 @@ internal sealed class WallpaperLayerCanvas : UserControl
             return;
         }
 
+        // SMTC 封面图层：从选区新建 → 创建按选区形状裁剪的 SMTC 图层（封面动态显示在形状内），
+        // 而不是把当前封面裁成静态图。
+        if (layer.Source == WallpaperSource.SmtcAlbum)
+        {
+            CreateMaskedSmtcLayerFromSelection(layer);
+            return;
+        }
+
         // 从掩码裁出包围盒区域，未选中像素清透明。
         var mask = _selMask;
         var sub = new byte[bh * bw * 4];
@@ -3188,6 +3281,48 @@ internal sealed class WallpaperLayerCanvas : UserControl
         };
         _layers.Add(newLayer);
         // 新 Id 的位图不在 _bitmaps 中，必须走 RefreshImages 加载后才能第一时间显示。
+        RefreshImages();
+        Select(newLayer.Id);
+        Edited?.Invoke();
+    }
+
+    /// <summary>SMTC 图层从选区新建：创建按选区形状裁剪的 SMTC 图层（封面动态显示在形状内）。</summary>
+    private void CreateMaskedSmtcLayerFromSelection(WallpaperLayerItem source)
+    {
+        var stageRect = _selStageRect;
+        if (stageRect.Width < 1 || stageRect.Height < 1 || _selPath.Count < 3)
+        {
+            return;
+        }
+
+        // 选区形状映射到新图层本地坐标（相对选区包围盒左上角），作为裁剪形状（ClipPath）。
+        var local = new List<Point>();
+        foreach (var p in _selPath)
+        {
+            local.Add(new Point(p.X - stageRect.X, p.Y - stageRect.Y));
+        }
+
+        var id = Guid.NewGuid().ToString("N");
+        EditStarted?.Invoke();
+        var newLayer = new WallpaperLayerItem
+        {
+            Id = id,
+            Name = $"SMTC 形状 {_layers.Count + 1}",
+            Kind = WallpaperLayerKind.Image,
+            Source = WallpaperSource.SmtcAlbum,
+            SmtcMode = WallpaperLayerSmtcMode.AsImage,
+            DisplayMode = WallpaperDisplayMode.Stretch,
+            SizeMode = WallpaperLayerSizeMode.Custom,
+            AnchorX = WallpaperLayerAnchorX.Left,
+            AnchorY = WallpaperLayerAnchorY.Top,
+            OffsetX = stageRect.X - CanvasMargin,
+            OffsetY = stageRect.Y - CanvasMargin,
+            Width = Math.Max(1, stageRect.Width),
+            Height = Math.Max(1, stageRect.Height),
+            ClipPath = WallpaperLayerItem.EncodePathRings(new List<List<Point>> { local })
+        };
+        _layers.Add(newLayer);
+        // 新图层是 SMTC 来源，走 RefreshImages 加载占位封面后即可显示，裁剪形状由 LayoutImages 应用。
         RefreshImages();
         Select(newLayer.Id);
         Edited?.Invoke();
@@ -4199,6 +4334,48 @@ internal sealed class WallpaperLayerCanvas : UserControl
             l.GroupId = string.Empty;
         }
 
+        Refresh();
+        Edited?.Invoke();
+    }
+
+    /// <summary>
+    /// 对选中的多个矢量形状执行布尔运算（结合 / 组合 / 拆分 / 相交 / 减除）：
+    /// 计算后删除原形状、插入结果图层（ShapeType=Custom 的自定义路径），并选中结果。
+    /// 少于 2 个可选矢量形状时不执行（直线 / 锁定图层不参与）。
+    /// </summary>
+    public void ApplyBooleanOp(WallpaperBooleanOp op)
+    {
+        var shapes = SelectedLayers
+            .Where(l => l.Kind == WallpaperLayerKind.Shape && l.ShapeType != WallpaperShapeType.Line &&
+                        !_lockedIds.Contains(l.Id))
+            .ToList();
+        if (shapes.Count < 2)
+        {
+            CanvasDebugLog($"ApplyBooleanOp({op}) 跳过：需要选中至少 2 个矢量形状，当前 {shapes.Count}");
+            HintRequested?.Invoke("逻辑运算需要选中至少 2 个矢量形状（形状工具创建的图层，直线除外）。");
+            return;
+        }
+
+        var results = WallpaperBooleanOps.Apply(op, shapes, _islandWidth, _islandHeight);
+        if (results.Count == 0)
+        {
+            CanvasDebugLog($"ApplyBooleanOp({op})：布尔运算无结果");
+            return;
+        }
+
+        // 先压撤销快照（含原形状状态），再删除原形状、插入结果。
+        EditStarted?.Invoke();
+        var ids = shapes.Select(s => s.Id).ToHashSet();
+        _layers.RemoveAll(l => ids.Contains(l.Id));
+        var insertIndex = _layers.Count;
+        foreach (var r in results)
+        {
+            _layers.Insert(insertIndex++, r);
+        }
+
+        ClearSelection();
+        Select(results[0].Id);
+        Layers = _layers;
         Refresh();
         Edited?.Invoke();
     }

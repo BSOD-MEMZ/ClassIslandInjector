@@ -202,10 +202,36 @@ public sealed class WallpaperLayerVisual : Control
 
                 DrawGeometry(context, fillBrush, pen, para);
                 break;
+            case WallpaperShapeType.Custom:
+                if (WallpaperLayerItem.DecodePathRings(layer.PathRings) is { Count: > 0 } rings)
+                {
+                    // 首环为外轮廓、后续环为洞：PathGeometry 的 EvenOdd 让洞镂空（StreamGeometry 无 FillRule）。
+                    var figures = new PathFigures();
+                    foreach (var ring in rings)
+                    {
+                        if (ring is not { Count: >= 3 })
+                        {
+                            continue;
+                        }
+
+                        var segments = new PathSegments();
+                        for (var i = 1; i < ring.Count; i++)
+                        {
+                            segments.Add(new LineSegment { Point = ring[i] });
+                        }
+
+                        figures.Add(new PathFigure { IsClosed = true, StartPoint = ring[0], Segments = segments });
+                    }
+
+                    var custom = new PathGeometry { FillRule = FillRule.EvenOdd, Figures = figures };
+                    DrawGeometry(context, fillBrush, pen, custom);
+                }
+
+                break;
         }
     }
 
-    private static void DrawGeometry(DrawingContext context, IBrush? fill, Pen? pen, StreamGeometry geometry)
+    private static void DrawGeometry(DrawingContext context, IBrush? fill, Pen? pen, Geometry geometry)
         => context.DrawGeometry(fill, pen, geometry);
 
     /// <summary>构建正多边形路径（边数 ≥ 3，第一个顶点朝上）。</summary>

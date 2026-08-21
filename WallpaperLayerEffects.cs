@@ -6,6 +6,17 @@ using System.Runtime.InteropServices;
 
 namespace ClassIslandInjector;
 
+/// <summary>画笔 / 橡皮擦的笔头形状（笔触）。</summary>
+public enum WallpaperBrushTip
+{
+    /// <summary>圆形（默认）：圆头胶囊，边缘平滑如圆柱。</summary>
+    Round,
+    /// <summary>方形：直角方块笔头。</summary>
+    Square,
+    /// <summary>横线：横向扁平的马克笔笔头。</summary>
+    Flat
+}
+
 /// <summary>
 /// 底图图层「效果」构建工具：把图层的模糊 / 投影设置翻译为 Avalonia 的 Effect，
 /// 以及把裁剪 / 色相 / 饱和度 / 明度 / 亮度 / 对比度设置逐像素应用到位图。
@@ -16,6 +27,40 @@ namespace ClassIslandInjector;
 /// </summary>
 public static class WallpaperLayerEffects
 {
+    /// <summary>
+    /// 从图层的裁剪形状（ClipPath，像素路径环）构建裁剪几何；ClipPath 为空 / 非法时返回 null。
+    /// 用于把图片（含 SMTC 封面）裁剪显示在「从选区新建图层」画出的形状内。
+    /// </summary>
+    public static Geometry? BuildClipGeometry(string clipPath)
+    {
+        if (WallpaperLayerItem.DecodePathRings(clipPath) is not { Count: > 0 } rings)
+        {
+            return null;
+        }
+
+        var geo = new StreamGeometry();
+        using (var g = geo.Open())
+        {
+            foreach (var ring in rings)
+            {
+                if (ring.Count < 3)
+                {
+                    continue;
+                }
+
+                g.BeginFigure(ring[0], true);
+                for (var i = 1; i < ring.Count; i++)
+                {
+                    g.LineTo(ring[i]);
+                }
+
+                g.EndFigure(true);
+            }
+        }
+
+        return geo;
+    }
+
     /// <summary>构建高斯模糊效果；未启用（半径 ≤ 0）时返回 null。</summary>
     public static BlurEffect? BuildBlur(WallpaperLayerItem layer)
     {
@@ -435,31 +480,131 @@ public static class WallpaperLayerEffects
     }
 
     /// <summary>
-    /// 在直通 alpha 的 Bgra8888 缓冲中绘制一条圆头线段：
-    /// 画笔按源色 alpha 混合到现有像素；橡皮擦把覆盖区域清为全透明。
-    /// 沿线采样多个圆盘保证连续平滑（零长度 = 画一个点）。
+    /// 在直通 alpha 的 Bgra8888 缓冲中绘制一笔（由上一采样点到当前点）：
+    /// 圆头 → 圆头胶囊（矩形主体 = 与笔段方向平行的两条直边，画大半径时呈「圆柱」而非
+    /// 一串圆）+ 两端圆头；方形 / 横线 → 沿线段密集盖章对应笔头（间隔 ≤ 半径一半保证
+    /// 连续平滑）。画笔按源色 alpha 混合到现有像素；橡皮擦把覆盖区域清为全透明。
+    /// 零长度 = 画一个点。
     /// </summary>
     public static void DrawStroke(byte[] bytes, int stride, int w, int h,
-        double x0, double y0, double x1, double y1, double radius, Color color, bool erase)
+        double x0, double y0, double x1, double y1, double radius, Color color, bool erase,
+        WallpaperBrushTip tip, bool antiAlias = true)
+    {
+        if (tip == WallpaperBrushTip.Round)
+        {
+            DrawCapsule(bytes, stride, w, h, x0, y0, x1, y1, radius, color, erase, antiAlias);
+            return;
+        }
+
+        var dx = x1 - x0;
+        var dy = y1 - y0;
+        var len = Math.Sqrt(dx * dx + dy * dy);
+        // 非圆头笔触是「盖章」式：盖章间距取半径一半，保证连续、不出现断点。
+        var steps = Math.Max(1, (int)Math.Ceiling(len / Math.Max(0.5, radius * 0.5)));
+        for (var s = 0; s <= steps; s++)
+        {
+            var t = s / (double)steps;
+            DrawTipStamp(bytes, stride, w, h, x0 + dx * t, y0 + dy * t, radius, tip, color, erase, antiAlias);
+        }
+    }
+
+    /// <summary>
+    /// 圆头胶囊线段：矩形主体（两条平行直边 = 圆柱感）+ 两端圆头，1px 抗锯齿。
+    /// 用「到胶囊形状」的统一距离算覆盖度——相比沿线盖章圆盘，相邻圆盘顶部边界凹陷
+    /// （约 13% 半径）造成的「一串圆」锯齿感，直边完全消除；轨迹也更平滑。
+    /// </summary>
+    private static void DrawCapsule(byte[] bytes, int stride, int w, int h,
+        double x0, double y0, double x1, double y1, double radius, Color color, bool erase,
+        bool antiAlias)
     {
         var dx = x1 - x0;
         var dy = y1 - y0;
         var len = Math.Sqrt(dx * dx + dy * dy);
-        var steps = Math.Max(1, (int)Math.Ceiling(len / Math.Max(1, radius)));
-        for (var s = 0; s <= steps; s++)
+        if (len <= 1e-6)
         {
-            var t = s / (double)steps;
-            DrawDisc(bytes, stride, w, h, x0 + dx * t, y0 + dy * t, radius, color, erase);
+            DrawDisc(bytes, stride, w, h, x0, y0, radius, color, erase, antiAlias);
+            return;
+        }
+
+        var ux = dx / len;
+        var uy = dy / len;
+        var minX = Math.Clamp((int)Math.Floor(Math.Min(x0, x1) - radius - 1), 0, w - 1);
+        var maxX = Math.Clamp((int)Math.Ceiling(Math.Max(x0, x1) + radius + 1), 0, w - 1);
+        var minY = Math.Clamp((int)Math.Floor(Math.Min(y0, y1) - radius - 1), 0, h - 1);
+        var maxY = Math.Clamp((int)Math.Ceiling(Math.Max(y0, y1) + radius + 1), 0, h - 1);
+        for (var y = minY; y <= maxY; y++)
+        {
+            var row = y * stride;
+            for (var x = minX; x <= maxX; x++)
+            {
+                var px = x - x0;
+                var py = y - y0;
+                var t = px * ux + py * uy;
+                double dist;
+                if (t <= 0)
+                {
+                    // 起笔端外：到起点的圆头。
+                    dist = Math.Sqrt(px * px + py * py);
+                }
+                else if (t >= len)
+                {
+                    // 收笔端外：到终点的圆头。
+                    var qx = x - x1;
+                    var qy = y - y1;
+                    dist = Math.Sqrt(qx * qx + qy * qy);
+                }
+                else
+                {
+                    // 主体：到线段中心线的垂直距离（直边）。
+                    dist = Math.Abs(px * uy - py * ux);
+                }
+
+                var coverage = antiAlias ? Math.Clamp(radius + 0.5 - dist, 0, 1) : dist <= radius ? 1 : 0;
+                if (coverage <= 0)
+                {
+                    continue;
+                }
+
+                BlendPixel(bytes, row + x * 4, coverage, color, erase);
+            }
+        }
+    }
+
+    /// <summary>方形 / 横线笔头的单点盖章（软边矩形；横线 = 横向 3 倍宽）。</summary>
+    private static void DrawTipStamp(byte[] bytes, int stride, int w, int h,
+        double cx, double cy, double radius, WallpaperBrushTip tip, Color color, bool erase,
+        bool antiAlias)
+    {
+        var halfW = tip == WallpaperBrushTip.Flat ? radius * 3.0 : radius;
+        var halfH = radius;
+        var x0 = Math.Clamp((int)Math.Floor(cx - halfW - 1), 0, w - 1);
+        var x1 = Math.Clamp((int)Math.Ceiling(cx + halfW + 1), 0, w - 1);
+        var y0 = Math.Clamp((int)Math.Floor(cy - halfH - 1), 0, h - 1);
+        var y1 = Math.Clamp((int)Math.Ceiling(cy + halfH + 1), 0, h - 1);
+        for (var y = y0; y <= y1; y++)
+        {
+            var row = y * stride;
+            for (var x = x0; x <= x1; x++)
+            {
+                var coverage = antiAlias
+                    ? Math.Clamp(Math.Min(halfW + 0.5 - Math.Abs(x - cx), halfH + 0.5 - Math.Abs(y - cy)), 0, 1)
+                    : Math.Abs(x - cx) <= halfW && Math.Abs(y - cy) <= halfH ? 1 : 0;
+                if (coverage <= 0)
+                {
+                    continue;
+                }
+
+                BlendPixel(bytes, row + x * 4, coverage, color, erase);
+            }
         }
     }
 
     /// <summary>
     /// 在一个圆盘区域内落笔（画笔 alpha 混合 / 橡皮清空），边缘 1px 抗锯齿软过渡。
-    /// 以像素中心到圆心的距离计算覆盖度：半径内覆盖度 1，向外 1px 线性降到 0，
-    /// 消除原来的锯齿硬边（这也是「矢量对象看着不抗锯齿」的主要来源——笔刷边缘）。
+    /// 以像素中心到圆心的距离计算覆盖度：半径内覆盖度 1，向外 1px 线性降到 0。
     /// </summary>
     private static void DrawDisc(byte[] bytes, int stride, int w, int h,
-        double cx, double cy, double radius, Color color, bool erase)
+        double cx, double cy, double radius, Color color, bool erase, bool antiAlias)
     {
         // 外扩 1px 覆盖抗锯齿过渡带。
         var x0 = Math.Clamp((int)Math.Floor(cx - radius - 1), 0, w - 1);
@@ -474,45 +619,49 @@ public static class WallpaperLayerEffects
                 var ddx = x - cx;
                 var ddy = y - cy;
                 var d = Math.Sqrt(ddx * ddx + ddy * ddy);
-                var coverage = Math.Clamp(radius + 0.5 - d, 0, 1);
+                var coverage = antiAlias ? Math.Clamp(radius + 0.5 - d, 0, 1) : d <= radius ? 1 : 0;
                 if (coverage <= 0)
                 {
                     continue;
                 }
 
-                var i = row + x * 4;
-                if (erase)
-                {
-                    // 橡皮：按覆盖度把现有 alpha 降到 0（直通 alpha 空间，RGB 不变，保存时再预乘）。
-                    var a = bytes[i + 3];
-                    bytes[i + 3] = (byte)(a * (1 - coverage));
-                    continue;
-                }
-
-                var da = bytes[i + 3] / 255.0;
-                var sa = color.A / 255.0 * coverage;
-                var outA = sa + da * (1 - sa);
-                if (outA <= 0)
-                {
-                    bytes[i] = 0;
-                    bytes[i + 1] = 0;
-                    bytes[i + 2] = 0;
-                    bytes[i + 3] = 0;
-                    continue;
-                }
-
-                var dr = bytes[i + 2] / 255.0;
-                var dg = bytes[i + 1] / 255.0;
-                var db = bytes[i] / 255.0;
-                var sr = color.R / 255.0;
-                var sg = color.G / 255.0;
-                var sb = color.B / 255.0;
-                bytes[i] = (byte)Math.Clamp((sb * sa + db * da * (1 - sa)) / outA * 255, 0, 255);
-                bytes[i + 1] = (byte)Math.Clamp((sg * sa + dg * da * (1 - sa)) / outA * 255, 0, 255);
-                bytes[i + 2] = (byte)Math.Clamp((sr * sa + dr * da * (1 - sa)) / outA * 255, 0, 255);
-                bytes[i + 3] = (byte)Math.Clamp(outA * 255, 0, 255);
+                BlendPixel(bytes, row + x * 4, coverage, color, erase);
             }
         }
+    }
+
+    /// <summary>按覆盖度把颜色落到单个像素：画笔 alpha 混合 / 橡皮按覆盖度清 alpha（直通 alpha 空间）。</summary>
+    private static void BlendPixel(byte[] bytes, int i, double coverage, Color color, bool erase)
+    {
+        if (erase)
+        {
+            var a = bytes[i + 3];
+            bytes[i + 3] = (byte)(a * (1 - coverage));
+            return;
+        }
+
+        var da = bytes[i + 3] / 255.0;
+        var sa = color.A / 255.0 * coverage;
+        var outA = sa + da * (1 - sa);
+        if (outA <= 0)
+        {
+            bytes[i] = 0;
+            bytes[i + 1] = 0;
+            bytes[i + 2] = 0;
+            bytes[i + 3] = 0;
+            return;
+        }
+
+        var dr = bytes[i + 2] / 255.0;
+        var dg = bytes[i + 1] / 255.0;
+        var db = bytes[i] / 255.0;
+        var sr = color.R / 255.0;
+        var sg = color.G / 255.0;
+        var sb = color.B / 255.0;
+        bytes[i] = (byte)Math.Clamp((sb * sa + db * da * (1 - sa)) / outA * 255, 0, 255);
+        bytes[i + 1] = (byte)Math.Clamp((sg * sa + dg * da * (1 - sa)) / outA * 255, 0, 255);
+        bytes[i + 2] = (byte)Math.Clamp((sr * sa + dr * da * (1 - sa)) / outA * 255, 0, 255);
+        bytes[i + 3] = (byte)Math.Clamp(outA * 255, 0, 255);
     }
 
     /// <summary>把预乘 alpha 缓冲转为直通 alpha（用于画笔工作缓冲）。</summary>

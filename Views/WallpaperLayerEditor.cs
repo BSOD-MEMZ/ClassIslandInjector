@@ -43,6 +43,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private readonly Slider _opacitySlider = SliderControl(0, 1, 0.05);
     private readonly ComboBox _displayModeBox = new() { MinWidth = 120 };
     private readonly ComboBox _smtcModeBox = new() { MinWidth = 150 };
+    private readonly ToggleSwitch _smtcHidePausedToggle = new() { OnContent = "开", OffContent = "关" };
     private readonly ToggleSwitch _fillIslandToggle = new() { OnContent = "开", OffContent = "关" };
     private readonly EditorSpin _widthSpin = new(1, 2000, 1, "0");
     private readonly EditorSpin _heightSpin = new(1, 2000, 1, "0");
@@ -80,6 +81,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private Control _heightItem = null!;
     /// <summary>SMTC 模式行（仅选中 SMTC 图层时显示）。</summary>
     private Control _smtcModeItem = null!;
+    /// <summary>「暂停/停止时隐藏」行（仅选中 SMTC 图层时显示）。</summary>
+    private Control _smtcHidePausedItem = null!;
     /// <summary>显示方式行（仅位图图层显示）。</summary>
     private Control _displayModeItem = null!;
     // 全屏扩展 / 九宫格切图（仅图片图层）
@@ -122,6 +125,17 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private readonly Slider _brushSizeSlider = SliderControl(1, 100, 1);
     private Control _brushColorItem = null!;
     private Control _brushSizeItem = null!;
+    private readonly ComboBox _brushTipBox = new() { MinWidth = 120 };
+    private Control _brushTipItem = null!;
+    private readonly ToggleSwitch _brushTaperToggle = new() { OnContent = "开", OffContent = "关" };
+    private readonly ToggleSwitch _brushAaToggle = new() { OnContent = "开", OffContent = "关" };
+    private Control _brushTaperItem = null!;
+    private Control _brushAaItem = null!;
+    private IconText _brushGroupTitle = null!;
+    /// <summary>逻辑运算按钮弹出的运算选择面板。</summary>
+    private Popup _booleanPopup = null!;
+    private string _lastReminder = string.Empty;
+    private DateTime _lastReminderAt;
     /// <summary>像素选区操作组（当前图层有选区时显示）。</summary>
     private Control _selectionGroup = null!;
     private Button _selectionToLayerButton = null!;
@@ -431,6 +445,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _canvas.RasterizeRequested += RasterizeSelected;
         _canvas.ColorPicked += OnColorPicked;
         _canvas.ColorPreview += OnColorPreview;
+        _canvas.HintRequested += ShowReminder;
         _canvas.ToolChanged += _ =>
         {
             UpdateToolBarSelection();
@@ -795,6 +810,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             .Where(l => !l.IsCanvasLayer && l.Kind != WallpaperLayerKind.Image).ToList();
         if (canvasLayers.Count == 0 && vectorLayers.Count == 0)
         {
+            ShowReminder("栅格化需要选中画布图层或形状 / 文本图层。");
             return;
         }
 
@@ -1157,6 +1173,12 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         panel.Children.Add(new Separator { Margin = new Thickness(2, 5) });
         panel.Children.Add(ToolActionButton("\uEBCA", "添加 SMTC 图层", "把当前播放的专辑封面作为新的底图图层（无播放时显示占位封面）", AddSmtcLayer));
         panel.Children.Add(ToolActionButton("\uE7DC", "添加贴纸", "在线获取 Project Sekai 角色贴纸，插入为新的底图图层", OpenStickerPicker));
+        // 逻辑运算按钮：对选中的多个矢量形状做布尔运算（点击弹出运算选择面板）。
+        var booleanButton = ToolActionButton("\uE92F", "逻辑运算",
+            "对选中的多个矢量形状做布尔运算：结合（并集 A ∪ B）/ 组合（排除重叠 A ⊕ B）/ 拆分 / 相交（A ∩ B）/ 减除（A − B）",
+            ToggleBooleanMenu);
+        _booleanPopup = BuildBooleanPopup(booleanButton);
+        panel.Children.Add(booleanButton);
 
         // 选中高亮滑块：独立圆角块，切换工具时滑动到新位置（位于按钮面板之下，按钮透明露出）。
         _toolHighlight = new Border
@@ -1171,6 +1193,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         };
         // 宿主 Grid：高亮块在前（底层），按钮面板在后（顶层，按钮透明底露出高亮）。
         var host = new Grid { Children = { _toolHighlight, panel } };
+        // 逻辑运算弹出面板加入宿主 Grid：关闭时零尺寸不占布局，打开时由 PlacementTarget 锚定。
+        host.Children.Add(_booleanPopup);
         _toolHighlightHost = host;
         // 首次布局完成后定位高亮（此前 Bounds 未测量）。
         host.SizeChanged += (_, _) =>
@@ -1255,6 +1279,66 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         ToolTip.SetTip(button, $"{label}：{tip}");
         button.Click += (_, _) => action();
         return button;
+    }
+
+    /// <summary>打开 / 关闭逻辑运算面板。</summary>
+    private void ToggleBooleanMenu() => _booleanPopup.IsOpen = !_booleanPopup.IsOpen;
+
+    /// <summary>右上角 Toast 展示一条操作提醒（自动消失）；同一提醒 5 秒内不重复（防刷屏）。
+    /// 每次新建一个 Toast 窗口：复用窗口在隐藏后重显示时高度会坍缩。</summary>
+    private void ShowReminder(string message)
+    {
+        var now = DateTime.Now;
+        if (message == _lastReminder && (now - _lastReminderAt).TotalSeconds < 5)
+        {
+            return;
+        }
+
+        _lastReminder = message;
+        _lastReminderAt = now;
+        new ReminderToastWindow().ShowFor(this, message);
+    }
+
+    /// <summary>构建逻辑运算选择面板（按钮下方弹出，5 种布尔运算）。</summary>
+    private Popup BuildBooleanPopup(Control target)
+    {
+        var panel = new StackPanel { Spacing = 2 };
+        AddBooleanOpButton(panel, "结合（并集 A ∪ B）", WallpaperBooleanOp.Union);
+        AddBooleanOpButton(panel, "组合（排除重叠 A ⊕ B）", WallpaperBooleanOp.Exclude);
+        AddBooleanOpButton(panel, "拆分（结合后拆成独立块）", WallpaperBooleanOp.Split);
+        AddBooleanOpButton(panel, "相交（交集 A ∩ B）", WallpaperBooleanOp.Intersect);
+        AddBooleanOpButton(panel, "减除（差集 A − B）", WallpaperBooleanOp.Subtract);
+        // StackPanel 无 Padding / Background，外包一层 Border。
+        var host = new Border
+        {
+            Padding = new Thickness(8),
+            Background = ThemePalette.PanelBackground(),
+            Child = panel
+        };
+        return new Popup
+        {
+            PlacementTarget = target,
+            Placement = PlacementMode.Bottom,
+            IsLightDismissEnabled = true,
+            Child = host
+        };
+    }
+
+    private void AddBooleanOpButton(StackPanel panel, string label, WallpaperBooleanOp op)
+    {
+        var button = new Button
+        {
+            Content = new TextBlock { Text = label },
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+            Padding = new Thickness(10, 6)
+        };
+        button.Click += (_, _) =>
+        {
+            _booleanPopup.IsOpen = false;
+            _canvas.ApplyBooleanOp(op);
+        };
+        panel.Children.Add(button);
     }
 
     /// <summary>按当前工具刷新工具栏按钮状态：选中态由高亮滑块表达（按钮透明露底），
@@ -1495,6 +1579,29 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 _canvas.BrushSize = _brushSizeSlider.Value;
             }
         };
+        _brushTipBox.ItemsSource = BrushTipChoices;
+        _brushTipBox.SelectedItem = BrushTipChoices[0];
+        _brushTipBox.SelectionChanged += (_, _) =>
+        {
+            if (!_updatingInspector)
+            {
+                _canvas.BrushTip = Selected(_brushTipBox, WallpaperBrushTip.Round);
+            }
+        };
+        _brushTaperToggle.PropertyChanged += (_, e) =>
+        {
+            if (!_updatingInspector && e.Property == ToggleSwitch.IsCheckedProperty)
+            {
+                _canvas.BrushTaper = _brushTaperToggle.IsChecked == true;
+            }
+        };
+        _brushAaToggle.PropertyChanged += (_, e) =>
+        {
+            if (!_updatingInspector && e.Property == ToggleSwitch.IsCheckedProperty)
+            {
+                _canvas.BrushAntiAlias = _brushAaToggle.IsChecked == true;
+            }
+        };
         _shapeTypeBox.SelectionChanged += (_, _) =>
         {
             // 刷新检查器时的程序化选择不应触发应用或教程推进。
@@ -1686,6 +1793,21 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 l.SizeMode = WallpaperLayerSizeMode.FillIsland;
             }
         });
+        _smtcHidePausedToggle.PropertyChanged += (_, e) =>
+        {
+            if (_updatingInspector || e.Property != ToggleSwitch.IsCheckedProperty)
+            {
+                return;
+            }
+
+            ApplyToSelected(l =>
+            {
+                if (l.Source == WallpaperSource.SmtcAlbum)
+                {
+                    l.SmtcHideWhenPaused = _smtcHidePausedToggle.IsChecked == true;
+                }
+            });
+        };
         _fillIslandToggle.PropertyChanged += (_, e) =>
         {
             if (_updatingInspector || e.Property != ToggleSwitch.IsCheckedProperty)
@@ -1735,6 +1857,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         layerPanel.Children.Add(_appearanceGroupTitle);
         _smtcModeItem = SettingsRow("SMTC 模式", _smtcModeBox);
         layerPanel.Children.Add(_smtcModeItem);
+        _smtcHidePausedItem = SettingsRow("暂停/停止时隐藏", _smtcHidePausedToggle);
+        layerPanel.Children.Add(_smtcHidePausedItem);
         _opacityItem = SettingsRow("不透明度", _opacitySlider);
         layerPanel.Children.Add(_opacityItem);
         _displayModeItem = SettingsRow("显示方式", _displayModeBox);
@@ -1773,14 +1897,21 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         // 画笔 / 橡皮擦设置（对应工具激活时独占显示，与图层常规设置分开）
         _brushColorItem = SettingsRow("画笔颜色", _brushColorPicker);
         _brushSizeItem = SettingsRow("画笔大小", _brushSizeSlider);
+        _brushTipItem = SettingsRow("笔触", _brushTipBox);
+        _brushTaperItem = SettingsRow("笔锋", _brushTaperToggle);
+        _brushAaItem = SettingsRow("抗锯齿", _brushAaToggle);
+        _brushGroupTitle = GroupSubtitle("\uEC49", "画笔");
         _brushGroup = new StackPanel
         {
             Spacing = 8,
             Children =
             {
-                GroupSubtitle("\uEC49", "画笔"),
+                _brushGroupTitle,
                 _brushColorItem,
-                _brushSizeItem
+                _brushSizeItem,
+                _brushTipItem,
+                _brushTaperItem,
+                _brushAaItem
             }
         };
         inspector.Children.Add(_brushGroup);
@@ -2870,9 +3001,23 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             _clearSelectionButton.IsEnabled = hasSelection;
             _brushGroup.IsVisible = brushTool;
             _layerPanel.IsVisible = !selectionTool && !brushTool;
+            // 工具内细节：橡皮擦不显示「画笔」字样与颜色（只留大小 + 笔触）；吸管只显示取到的颜色。
+            var isEraser = _canvas.Tool == WallpaperEditorTool.Eraser;
+            var isEyedropper = _canvas.Tool == WallpaperEditorTool.Eyedropper;
+            _brushGroupTitle.Text = isEraser ? "橡皮擦" : isEyedropper ? "取色" : "画笔";
+            // 图标随工具变化：橡皮擦用橡皮图标，吸管用取色图标，画笔保持笔刷。
+            _brushGroupTitle.Glyph = isEraser ? "\uE7FE" : isEyedropper ? "\uE81D" : "\uEC49";
+            _brushColorItem.IsVisible = !isEraser;
+            _brushSizeItem.IsVisible = !isEyedropper;
+            _brushTipItem.IsVisible = !isEyedropper;
+            _brushTaperItem.IsVisible = !isEyedropper;
+            _brushAaItem.IsVisible = !isEyedropper;
             // 画笔 / 橡皮擦设置：值始终同步（吸管取色后这里展示当前颜色）。
             _brushColorPicker.Color = _canvas.ActiveColor;
             _brushSizeSlider.Value = _canvas.BrushSize;
+            _brushTipBox.SelectedItem = BrushTipChoices.FirstOrDefault(c => c.Value == _canvas.BrushTip) ?? BrushTipChoices[0];
+            _brushTaperToggle.IsChecked = _canvas.BrushTaper;
+            _brushAaToggle.IsChecked = _canvas.BrushAntiAlias;
             var layer = _canvas.SelectedLayer;
             if (layer == null)
             {
@@ -2880,6 +3025,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 _opacityItem.IsVisible = false;
                 _displayModeItem.IsVisible = false;
                 _smtcModeItem.IsVisible = false;
+                _smtcHidePausedItem.IsVisible = false;
                 _fullscreenItem.IsVisible = false;
                 _sliceItem.IsVisible = false;
                 _editSliceItem.IsVisible = false;
@@ -2946,6 +3092,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             _displayModeBox.IsEnabled = layer.Kind == WallpaperLayerKind.Image;
             _smtcModeBox.IsEnabled = true;
             _smtcModeItem.IsVisible = layer.Source == WallpaperSource.SmtcAlbum;
+            _smtcHidePausedItem.IsVisible = layer.Source == WallpaperSource.SmtcAlbum;
+            _smtcHidePausedToggle.IsChecked = layer.SmtcHideWhenPaused;
             _displayModeItem.IsVisible = layer.Kind == WallpaperLayerKind.Image;
             var isFullscreen = layer.Kind == WallpaperLayerKind.Image && layer.FullscreenExtend;
             _fullscreenItem.IsVisible = layer.Kind == WallpaperLayerKind.Image;
@@ -2981,7 +3129,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             _shadowOffsetYSpin.DoubleValue = layer.ShadowOffsetY;
             _shadowColorPicker.Color = ReadColor(layer.ShadowColor, Color.FromArgb(0x99, 0, 0, 0));
             _shadowOpacitySlider.Value = layer.ShadowOpacity;
-            _shapeTypeItem.IsVisible = isShape;
+            // Custom（布尔运算结果）没有可切换的固定形状类型，隐藏形状类型行。
+            _shapeTypeItem.IsVisible = isShape && layer.ShapeType != WallpaperShapeType.Custom;
             // 圆角半径仅圆角矩形、星角/内凹仅五角星显示；属性值在 ShapeType 变化时由读值刷新。
             _shapeCornerRadiusItem.IsVisible = isShape && layer.ShapeType == WallpaperShapeType.RoundedRectangle;
             _shapeStarPointsItem.IsVisible = isShape && layer.ShapeType == WallpaperShapeType.Star;
@@ -3278,6 +3427,13 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         new(WallpaperDisplayMode.Fill, "填充（裁剪）"),
         new(WallpaperDisplayMode.Fit, "适应（完整显示）"),
         new(WallpaperDisplayMode.Stretch, "拉伸（变形）"),
+    ];
+
+    private static readonly Pick<WallpaperBrushTip>[] BrushTipChoices =
+    [
+        new(WallpaperBrushTip.Round, "圆形"),
+        new(WallpaperBrushTip.Square, "方形"),
+        new(WallpaperBrushTip.Flat, "横线"),
     ];
 
     private static readonly Pick<WallpaperLayerSmtcMode>[] SmtcModeChoices =
