@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>FuzzTest</RootNamespace>
+    <!-- 只链接需要的纯源码文件，验证设置模型 JSON 反序列化的健壮性 -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\InjectorSettings.cs" Link="InjectorSettings.cs" />
+    <Compile Include="..\..\InjectorPresets.cs" Link="InjectorPresets.cs" />
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+</Project>

@@ -712,7 +712,17 @@ internal sealed class MainWindowStyleInjector : IDisposable
             ConfigureNativeRipplePlayer(line);
             ObserveLine(line);
             UpdatePrepareOnClassOverlay(line);
-            var mask = GetMaskContentProperty(line.GetType())?.GetValue(line);
+            object? mask;
+            try
+            {
+                mask = GetMaskContentProperty(line.GetType())?.GetValue(line);
+            }
+            catch
+            {
+                // 宿主属性 getter 异常不得中止 50ms 状态轮询（否则底图/覆盖层全部停摆）。
+                mask = null;
+            }
+
             if (!_lineMasks.TryGetValue(line, out var previousMask))
             {
                 _lineMasks[line] = mask;
@@ -737,6 +747,17 @@ internal sealed class MainWindowStyleInjector : IDisposable
         {
             RemovePrepareOnClassOverlay(line);
         }
+
+        // 清理已消失的 MainWindowLine（主题切换/分体切换/组件行增删会重建行容器）：
+        // 退订 PropertyChanged 并移除字典引用，避免旧行对象被永久强引用（泄漏 + 事件叠加）。
+        foreach (var line in _observedLines.Except(currentLines).ToArray())
+        {
+            line.PropertyChanged -= LineOnPropertyChanged;
+            _observedLines.Remove(line);
+            _lineMasks.Remove(line);
+            _nativeEffectPlayers.Remove(line);
+        }
+
         UpdatePrepareWarningOverlay();
         UpdatePreviewOverlayHostVisibility();
         SyncPrepareOnClassOverlayHosts();
@@ -1602,6 +1623,14 @@ internal sealed class MainWindowStyleInjector : IDisposable
             }
 
             // 模式切换（简单 <-> 图层）：重建宿主子内容并清空旧视图。
+            // 先中止可能进行中的交叉淡化并释放退役位图：否则切到图层模式后
+            // _wallpaperLayers 为空而过渡仍激活，AdvanceWallpaperTransition 每 16ms
+            // 下标越界抛异常，导致全部瞬时动画冻结 + crash.log 刷屏。
+            _wallpaperTransitionActive = false;
+            _wallpaperRetiredBitmap?.Dispose();
+            _wallpaperRetiredBitmap = null;
+            _wallpaperRetiredStream?.Dispose();
+            _wallpaperRetiredStream = null;
             _wallpaperLayers.Clear();
             DisposeWallpaperLayerViews();
             _wallpaperCanvas = null;
@@ -3017,6 +3046,13 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     private void AdvanceWallpaperTransition()
     {
+        // 防御：图层被清空（模式切换/宿主重建）后过渡状态必须中止，否则下标越界。
+        if (_wallpaperLayers.Count < 2)
+        {
+            _wallpaperTransitionActive = false;
+            return;
+        }
+
         var duration = Math.Max(0.001, _settings.AlbumColorTransitionSeconds);
         var progress = Math.Clamp((DateTime.UtcNow - _wallpaperTransitionStart).TotalSeconds / duration, 0, 1);
         var eased = 1 - Math.Pow(1 - progress, 3);
@@ -3273,14 +3309,22 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     private static bool IsPrepareOnClassCountdown(Control line)
     {
-        var request = GetCurrentNotificationRequestProperty(line.GetType())?.GetValue(line);
-        if (request == null)
+        try
         {
+            var request = GetCurrentNotificationRequestProperty(line.GetType())?.GetValue(line);
+            if (request == null)
+            {
+                return false;
+            }
+
+            return GetChannelIdProperty(request.GetType())?.GetValue(request) is Guid channelId &&
+                   channelId == HostContract.PrepareOnClassChannelId;
+        }
+        catch
+        {
+            // 反射 getter 异常不得中止 OnStateTick 轮询。
             return false;
         }
-
-        return GetChannelIdProperty(request.GetType())?.GetValue(request) is Guid channelId &&
-               channelId == HostContract.PrepareOnClassChannelId;
     }
 
     private void RemovePrepareOnClassOverlay(Control line)
@@ -3868,23 +3912,31 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private IList? TryGetFullScreenEffectHost(out Window? effectWindow)
     {
         effectWindow = null;
-        foreach (var player in _nativeEffectPlayers.Values)
+        try
         {
-            if (TryGetEffectControls(player, out effectWindow) is { } controls)
+            foreach (var player in _nativeEffectPlayers.Values)
             {
-                return controls;
+                if (TryGetEffectControls(player, out effectWindow) is { } controls)
+                {
+                    return controls;
+                }
+            }
+
+            // The public MainWindow property gives us a reliable path before the
+            // per-line player has been observed, avoiding the island-sized fallback
+            // window that used to crop the Hanabi centre ball.
+            var topmostEffectWindow = _mainWindow?.GetType()
+                .GetProperty(HostContract.TopmostEffectWindowProperty, BindingFlags.Instance | BindingFlags.Public)
+                ?.GetValue(_mainWindow);
+            if (TryGetEffectControls(topmostEffectWindow, out effectWindow) is { } controlsFromMainWindow)
+            {
+                return controlsFromMainWindow;
             }
         }
-
-        // The public MainWindow property gives us a reliable path before the
-        // per-line player has been observed, avoiding the island-sized fallback
-        // window that used to crop the Hanabi centre ball.
-        var topmostEffectWindow = _mainWindow?.GetType()
-            .GetProperty(HostContract.TopmostEffectWindowProperty, BindingFlags.Instance | BindingFlags.Public)
-            ?.GetValue(_mainWindow);
-        if (TryGetEffectControls(topmostEffectWindow, out effectWindow) is { } controlsFromMainWindow)
+        catch
         {
-            return controlsFromMainWindow;
+            // 宿主属性 getter 异常不得冒泡进提醒播放链（本方法在宿主通知分发中被调用）。
+            effectWindow = null;
         }
 
         return null;
@@ -3898,12 +3950,19 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return null;
         }
 
-        var viewModel = player!.GetType().GetProperty(HostContract.ViewModelProperty, BindingFlags.Instance | BindingFlags.Public)
-            ?.GetValue(player);
-        if (viewModel?.GetType().GetProperty(HostContract.EffectControlsProperty, BindingFlags.Instance | BindingFlags.Public)
-                ?.GetValue(viewModel) is IList controls)
+        try
         {
-            return controls;
+            var viewModel = player!.GetType().GetProperty(HostContract.ViewModelProperty, BindingFlags.Instance | BindingFlags.Public)
+                ?.GetValue(player);
+            if (viewModel?.GetType().GetProperty(HostContract.EffectControlsProperty, BindingFlags.Instance | BindingFlags.Public)
+                    ?.GetValue(viewModel) is IList controls)
+            {
+                return controls;
+            }
+        }
+        catch
+        {
+            // 忽略：宿主结构变化时退化为不返回特效宿主。
         }
 
         effectWindow = null;
@@ -4654,6 +4713,10 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _mainWindow?.Classes.Remove(HostContract.InjectorWindowClass);
         _windowRoot = null;
         _styleHost = null;
+        // 一并置空主窗口/主界面根：否则禁用→重新启用后 Apply 不再走 Attach 查找分支，
+        // _windowRoot 永久为 null，Ripple/点击特效静默失效。
+        _mainWindow = null;
+        _islandRoot = null;
     }
 
     public void Dispose()

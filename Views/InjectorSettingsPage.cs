@@ -394,10 +394,29 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         LoadFromSettings();
         RefreshSmtcTutorialInfoBar();
         // 对照表被应用/切换后刷新本页状态（顶部降级提示、当前对照表、下拉选中）。
-        ContractCatalogService.CatalogChanged += (_, _) => Dispatcher.UIThread.Post(RefreshContractUi);
+        // 用命名字段订阅，页面脱离可视树时退订，避免静态事件强引用泄漏整棵页面树。
+        _onCatalogChanged = (_, _) => Dispatcher.UIThread.Post(RefreshContractUi);
+        ContractCatalogService.CatalogChanged += _onCatalogChanged;
         // 用户切换下拉选择时，按该对照表的最低插件版本要求刷新「插件版本过低」提示。
         _contractTableList.SelectionChanged += (_, _) => UpdatePluginUpdateInfoBar(_contractTableList.SelectedItem as ContractIndexEntry);
         WireSmtcTutorial();
+    }
+
+    /// <summary>
+    /// 页面离开可视树时清理：退订静态 CatalogChanged 事件并停止教程滚动守卫定时器。
+    /// 设置页为 transient，每次导航到设置页宿主都会新建实例；若不清理，静态事件会强引用
+    /// 整棵页面树，且 250ms 定时器永不停止，导致每次进设置页都泄漏一个页面 + 一条定时器。
+    /// </summary>
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        ContractCatalogService.CatalogChanged -= _onCatalogChanged;
+        if (_tutorialGuardTimer != null)
+        {
+            _tutorialGuardTimer.Stop();
+            _tutorialGuardTimer = null;
+        }
+
+        base.OnDetachedFromVisualTree(e);
     }
 
     /// <summary>SMTC 教学路径（教程 Id / 起始段落），改 JSON 里的教程 Id 时务必同步修改。</summary>
@@ -423,6 +442,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
     /// <summary>滚动守卫定时器：教程进行时周期性把当前句的目标滚进视野。</summary>
     private DispatcherTimer? _tutorialGuardTimer;
+
+    /// <summary>对照表变化刷新订阅（命名引用，便于退订，防止静态事件强引用泄漏页面）。</summary>
+    private EventHandler _onCatalogChanged = null!;
 
     /// <summary>
     /// 挂接 SMTC 教学的推进点：不自动开始（进阶教学，由设置页顶部 InfoBar 手动进入），
@@ -1172,7 +1194,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             IsOpen = true,
             IsClosable = false
         });
-        panel.Children.Add(Setting("\uE288", "打开可视化编辑器", "在独立窗口中像做 PPT 一样编辑 ClassIsland 主界面样式，但存在严重兼容性问题，已被弃用。", Button("打开编辑器", OpenVisualEditor)));
+        panel.Children.Add(Setting("\uE288", "打开可视化编辑器（已弃用）", "在独立窗口中像做 PPT 一样编辑 ClassIsland 主界面样式，但存在严重兼容性问题，已被弃用。", Button("打开编辑器", OpenVisualEditor)));
         panel.Children.Add(new InfoBar
         {
             Severity = InfoBarSeverity.Warning,

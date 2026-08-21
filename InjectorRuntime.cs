@@ -365,7 +365,19 @@ internal static class InjectorRuntime
         }
         catch
         {
-            // 启动失败（如 WinRT 不可用）不影响插件其余功能。
+            // 启动失败（如 WinRT 瞬时不可用）不影响插件其余功能；
+            // 但必须释放并置空，让下次 UpdateSmtcWatcher 能重建重试——
+            // 否则监听器永远处于未启动状态，动态取色/SMTC 底图/暂停恢复全部静默失效。
+            try
+            {
+                _smtcWatcher?.Dispose();
+            }
+            catch
+            {
+                // 忽略释放异常。
+            }
+
+            _smtcWatcher = null;
         }
     }
 

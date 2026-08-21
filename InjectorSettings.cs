@@ -662,17 +662,17 @@ public sealed class InjectorSettings
     public IslandAnimationMode AnimationMode { get => _animationMode; set => Set(ref _animationMode, value); }
     public double AnimationAmount { get => _animationAmount; set => Set(ref _animationAmount, Math.Clamp(value, 0, 1)); }
     public double AnimationPeriodSeconds { get => _animationPeriodSeconds; set => Set(ref _animationPeriodSeconds, Math.Clamp(value, 0.2, 60)); }
-    public string StyleSheetPath { get => _styleSheetPath; set => Set(ref _styleSheetPath, value.Trim()); }
+    public string StyleSheetPath { get => _styleSheetPath; set => Set(ref _styleSheetPath, value?.Trim() ?? ""); }
     public bool WatchStyleSheet { get => _watchStyleSheet; set => Set(ref _watchStyleSheet, value); }
     public IslandShape Shape { get => _shape; set => Set(ref _shape, value); }
     public double CornerRadius { get => _cornerRadius; set => Set(ref _cornerRadius, Math.Clamp(value, 0, 20)); }
     public bool CustomBackgroundEnabled { get => _customBackgroundEnabled; set => Set(ref _customBackgroundEnabled, value); }
-    public string BackgroundColor { get => _backgroundColor; set => Set(ref _backgroundColor, value.Trim()); }
+    public string BackgroundColor { get => _backgroundColor; set => Set(ref _backgroundColor, value?.Trim() ?? ""); }
     public bool GradientEnabled { get => _gradientEnabled; set => Set(ref _gradientEnabled, value); }
-    public string GradientEndColor { get => _gradientEndColor; set => Set(ref _gradientEndColor, value.Trim()); }
+    public string GradientEndColor { get => _gradientEndColor; set => Set(ref _gradientEndColor, value?.Trim() ?? ""); }
     public GradientDirection GradientDirection { get => _gradientDirection; set => Set(ref _gradientDirection, value); }
     public BackgroundTexture BackgroundTextureType { get => _backgroundTextureType; set => Set(ref _backgroundTextureType, value); }
-    public string BackgroundTextureColor { get => _backgroundTextureColor; set => Set(ref _backgroundTextureColor, value.Trim()); }
+    public string BackgroundTextureColor { get => _backgroundTextureColor; set => Set(ref _backgroundTextureColor, value?.Trim() ?? ""); }
     public double BackgroundTextureSize { get => _backgroundTextureSize; set => Set(ref _backgroundTextureSize, Math.Clamp(value, 8, 80)); }
     public double BackgroundTextureSpectrumSensitivity { get => _backgroundTextureSpectrumSensitivity; set => Set(ref _backgroundTextureSpectrumSensitivity, Math.Clamp(value, 0.1, 3)); }
     public int BackgroundTextureSpectrumBars { get => _backgroundTextureSpectrumBars; set => Set(ref _backgroundTextureSpectrumBars, Math.Clamp(value, 4, 64)); }
@@ -689,14 +689,14 @@ public sealed class InjectorSettings
     public double FakeWeatherHumidity { get => _fakeWeatherHumidity; set => Set(ref _fakeWeatherHumidity, Math.Clamp(value, 0, 100)); }
     public double FakeWeatherPressure { get => _fakeWeatherPressure; set => Set(ref _fakeWeatherPressure, Math.Clamp(value, 800, 1200)); }
     public double FakeWeatherVisibility { get => _fakeWeatherVisibility; set => Set(ref _fakeWeatherVisibility, Math.Clamp(value, 0, 100)); }
-    public string FakeWeatherWindDirection { get => _fakeWeatherWindDirection; set => Set(ref _fakeWeatherWindDirection, value.Trim()); }
-    public string FakeWeatherWindScale { get => _fakeWeatherWindScale; set => Set(ref _fakeWeatherWindScale, value.Trim()); }
+    public string FakeWeatherWindDirection { get => _fakeWeatherWindDirection; set => Set(ref _fakeWeatherWindDirection, value?.Trim() ?? ""); }
+    public string FakeWeatherWindScale { get => _fakeWeatherWindScale; set => Set(ref _fakeWeatherWindScale, value?.Trim() ?? ""); }
     public double FakeWeatherAqi { get => _fakeWeatherAqi; set => Set(ref _fakeWeatherAqi, Math.Clamp(value, 0, 500)); }
     public int FakeWeatherAlertIcon { get => _fakeWeatherAlertIcon; set => Set(ref _fakeWeatherAlertIcon, Math.Clamp(value, 0, 4)); }
-    public string FakeWeatherAlertType { get => _fakeWeatherAlertType; set => Set(ref _fakeWeatherAlertType, value.Trim()); }
-    public string FakeWeatherAlertLevel { get => _fakeWeatherAlertLevel; set => Set(ref _fakeWeatherAlertLevel, value.Trim()); }
-    public string FakeWeatherAlertTitle { get => _fakeWeatherAlertTitle; set => Set(ref _fakeWeatherAlertTitle, value.Trim()); }
-    public string FakeWeatherAlertDetail { get => _fakeWeatherAlertDetail; set => Set(ref _fakeWeatherAlertDetail, value.Trim()); }
+    public string FakeWeatherAlertType { get => _fakeWeatherAlertType; set => Set(ref _fakeWeatherAlertType, value?.Trim() ?? ""); }
+    public string FakeWeatherAlertLevel { get => _fakeWeatherAlertLevel; set => Set(ref _fakeWeatherAlertLevel, value?.Trim() ?? ""); }
+    public string FakeWeatherAlertTitle { get => _fakeWeatherAlertTitle; set => Set(ref _fakeWeatherAlertTitle, value?.Trim() ?? ""); }
+    public string FakeWeatherAlertDetail { get => _fakeWeatherAlertDetail; set => Set(ref _fakeWeatherAlertDetail, value?.Trim() ?? ""); }
     public int FakeWeatherRainRemainingMinutes { get => _fakeWeatherRainRemainingMinutes; set => Set(ref _fakeWeatherRainRemainingMinutes, Math.Clamp(value, -180, 180)); }
     public int StartupOpenTarget { get => _startupOpenTarget; set => Set(ref _startupOpenTarget, Math.Clamp(value, 0, 3)); }
 
@@ -712,7 +712,7 @@ public sealed class InjectorSettings
     public bool CanvasRasterizeWarningDismissed { get => _canvasRasterizeWarningDismissed; set => Set(ref _canvasRasterizeWarningDismissed, value); }
 
     /// <summary>编辑器「吸管」取到的当前色（新建形状 / 文本 / 画笔的默认色，自动记忆）。</summary>
-    public string EditorPickedColor { get => _editorPickedColor; set => Set(ref _editorPickedColor, value.Trim()); }
+    public string EditorPickedColor { get => _editorPickedColor; set => Set(ref _editorPickedColor, value?.Trim() ?? ""); }
 
     /// <summary>关闭宿主点位失效检查与降级提示。</summary>
     public bool DisableDegradationCheck { get => _disableDegradationCheck; set => Set(ref _disableDegradationCheck, value); }
@@ -720,13 +720,13 @@ public sealed class InjectorSettings
     /// <summary>是否输出诊断日志（album-color / preview-debug / canvas-debug / crash 等）。关闭可减少磁盘写入。</summary>
     public bool DiagnosticLoggingEnabled { get => _diagnosticLoggingEnabled; set => Set(ref _diagnosticLoggingEnabled, value); }
     public bool ShadowEnabled { get => _shadowEnabled; set => Set(ref _shadowEnabled, value); }
-    public string ShadowColor { get => _shadowColor; set => Set(ref _shadowColor, value.Trim()); }
+    public string ShadowColor { get => _shadowColor; set => Set(ref _shadowColor, value?.Trim() ?? ""); }
     public double ShadowBlur { get => _shadowBlur; set => Set(ref _shadowBlur, Math.Clamp(value, 0, 200)); }
     public double ShadowOffsetX { get => _shadowOffsetX; set => Set(ref _shadowOffsetX, Math.Clamp(value, -200, 200)); }
     public double ShadowOffsetY { get => _shadowOffsetY; set => Set(ref _shadowOffsetY, Math.Clamp(value, -200, 200)); }
     public double ShadowOpacity { get => _shadowOpacity; set => Set(ref _shadowOpacity, Math.Clamp(value, 0, 1)); }
     public bool BorderEnabled { get => _borderEnabled; set => Set(ref _borderEnabled, value); }
-    public string BorderColor { get => _borderColor; set => Set(ref _borderColor, value.Trim()); }
+    public string BorderColor { get => _borderColor; set => Set(ref _borderColor, value?.Trim() ?? ""); }
     public double BorderThickness { get => _borderThickness; set => Set(ref _borderThickness, Math.Clamp(value, 0.25, 20)); }
     public VisibilityAnimation VisibilityAnimation { get => _visibilityAnimation; set => Set(ref _visibilityAnimation, value); }
     public double VisibilityDurationSeconds { get => _visibilityDurationSeconds; set => Set(ref _visibilityDurationSeconds, Math.Clamp(value, 0.1, 10)); }
@@ -740,14 +740,14 @@ public sealed class InjectorSettings
     public double CarouselAnimationOffset { get => _carouselAnimationOffset; set => Set(ref _carouselAnimationOffset, Math.Clamp(value, 0, 500)); }
     public CarouselAnimationType CarouselAnimationType { get => _carouselAnimationType; set => Set(ref _carouselAnimationType, value); }
     public RippleType RippleType { get => _rippleType; set => Set(ref _rippleType, value); }
-    public string RippleColor { get => _rippleColor; set => Set(ref _rippleColor, value.Trim()); }
+    public string RippleColor { get => _rippleColor; set => Set(ref _rippleColor, value?.Trim() ?? ""); }
     public double RippleDurationSeconds { get => _rippleDurationSeconds; set => Set(ref _rippleDurationSeconds, Math.Clamp(value, 0.1, 10)); }
     public double RippleThickness { get => _rippleThickness; set => Set(ref _rippleThickness, Math.Clamp(value, 0.5, 40)); }
     public double RippleOpacity { get => _rippleOpacity; set => Set(ref _rippleOpacity, Math.Clamp(value, 0.1, 1)); }
     public bool RippleConstraintEnabled { get => _rippleConstraintEnabled; set => Set(ref _rippleConstraintEnabled, value); }
     public double RippleConstraintRadius { get => _rippleConstraintRadius; set => Set(ref _rippleConstraintRadius, Math.Clamp(value, 0, 2000)); }
     public bool MarqueeEnabled { get => _marqueeEnabled; set => Set(ref _marqueeEnabled, value); }
-    public string MarqueeColor { get => _marqueeColor; set => Set(ref _marqueeColor, value.Trim()); }
+    public string MarqueeColor { get => _marqueeColor; set => Set(ref _marqueeColor, value?.Trim() ?? ""); }
     public double MarqueeDurationSeconds { get => _marqueeDurationSeconds; set => Set(ref _marqueeDurationSeconds, Math.Clamp(value, 0.1, 10)); }
     public double MarqueeOpacity { get => _marqueeOpacity; set => Set(ref _marqueeOpacity, Math.Clamp(value, 0.1, 1)); }
     public double MarqueeSpeed { get => _marqueeSpeed; set => Set(ref _marqueeSpeed, Math.Clamp(value, 0.1, 8)); }
@@ -760,7 +760,7 @@ public sealed class InjectorSettings
     public double AlbumColorTransitionSeconds { get => _albumColorTransitionSeconds; set => Set(ref _albumColorTransitionSeconds, Math.Clamp(value, 0, 10)); }
     public bool WallpaperEnabled { get => _wallpaperEnabled; set => Set(ref _wallpaperEnabled, value); }
     public WallpaperSource WallpaperSource { get => _wallpaperSource; set => Set(ref _wallpaperSource, value); }
-    public string WallpaperPath { get => _wallpaperPath; set => Set(ref _wallpaperPath, value.Trim()); }
+    public string WallpaperPath { get => _wallpaperPath; set => Set(ref _wallpaperPath, value?.Trim() ?? ""); }
     public double WallpaperOpacity { get => _wallpaperOpacity; set => Set(ref _wallpaperOpacity, Math.Clamp(value, 0, 1)); }
     public WallpaperDisplayMode WallpaperDisplayMode { get => _wallpaperDisplayMode; set => Set(ref _wallpaperDisplayMode, value); }
     public double WallpaperScale { get => _wallpaperScale; set => Set(ref _wallpaperScale, Math.Clamp(value, 1, 5)); }
@@ -777,32 +777,32 @@ public sealed class InjectorSettings
     /// <summary>底图编辑器舞台棋盘格是否跟随主题深浅色（关闭时用自定义两色）。</summary>
     public bool WallpaperCheckerFollowTheme { get => _wallpaperCheckerFollowTheme; set => Set(ref _wallpaperCheckerFollowTheme, value); }
     /// <summary>棋盘格颜色 1（关闭「跟随主题」时使用）。</summary>
-    public string WallpaperCheckerColor1 { get => _wallpaperCheckerColor1; set => Set(ref _wallpaperCheckerColor1, value.Trim()); }
+    public string WallpaperCheckerColor1 { get => _wallpaperCheckerColor1; set => Set(ref _wallpaperCheckerColor1, value?.Trim() ?? ""); }
     /// <summary>棋盘格颜色 2（关闭「跟随主题」时使用）。</summary>
-    public string WallpaperCheckerColor2 { get => _wallpaperCheckerColor2; set => Set(ref _wallpaperCheckerColor2, value.Trim()); }
+    public string WallpaperCheckerColor2 { get => _wallpaperCheckerColor2; set => Set(ref _wallpaperCheckerColor2, value?.Trim() ?? ""); }
     public PrepareOnClassStyle PrepareOnClassStyle { get => _prepareOnClassStyle; set => Set(ref _prepareOnClassStyle, value); }
-    public string CountdownArrowColor { get => _countdownArrowColor; set => Set(ref _countdownArrowColor, value.Trim()); }
+    public string CountdownArrowColor { get => _countdownArrowColor; set => Set(ref _countdownArrowColor, value?.Trim() ?? ""); }
     public int CountdownArrowCount { get => _countdownArrowCount; set => Set(ref _countdownArrowCount, Math.Clamp(value, 1, 24)); }
     public int CountdownArrowPerGroup { get => _countdownArrowPerGroup; set => Set(ref _countdownArrowPerGroup, Math.Clamp(value, 1, 12)); }
     public double CountdownArrowSpacing { get => _countdownArrowSpacing; set => Set(ref _countdownArrowSpacing, Math.Clamp(value, 0, 100)); }
     public double CountdownArrowGroupSpacing { get => _countdownArrowGroupSpacing; set => Set(ref _countdownArrowGroupSpacing, Math.Clamp(value, 0, 400)); }
     public double CountdownArrowSpeed { get => _countdownArrowSpeed; set => Set(ref _countdownArrowSpeed, Math.Clamp(value, 0.1, 12)); }
     public double CountdownArrowThickness { get => _countdownArrowThickness; set => Set(ref _countdownArrowThickness, Math.Clamp(value, 0.5, 20)); }
-    public string CountdownPulseColor { get => _countdownPulseColor; set => Set(ref _countdownPulseColor, value.Trim()); }
+    public string CountdownPulseColor { get => _countdownPulseColor; set => Set(ref _countdownPulseColor, value?.Trim() ?? ""); }
     public double CountdownPulseThickness { get => _countdownPulseThickness; set => Set(ref _countdownPulseThickness, Math.Clamp(value, 0.5, 20)); }
     public double CountdownPulseSpeed { get => _countdownPulseSpeed; set => Set(ref _countdownPulseSpeed, Math.Clamp(value, 0.1, 8)); }
     public double CountdownPulseMaxRadius { get => _countdownPulseMaxRadius; set => Set(ref _countdownPulseMaxRadius, Math.Clamp(value, 0.1, 1)); }
-    public string CountdownScanColor { get => _countdownScanColor; set => Set(ref _countdownScanColor, value.Trim()); }
+    public string CountdownScanColor { get => _countdownScanColor; set => Set(ref _countdownScanColor, value?.Trim() ?? ""); }
     public double CountdownScanThickness { get => _countdownScanThickness; set => Set(ref _countdownScanThickness, Math.Clamp(value, 0.5, 20)); }
     public double CountdownScanSpeed { get => _countdownScanSpeed; set => Set(ref _countdownScanSpeed, Math.Clamp(value, 0.1, 8)); }
     public ScanlineDirection CountdownScanDirection { get => _countdownScanDirection; set => Set(ref _countdownScanDirection, value); }
     public bool CountdownScanTailEnabled { get => _countdownScanTailEnabled; set => Set(ref _countdownScanTailEnabled, value); }
-    public string CountdownLightBandColor { get => _countdownLightBandColor; set => Set(ref _countdownLightBandColor, value.Trim()); }
+    public string CountdownLightBandColor { get => _countdownLightBandColor; set => Set(ref _countdownLightBandColor, value?.Trim() ?? ""); }
     public double CountdownLightBandThickness { get => _countdownLightBandThickness; set => Set(ref _countdownLightBandThickness, Math.Clamp(value, 0.02, 0.5)); }
     public double CountdownLightBandAngle { get => _countdownLightBandAngle; set => Set(ref _countdownLightBandAngle, Math.Clamp(value, -90, 90)); }
     public double CountdownLightBandSpeed { get => _countdownLightBandSpeed; set => Set(ref _countdownLightBandSpeed, Math.Clamp(value, 0.1, 8)); }
     public bool PrepareWarningEnabled { get => _prepareWarningEnabled; set => Set(ref _prepareWarningEnabled, value); }
-    public string PrepareWarningColor { get => _prepareWarningColor; set => Set(ref _prepareWarningColor, value.Trim()); }
+    public string PrepareWarningColor { get => _prepareWarningColor; set => Set(ref _prepareWarningColor, value?.Trim() ?? ""); }
     public double PrepareWarningTriggerSeconds { get => _prepareWarningTriggerSeconds; set => Set(ref _prepareWarningTriggerSeconds, Math.Clamp(value, 5, 600)); }
     public double PrepareWarningFlashSpeed { get => _prepareWarningFlashSpeed; set => Set(ref _prepareWarningFlashSpeed, Math.Clamp(value, 0.1, 10)); }
     public double PrepareWarningFlashAmount { get => _prepareWarningFlashAmount; set => Set(ref _prepareWarningFlashAmount, Math.Clamp(value, 0, 1)); }
@@ -1043,10 +1043,19 @@ internal static class InjectorSettingsStore
                 }
             }
         }
-        catch (JsonException)
+        catch (Exception)
         {
-            var backupPath = settingsPath + ".invalid-" + DateTime.Now.ToString("yyyyMMddHHmmss");
-            File.Move(settingsPath, backupPath, true);
+            // 任何反序列化异常（含 setter 抛出的 NRE / IO 占用等）都不能冒泡到宿主：
+            // 备份损坏文件后回退全新默认。JsonException 只是其中一种，其余异常同样要兜底。
+            try
+            {
+                var backupPath = settingsPath + ".invalid-" + DateTime.Now.ToString("yyyyMMddHHmmss");
+                File.Move(settingsPath, backupPath, true);
+            }
+            catch
+            {
+                // 备份失败不影响回退默认。
+            }
         }
 
         var settings = new InjectorSettings { StyleSheetPath = defaultStyleSheet };

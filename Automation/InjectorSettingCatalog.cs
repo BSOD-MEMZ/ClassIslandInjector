@@ -130,7 +130,7 @@ public static class InjectorSettingCatalog
             Settings =
             [
                 Spec("AnimationEnabled", "持续动画", "\uEFFF", SettingValueKind.Bool,
-                    "打开后才会使用循环动画设置。"),
+                    "ClassIsland 闲置状态下循环播放的动画。"),
                 Spec("AnimationMode", "动画类型", "\uEFFF", SettingValueKind.Enum,
                     "选择循环动画的运动方式。", typeof(IslandAnimationMode),
                     [KV(IslandAnimationMode.None, "无"), KV(IslandAnimationMode.Breathe, "呼吸"),

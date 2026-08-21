@@ -159,39 +159,74 @@ internal sealed class SmtcWatcher : IDisposable
 
     private void OnSessionsChanged(GlobalSystemMediaTransportControlsSessionManager sender, SessionsChangedEventArgs args)
     {
-        SmtcAlbumColorPicker.LogDiagnostic("SMTC 事件: SessionsChanged");
-        EnumerateSessions();
-        _ = RefreshAsync();
+        try
+        {
+            SmtcAlbumColorPicker.LogDiagnostic("SMTC 事件: SessionsChanged");
+            EnumerateSessions();
+            _ = RefreshAsync();
+        }
+        catch
+        {
+            // WinRT 事件分发线程回调，异常不得冒泡（会话可能已被系统回收）。
+        }
     }
 
     private void OnCurrentSessionChanged(GlobalSystemMediaTransportControlsSessionManager sender, CurrentSessionChangedEventArgs args)
     {
-        SmtcAlbumColorPicker.LogDiagnostic("SMTC 事件: CurrentSessionChanged");
-        _ = RefreshAsync();
+        try
+        {
+            SmtcAlbumColorPicker.LogDiagnostic("SMTC 事件: CurrentSessionChanged");
+            _ = RefreshAsync();
+        }
+        catch
+        {
+            // 同上：WinRT 回调异常不冒泡。
+        }
     }
 
     private void OnMediaPropertiesChanged(GlobalSystemMediaTransportControlsSession sender, MediaPropertiesChangedEventArgs args)
     {
-        if (sender.SourceAppUserModelId == _focusedSessionId)
+        try
         {
-            SmtcAlbumColorPicker.LogDiagnostic($"SMTC 事件: MediaPropertiesChanged 会话={sender.SourceAppUserModelId}（焦点，触发刷新）");
-            _ = RefreshAsync();
+            if (sender.SourceAppUserModelId == _focusedSessionId)
+            {
+                SmtcAlbumColorPicker.LogDiagnostic($"SMTC 事件: MediaPropertiesChanged 会话={sender.SourceAppUserModelId}（焦点，触发刷新）");
+                _ = RefreshAsync();
+            }
+        }
+        catch
+        {
+            // 会话对象可能已失效（应用退出/系统回收），异常不冒泡。
         }
     }
 
     private void OnPlaybackInfoChanged(GlobalSystemMediaTransportControlsSession sender, PlaybackInfoChangedEventArgs args)
     {
-        if (sender.SourceAppUserModelId == _focusedSessionId)
+        try
         {
-            _ = RefreshAsync();
+            if (sender.SourceAppUserModelId == _focusedSessionId)
+            {
+                _ = RefreshAsync();
+            }
+        }
+        catch
+        {
+            // 同上。
         }
     }
 
     private void OnTimelinePropertiesChanged(GlobalSystemMediaTransportControlsSession sender, TimelinePropertiesChangedEventArgs args)
     {
-        if (sender.SourceAppUserModelId == _focusedSessionId)
+        try
         {
-            _ = RefreshAsync();
+            if (sender.SourceAppUserModelId == _focusedSessionId)
+            {
+                _ = RefreshAsync();
+            }
+        }
+        catch
+        {
+            // 同上。
         }
     }
 
