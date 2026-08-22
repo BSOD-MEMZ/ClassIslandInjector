@@ -1,8 +1,8 @@
 # ClassIsland 样式注入器
-
+![截图](./Assets/Readme/title.jpg)
 让 ClassIsland 再次伟大！自定义 ClassIsland 的显示行为和动画效果！
 访问神秘链接继续赤石：[xxtsoft.top](https://xxtsoft.top)
-
+[观看B站宣传片](https://www.bilibili.com/video/BV1re816rEkK/)
 ## 它能做什么
 
 ### 换皮肤
