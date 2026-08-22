@@ -79,8 +79,8 @@
 
 | 库 | 版本 | 用途 | 许可证 |
 |---|---|---|---|
-| ClassIsland.PluginSdk | 2.0.0.2 | ClassIsland 插件 SDK（宿主交互 / 设置页 / 服务） | MIT |
-| MaterialColorUtilities | 0.3.0 | 专辑封面取色（Material You 调色板） | MIT |
+| ClassIsland.PluginSdk | 2.0.0.2 | ClassIsland 插件 SDK（宿主交互 / 设置页 / 服务） | LGPL-3.0 |
+| MaterialColorUtilities | 0.3.0 | 专辑封面取色（Material You 调色板） | Apache-2.0 |
 | NAudio.Wasapi | 2.2.1 | 音频频谱捕获（动态频谱纹理） | MIT |
 | System.Drawing.Common | 8.0.25 | GIF 逐帧解码、屏幕抓取 | MIT |
 
