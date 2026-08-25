@@ -4636,6 +4636,13 @@ internal sealed class MainWindowStyleInjector : IDisposable
             // 真实背景由每行根组件模板的 Border.line-background 提供；两者都按背景装饰处理。
             var isBackground = borderControl.Name == HostContract.BackgroundBorder ||
                                IsSplitComponentBackground(borderControl);
+            // 分体模式下宿主把 BackgroundBorder 设为不可见（IsVisible=False），
+            // 对其设置背景/边框无意义，且残留边框可能框住整个显示区域，跳过隐藏背景的装饰。
+            if (isBackground && borderControl.Name == HostContract.BackgroundBorder && !borderControl.IsVisible)
+            {
+                isBackground = false;
+            }
+
             if (isBackground && borderControl.Name != HostContract.BackgroundBorder)
             {
                 // 仅统计分体根组件背景（BackgroundBorder 非分体，不计数）。
@@ -4664,8 +4671,11 @@ internal sealed class MainWindowStyleInjector : IDisposable
                 borderControl.BorderBrush = Brushes.Transparent;
                 borderControl.BorderThickness = new Thickness(0);
             }
-            else if (_settings.BorderEnabled)
+            else if (_settings.BorderEnabled && isBackground)
             {
+                // 边框只作用于背景 Border（非分体 BackgroundBorder / 分体根组件背景 Border）。
+                // OverlayMask / BackgroundBorderOverlayMask 是整行尺寸的通知遮罩，给它们加边框
+                // 会在分体模式下框住整个显示区域。
                 borderBrush = new SolidColorBrush(border);
                 borderControl.BorderBrush = borderBrush;
                 borderControl.BorderThickness = new Thickness(_settings.BorderThickness);
