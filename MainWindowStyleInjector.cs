@@ -4815,7 +4815,10 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
     }
 
-    /// <summary>读取分体块对应的组件显示名（NameCache），不可用时回退为 Id 前缀。</summary>
+    /// <summary>
+    /// 读取分体块对应的组件显示名。优先实例显示名缓存（NameCache，宿主可能未填充），
+    /// 其次组件类型名（AssociatedComponentInfo.Name，如「时钟」「课程表」），最后回退 Id 前缀。
+    /// </summary>
     private static string GetSplitBlockDisplayName(Border border, string id)
     {
         try
@@ -4827,11 +4830,26 @@ internal sealed class MainWindowStyleInjector : IDisposable
             {
                 var settings = presenter.GetType().GetProperty(HostContract.ComponentPresenterSettingsProperty,
                     BindingFlags.Instance | BindingFlags.Public)?.GetValue(presenter);
-                var name = settings?.GetType().GetProperty(HostContract.ComponentSettingsNameCacheProperty,
-                    BindingFlags.Instance | BindingFlags.Public)?.GetValue(settings) as string;
-                if (!string.IsNullOrWhiteSpace(name))
+                if (settings != null)
                 {
-                    return name;
+                    var settingsType = settings.GetType();
+                    // 1) 实例显示名缓存。
+                    var nameCache = settingsType.GetProperty(HostContract.ComponentSettingsNameCacheProperty,
+                        BindingFlags.Instance | BindingFlags.Public)?.GetValue(settings) as string;
+                    if (!string.IsNullOrWhiteSpace(nameCache))
+                    {
+                        return nameCache;
+                    }
+
+                    // 2) 组件类型名（如「时钟」「课程表」），通过 AssociatedComponentInfo.Name 读取。
+                    var info = settingsType.GetProperty(HostContract.ComponentSettingsAssociatedInfoProperty,
+                        BindingFlags.Instance | BindingFlags.Public)?.GetValue(settings);
+                    var typeName = info?.GetType().GetProperty(HostContract.ComponentInfoNameProperty,
+                        BindingFlags.Instance | BindingFlags.Public)?.GetValue(info) as string;
+                    if (!string.IsNullOrWhiteSpace(typeName))
+                    {
+                        return typeName;
+                    }
                 }
             }
         }

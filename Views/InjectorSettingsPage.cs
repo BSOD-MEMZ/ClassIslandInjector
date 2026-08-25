@@ -392,6 +392,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         Content = BuildContent();
         WireVisualEditor();
         WireLivePreview();
+        WireSplitBlockLiveSync();
         // 调试开关即时生效（须在 LoadFromSettings 之前挂接，加载持久化值时也会触发）。
         _reduceVisualBurden.PropertyChanged += (_, _) => ApplyVisualBurdenReduction();
         _disableVersionCheck.PropertyChanged += (_, _) => UpdatePluginUpdateInfoBar(_contractTableList.SelectedItem as ContractIndexEntry);
@@ -927,12 +928,11 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         {
             IconSource = new FluentIconSource("\uE51F"),
             Header = "分体块背景",
-            Description = "分体主界面模式下，可为每个分体组件块设置独立的背景颜色。勾选分块后，把下方「底色填充」分组的当前配置应用到选中的分块。",
+            Description = "分体主界面模式下，可为每个分体组件块设置独立的背景颜色。勾选分块后，下方「底色填充」分组的配置会即时应用到选中的分块（所见即所得）。",
             IsExpanded = true
         };
         _allExpanders.Add(_splitBlockGroup);
-        _splitBlockGroup.Items.Add(Item("选择分块", "按行显示所有分体块（即主界面的根组件）。勾选后可将下方「底色填充」的配置应用到它们。", SplitBlockListFooter()));
-        _splitBlockGroup.Items.Add(Item("应用到选中分块", "把下方「底色填充」分组的当前配置（颜色 / 渐变 / 动态取色）应用到所有勾选的分块。", Button("应用到底色填充", ApplySplitBlockColorsToSelection)));
+        _splitBlockGroup.Items.Add(Item("选择分块", "按行显示所有分体块（即主界面的根组件）。勾选后，下方「底色填充」分组的配置会即时应用到选中的分块；取消勾选则停止跟随。", SplitBlockListFooter()));
         _splitBlockGroup.Items.Add(Item("清除选中分块", "移除选中分块的独立配色，恢复使用全局底色。", Button("清除", ClearSplitBlockColors)));
         panel.Children.Add(_splitBlockGroup);
 
@@ -1422,8 +1422,12 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                 {
                     Content = block.Name,
                     VerticalAlignment = VerticalAlignment.Center,
-                    Margin = new Thickness(12, 0, 0, 0)
+                    Margin = new Thickness(12, 0, 0, 0),
+                    // 已配置独立配色的分块默认勾选（程序性赋值不触发 Click，不会误写盘）。
+                    IsChecked = InjectorRuntime.Settings.SplitBlockBackgrounds.ContainsKey(block.Id)
                 };
+                // 勾选变化即用当前「底色填充」配置同步该分块（勾哪些改哪些）。
+                check.Click += (_, _) => SyncSplitBlocksToBackground();
                 _splitBlockChecks[block.Id] = check;
                 _splitBlockList.Children.Add(check);
             }
@@ -1447,15 +1451,19 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     }
 
     /// <summary>
-    /// 把下方「底色填充」分组的当前配置（颜色 / 渐变 / 动态取色）应用到所有勾选的分体块。
-    /// 应用即启用（Enabled=true），无需另行开启。
+    /// 把下方「底色填充」分组的当前配置即时同步到所有勾选的分体块（所见即所得，勾哪些改哪些）。
+    /// 同步后经 200ms 防抖触发保存应用（复用实时预览计时器，不依赖「实时预览」开关）。
     /// </summary>
-    private void ApplySplitBlockColorsToSelection()
+    private void SyncSplitBlocksToBackground()
     {
+        if (_suppressLivePreview)
+        {
+            return;
+        }
+
         var selected = _splitBlockChecks.Where(kv => kv.Value.IsChecked == true).Select(kv => kv.Key).ToList();
         if (selected.Count == 0)
         {
-            _status.Text = "请先勾选要应用的分体块。";
             return;
         }
 
@@ -1482,8 +1490,21 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.EndUpdate();
         }
 
-        _status.Text = $"已把「底色填充」配置应用到 {selected.Count} 个分体块。";
-        SaveAndApply();
+        _livePreviewTimer.Stop();
+        _livePreviewTimer.Start();
+    }
+
+    /// <summary>
+    /// 把「底色填充」分组的控件变化即时同步到勾选的分体块；
+    /// 以及勾选状态变化时用当前配置同步一次（勾选即应用）。
+    /// </summary>
+    private void WireSplitBlockLiveSync()
+    {
+        _backgroundColor.PropertyChanged += (_, _) => SyncSplitBlocksToBackground();
+        _gradient.PropertyChanged += (_, _) => SyncSplitBlocksToBackground();
+        _gradientEndColor.PropertyChanged += (_, _) => SyncSplitBlocksToBackground();
+        _gradientDirection.PropertyChanged += (_, _) => SyncSplitBlocksToBackground();
+        _dynamicBackgroundColor.PropertyChanged += (_, _) => SyncSplitBlocksToBackground();
     }
 
     /// <summary>移除选中分块的独立配色，使其恢复使用全局底色。</summary>

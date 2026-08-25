@@ -135,8 +135,14 @@ internal static class HostContract
     /// <summary>ComponentSettings 上的 Id 属性名（组件唯一 GUID，分体块背景的键）。</summary>
     public static string ComponentSettingsIdProperty { get; private set; } = "Id";
 
-    /// <summary>ComponentSettings 上的 NameCache 属性名（组件显示名缓存）。</summary>
+    /// <summary>ComponentSettings 上的 NameCache 属性名（组件显示名缓存，宿主可能未填充）。</summary>
     public static string ComponentSettingsNameCacheProperty { get; private set; } = "NameCache";
+
+    /// <summary>ComponentSettings 上的 AssociatedComponentInfo 属性名（关联的组件注册信息）。</summary>
+    public static string ComponentSettingsAssociatedInfoProperty { get; private set; } = "AssociatedComponentInfo";
+
+    /// <summary>ComponentInfo 上的 Name 属性名（组件类型显示名，如「时钟」）。</summary>
+    public static string ComponentInfoNameProperty { get; private set; } = "Name";
 
     /// <summary>MainWindowLine 上的 LineNumber 属性名（分体块分行展示用）。</summary>
     public static string MainWindowLineLineNumberProperty { get; private set; } = "LineNumber";
@@ -222,6 +228,8 @@ internal static class HostContract
         ApplyString(catalog.MemberNames, nameof(ComponentPresenterSettingsProperty), v => ComponentPresenterSettingsProperty = v);
         ApplyString(catalog.MemberNames, nameof(ComponentSettingsIdProperty), v => ComponentSettingsIdProperty = v);
         ApplyString(catalog.MemberNames, nameof(ComponentSettingsNameCacheProperty), v => ComponentSettingsNameCacheProperty = v);
+        ApplyString(catalog.MemberNames, nameof(ComponentSettingsAssociatedInfoProperty), v => ComponentSettingsAssociatedInfoProperty = v);
+        ApplyString(catalog.MemberNames, nameof(ComponentInfoNameProperty), v => ComponentInfoNameProperty = v);
         ApplyString(catalog.MemberNames, nameof(MainWindowLineLineNumberProperty), v => MainWindowLineLineNumberProperty = v);
 
         ApplyString(catalog.ClassNames, nameof(InjectorWindowClass), v => InjectorWindowClass = v);

@@ -102,7 +102,8 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
 - 识别：分体根组件背景 Border → `GetVisualAncestors()` 回溯 `ComponentPresenter`（`HostContract.ComponentPresenterTypeName`）→ 反射读 `Settings.Id` / `Settings.NameCache`（`ComponentPresenterSettingsProperty` / `ComponentSettingsIdProperty` / `ComponentSettingsNameCacheProperty`，均纳入契约对照表）。
 - 应用：`ApplyDecorations` 对每个分体块查 `SplitBlockBackgrounds`，命中且 `Enabled` 时用块级颜色/渐变（`BuildBlockBackgroundBrush`），否则回退全局底色。
 - SMTC 按块：`SplitBlockBackgroundSetting.UseDynamicColor` 控制该块是否跟随动态取色；`RefreshDynamicColors` 依此只更新对应块的画刷。
-- 设置页：顶部「分体块背景」分组，`MainWindowStyleInjector.EnumerateSplitBlocks()`（静态）按行枚举分块（返回 `SplitBlockInfo`：Id/显示名 NameCache/行号）→ CheckBox 多选 →「应用到底色填充」把下方「底色填充」分组的当前配置（颜色/渐变/动态取色）写入 `SplitBlockBackgrounds`（Enabled=true）并保存应用；「清除」移除选中分块的独立配色回退全局。非分体模式下隐藏整个分组（`_splitBlockGroup.IsVisible=false`）。
+- 设置页：顶部「分体块背景」分组，`MainWindowStyleInjector.EnumerateSplitBlocks()`（静态）按行枚举分块（返回 `SplitBlockInfo`：Id/显示名 NameCache/行号）→ CheckBox 多选 → **所见即所得**：勾选分块即用下方「底色填充」分组的当前配置（颜色/渐变/动态取色）写入 `SplitBlockBackgrounds`（Enabled=true），改底色填充配置也会即时同步到勾选的分块（`SyncSplitBlocksToBackground`，200ms 防抖）；「清除」移除选中分块的独立配色回退全局。非分体模式下隐藏整个分组（`_splitBlockGroup.IsVisible=false`）；已配置的分块打开页面时默认勾选。
+- 分块显示名：优先 `NameCache`（宿主可能未填充），其次 `AssociatedComponentInfo.Name`（组件类型名如「时钟」「课程表」），最后回退 Id 前缀（`GetSplitBlockDisplayName`）。
 - 运行时分块级背景**不依赖**全局「底色填充」开关：块有配置且 `Enabled` 时直接生效（用户显式应用了块配色）。
 - 新分体块设置字段需同步：字段 → 属性 → `CopyFrom` → 设置页 `LoadSplitBlockToEditor` / `ApplySplitBlockColorsToSelection`。
 
