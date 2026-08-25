@@ -61,6 +61,10 @@
       "value": "ClassIsland.Controls.MainWindowLine",
       "feature": "主界面行（提醒/覆盖层/纹理宿主）"
     },
+    "ComponentPresenter": {
+      "value": "ClassIsland.Core.Controls.ComponentPresenter",
+      "feature": "组件呈现器（分体块背景的宿主）"
+    },
     "SlideComponent": {
       "value": "ClassIsland.Controls.Components.SlideComponent",
       "feature": "轮播容器（翻页动画）"
@@ -171,6 +175,21 @@
       "value": "EffectControls",
       "feature": "特效集合",
       "target": "effectViewModel"
+    },
+    "ComponentPresenterSettings": {
+      "value": "Settings",
+      "feature": "ComponentPresenter 的组件设置",
+      "target": "componentPresenter"
+    },
+    "ComponentSettingsId": {
+      "value": "Id",
+      "feature": "组件唯一 GUID（分体块背景键）",
+      "target": "componentSettings"
+    },
+    "ComponentSettingsNameCache": {
+      "value": "NameCache",
+      "feature": "组件显示名缓存",
+      "target": "componentSettings"
     }
   },
   "classNames": {

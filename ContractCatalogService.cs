@@ -358,6 +358,18 @@ internal static class ContractCatalogService
                 return mainWindow.GetType();
             case "mainWindowLine":
                 return GetMainWindowLineType(descendants ?? mainWindow.GetVisualDescendants().OfType<Control>().ToArray());
+            case "componentPresenter":
+            {
+                var all = descendants ?? mainWindow.GetVisualDescendants().OfType<Control>().ToArray();
+                var found = all.FirstOrDefault(c => c.GetType().FullName == HostContract.ComponentPresenterTypeName);
+                return found?.GetType() ?? FindType(HostContract.ComponentPresenterTypeName);
+            }
+            case "componentSettings":
+            {
+                var presenterType = ResolveTargetType("componentPresenter", mainWindow, settingsType, descendants);
+                return presenterType?.GetProperty(HostContract.ComponentPresenterSettingsProperty,
+                    BindingFlags.Instance | BindingFlags.Public)?.PropertyType;
+            }
             case "notificationRequest":
                 return typeof(ClassIsland.Core.Models.Notification.NotificationRequest);
             case "effectWindow":

@@ -92,6 +92,11 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private SettingsExpander _shadowGroup = null!;
     private SettingsExpander _borderGroup = null!;
     private SettingsExpander _wallpaperGroup = null!;
+    // ===== 分体块背景（分体主界面独立配色）=====
+    private SettingsExpander _splitBlockGroup = null!;
+    /// <summary>分体块勾选列表（键 = 组件 Id，值 = 复选框）。</summary>
+    private readonly StackPanel _splitBlockList = new() { Spacing = 4 };
+    private readonly Dictionary<string, CheckBox> _splitBlockChecks = [];
     private readonly ToggleSwitch _gradient = Toggle();
     private readonly ColorPicker _gradientEndColor = ColorPicker();
     private readonly ComboBox _gradientDirection = Combo(GradientDirections);
@@ -917,6 +922,20 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         };
         panel.Children.Add(_smtcTutorialInfoBar);
 
+        // 分体块背景：分体主界面模式下为每个分体组件块设置独立背景（复用下方「底色填充」的配置）。
+        _splitBlockGroup = new SettingsExpander
+        {
+            IconSource = new FluentIconSource("\uE51F"),
+            Header = "分体块背景",
+            Description = "分体主界面模式下，可为每个分体组件块设置独立的背景颜色。勾选分块后，把下方「底色填充」分组的当前配置应用到选中的分块。",
+            IsExpanded = true
+        };
+        _allExpanders.Add(_splitBlockGroup);
+        _splitBlockGroup.Items.Add(Item("选择分块", "按行显示所有分体块（即主界面的根组件）。勾选后可将下方「底色填充」的配置应用到它们。", SplitBlockListFooter()));
+        _splitBlockGroup.Items.Add(Item("应用到选中分块", "把下方「底色填充」分组的当前配置（颜色 / 渐变 / 动态取色）应用到所有勾选的分块。", Button("应用到底色填充", ApplySplitBlockColorsToSelection)));
+        _splitBlockGroup.Items.Add(Item("清除选中分块", "移除选中分块的独立配色，恢复使用全局底色。", Button("清除", ClearSplitBlockColors)));
+        panel.Children.Add(_splitBlockGroup);
+
         AddSection(panel, "\uF42F", "用户预设");
         panel.Children.Add(Setting("\uF42F", "保存当前为预设", "把插件当前全部设置项保存为一个命名预设（同名覆盖）", PresetSaveFooter()));
         panel.Children.Add(Setting("\uF42F", "套用 / 删除预设", "套用会把全部设置项替换为该预设保存时的状态。", PresetManageFooter()));
@@ -1341,6 +1360,158 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         var selected = _userPresetList.SelectedItem as string;
         _userPresetList.ItemsSource = names;
         _userPresetList.SelectedItem = names.FirstOrDefault(n => n == selected) ?? (names.Count > 0 ? names[0] : null);
+    }
+
+    // ============ 分体块背景（分体主界面独立配色）============
+
+    /// <summary>分体块列表 + 操作按钮（刷新 / 全选 / 清空）。</summary>
+    private Control SplitBlockListFooter() => new StackPanel
+    {
+        Spacing = 4,
+        Children =
+        {
+            new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 4,
+                Children =
+                {
+                    Button("刷新分块列表", RefreshSplitBlockList),
+                    Button("全选", SelectAllSplitBlocks),
+                    Button("清空选择", ClearSplitBlockSelection)
+                }
+            },
+            _splitBlockList
+        }
+    };
+
+    /// <summary>
+    /// 重新枚举主界面的分体块并按行分组重建勾选列表。
+    /// 非分体主界面（或暂不可用）时隐藏整个分体块区域。
+    /// </summary>
+    private void RefreshSplitBlockList()
+    {
+        _splitBlockList.Children.Clear();
+        _splitBlockChecks.Clear();
+        var blocks = MainWindowStyleInjector.EnumerateSplitBlocks();
+        if (blocks.Count == 0)
+        {
+            // 非分体主界面：不显示分体块选择区域。
+            _splitBlockGroup.IsVisible = false;
+            return;
+        }
+
+        _splitBlockGroup.IsVisible = true;
+        var lineGroups = blocks.GroupBy(b => b.LineNumber).OrderBy(g => g.Key).ToList();
+        foreach (var lineGroup in lineGroups)
+        {
+            if (lineGroups.Count > 1 || lineGroup.Key != 0)
+            {
+                _splitBlockList.Children.Add(new TextBlock
+                {
+                    Text = $"第 {lineGroup.Key + 1} 行",
+                    FontWeight = FontWeight.SemiBold,
+                    Margin = new Thickness(0, 4, 0, 0),
+                    Opacity = 0.8
+                });
+            }
+
+            foreach (var block in lineGroup)
+            {
+                var check = new CheckBox
+                {
+                    Content = block.Name,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(12, 0, 0, 0)
+                };
+                _splitBlockChecks[block.Id] = check;
+                _splitBlockList.Children.Add(check);
+            }
+        }
+    }
+
+    private void SelectAllSplitBlocks()
+    {
+        foreach (var check in _splitBlockChecks.Values)
+        {
+            check.IsChecked = true;
+        }
+    }
+
+    private void ClearSplitBlockSelection()
+    {
+        foreach (var check in _splitBlockChecks.Values)
+        {
+            check.IsChecked = false;
+        }
+    }
+
+    /// <summary>
+    /// 把下方「底色填充」分组的当前配置（颜色 / 渐变 / 动态取色）应用到所有勾选的分体块。
+    /// 应用即启用（Enabled=true），无需另行开启。
+    /// </summary>
+    private void ApplySplitBlockColorsToSelection()
+    {
+        var selected = _splitBlockChecks.Where(kv => kv.Value.IsChecked == true).Select(kv => kv.Key).ToList();
+        if (selected.Count == 0)
+        {
+            _status.Text = "请先勾选要应用的分体块。";
+            return;
+        }
+
+        var settings = InjectorRuntime.Settings;
+        settings.BeginUpdate();
+        try
+        {
+            foreach (var id in selected)
+            {
+                var block = settings.SplitBlockBackgrounds.TryGetValue(id, out var existing)
+                    ? existing
+                    : new SplitBlockBackgroundSetting();
+                block.Enabled = true;
+                block.Color = _backgroundColor.Color.ToString();
+                block.GradientEnabled = _gradient.IsChecked == true;
+                block.GradientEndColor = _gradientEndColor.Color.ToString();
+                block.GradientDirection = Selected(_gradientDirection, GradientDirection.TopLeftToBottomRight);
+                block.UseDynamicColor = _dynamicBackgroundColor.IsChecked == true;
+                settings.SplitBlockBackgrounds[id] = block;
+            }
+        }
+        finally
+        {
+            settings.EndUpdate();
+        }
+
+        _status.Text = $"已把「底色填充」配置应用到 {selected.Count} 个分体块。";
+        SaveAndApply();
+    }
+
+    /// <summary>移除选中分块的独立配色，使其恢复使用全局底色。</summary>
+    private void ClearSplitBlockColors()
+    {
+        var selected = _splitBlockChecks.Where(kv => kv.Value.IsChecked == true).Select(kv => kv.Key).ToList();
+        if (selected.Count == 0)
+        {
+            _status.Text = "请先勾选要清除的分体块。";
+            return;
+        }
+
+        var settings = InjectorRuntime.Settings;
+        settings.BeginUpdate();
+        try
+        {
+            foreach (var id in selected)
+            {
+                settings.SplitBlockBackgrounds.Remove(id);
+            }
+        }
+        finally
+        {
+            settings.EndUpdate();
+        }
+
+        _status.Text = $"已清除 {selected.Count} 个分体块的独立配色。";
+        SaveAndApply();
     }
 
     // ============ 宿主对照表 ============
@@ -2210,6 +2381,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _cinematicBlur.Value = settings.CinematicBlurRadius;
         _cinematicFlash.Value = settings.CinematicFlashAmount;
         RefreshUserPresets();
+        RefreshSplitBlockList();
     }
 
     private void SaveAndApply()

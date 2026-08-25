@@ -51,6 +51,9 @@ internal static class HostContract
     /// <summary>MainWindowLine 控件的完整类型名。</summary>
     public static string MainWindowLineTypeName { get; private set; } = "ClassIsland.Controls.MainWindowLine";
 
+    /// <summary>ComponentPresenter 控件的完整类型名（分体根组件背景的宿主）。</summary>
+    public static string ComponentPresenterTypeName { get; private set; } = "ClassIsland.Core.Controls.ComponentPresenter";
+
     /// <summary>「轮播容器」组件的完整类型名（自定义其切换上翻动画用）。</summary>
     public static string SlideComponentTypeName { get; private set; } = "ClassIsland.Controls.Components.SlideComponent";
 
@@ -124,6 +127,20 @@ internal static class HostContract
     /// <summary>ViewModel 上的 EffectControls 集合属性。</summary>
     public static string EffectControlsProperty { get; private set; } = "EffectControls";
 
+    // ---- ComponentPresenter 反射成员（分体块识别）----
+
+    /// <summary>ComponentPresenter 上的 Settings 属性名（值为 ComponentSettings）。</summary>
+    public static string ComponentPresenterSettingsProperty { get; private set; } = "Settings";
+
+    /// <summary>ComponentSettings 上的 Id 属性名（组件唯一 GUID，分体块背景的键）。</summary>
+    public static string ComponentSettingsIdProperty { get; private set; } = "Id";
+
+    /// <summary>ComponentSettings 上的 NameCache 属性名（组件显示名缓存）。</summary>
+    public static string ComponentSettingsNameCacheProperty { get; private set; } = "NameCache";
+
+    /// <summary>MainWindowLine 上的 LineNumber 属性名（分体块分行展示用）。</summary>
+    public static string MainWindowLineLineNumberProperty { get; private set; } = "LineNumber";
+
     // ---- 注入样式类名 ----
 
     /// <summary>注入时加到窗口的样式类名。</summary>
@@ -176,6 +193,7 @@ internal static class HostContract
         ApplyString(catalog.ControlNames, nameof(GridOverlay), v => GridOverlay = v);
 
         ApplyString(catalog.TypeNames, nameof(MainWindowLineTypeName), v => MainWindowLineTypeName = v);
+        ApplyString(catalog.TypeNames, nameof(ComponentPresenterTypeName), v => ComponentPresenterTypeName = v);
         ApplyString(catalog.TypeNames, nameof(SlideComponentTypeName), v => SlideComponentTypeName = v);
         ApplyString(catalog.TypeNames, nameof(AvaloniaRuntimeXamlLoaderType), v => AvaloniaRuntimeXamlLoaderType = v);
 
@@ -201,6 +219,10 @@ internal static class HostContract
         ApplyString(catalog.MemberNames, nameof(TopmostEffectWindowBackingField), v => TopmostEffectWindowBackingField = v);
         ApplyString(catalog.MemberNames, nameof(ViewModelProperty), v => ViewModelProperty = v);
         ApplyString(catalog.MemberNames, nameof(EffectControlsProperty), v => EffectControlsProperty = v);
+        ApplyString(catalog.MemberNames, nameof(ComponentPresenterSettingsProperty), v => ComponentPresenterSettingsProperty = v);
+        ApplyString(catalog.MemberNames, nameof(ComponentSettingsIdProperty), v => ComponentSettingsIdProperty = v);
+        ApplyString(catalog.MemberNames, nameof(ComponentSettingsNameCacheProperty), v => ComponentSettingsNameCacheProperty = v);
+        ApplyString(catalog.MemberNames, nameof(MainWindowLineLineNumberProperty), v => MainWindowLineLineNumberProperty = v);
 
         ApplyString(catalog.ClassNames, nameof(InjectorWindowClass), v => InjectorWindowClass = v);
         ApplyString(catalog.ClassNames, nameof(InjectorRootClass), v => InjectorRootClass = v);

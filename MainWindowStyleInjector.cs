@@ -123,7 +123,10 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private Color _shadowTransitionTo;
     private DateTime _colorTransitionStart = DateTime.MinValue;
     private bool _colorTransitionActive;
-    private readonly List<(Border Border, IBrush? Background, IBrush? BorderBrush, bool IsBackground)> _decorations = [];
+    /// <summary>
+    /// 装饰记录：背景/边框画刷、是否为背景、分体块组件 Id（非分体为 null）、分体块是否跟随 SMTC 动态色。
+    /// </summary>
+    private readonly List<(Border Border, IBrush? Background, IBrush? BorderBrush, bool IsBackground, string? BlockId, bool BlockUseDynamicColor)> _decorations = [];
     private DropShadowEffect? _shadowEffect;
     /// <summary>上次记录到的分体背景 Border 数量（诊断日志节流，变化时才写日志）。</summary>
     private int _lastSplitBackgroundLogCount = -1;
@@ -1639,12 +1642,16 @@ internal sealed class MainWindowStyleInjector : IDisposable
             ? _dynamicShadowColor
             : ParseColorOrDefault(_settings.ShadowColor, _dynamicShadowColor);
 
-        foreach (var (borderControl, backgroundBrush, borderBrush, isBackground) in _decorations)
+        foreach (var (borderControl, backgroundBrush, borderBrush, isBackground, blockId, blockUseDynamic) in _decorations)
         {
-            // 分体模式下背景 Border 无 Name，统一用标记字段识别（兼容 BackgroundBorder 与分体根组件背景）。
-            if (isBackground && backgroundBrush != null)
+            // 背景是否跟随 SMTC 动态色：全局背景跟随全局开关；
+            // 分体块需块级 UseDynamicColor 且全局开关开启（块级可独立选择是否跟随）。
+            var followsDynamic = isBackground && backgroundBrush != null &&
+                                 _settings.DynamicBackgroundColorEnabled &&
+                                 (blockId == null || blockUseDynamic);
+            if (followsDynamic)
             {
-                UpdateBrushColor(backgroundBrush, background);
+                UpdateBrushColor(backgroundBrush!, background);
             }
 
             if (borderBrush != null && _settings.BorderEnabled)
@@ -4650,18 +4657,35 @@ internal sealed class MainWindowStyleInjector : IDisposable
             }
 
             IBrush? backgroundBrush = null;
+            string? blockId = null;
+            var blockUseDynamic = false;
             if (isBackground)
             {
                 if (fullscreenActive)
                 {
                     borderControl.Background = Brushes.Transparent;
                 }
-                else if (_settings.CustomBackgroundEnabled)
+                else
                 {
-                    backgroundBrush = _settings.GradientEnabled && TryParseColor(_settings.GradientEndColor, out var endColor)
-                        ? BuildGradientBrush(background, endColor)
-                        : new SolidColorBrush(background);
-                    borderControl.Background = backgroundBrush;
+                    // 分体块级背景优先：块有独立配置且启用时不依赖全局「底色填充」开关
+                    // （用户显式应用了块配色就应当生效）。
+                    if (borderControl.Name != HostContract.BackgroundBorder &&
+                        GetSplitBlockComponentId(borderControl) is { } id &&
+                        _settings.SplitBlockBackgrounds.TryGetValue(id, out var block) &&
+                        block.Enabled)
+                    {
+                        blockId = id;
+                        blockUseDynamic = block.UseDynamicColor;
+                        backgroundBrush = BuildBlockBackgroundBrush(block, background);
+                        borderControl.Background = backgroundBrush;
+                    }
+                    else if (_settings.CustomBackgroundEnabled)
+                    {
+                        backgroundBrush = _settings.GradientEnabled && TryParseColor(_settings.GradientEndColor, out var endColor)
+                            ? BuildGradientBrush(background, endColor)
+                            : new SolidColorBrush(background);
+                        borderControl.Background = backgroundBrush;
+                    }
                 }
             }
 
@@ -4681,7 +4705,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
                 borderControl.BorderThickness = new Thickness(_settings.BorderThickness);
             }
 
-            _decorations.Add((borderControl, backgroundBrush, borderBrush, isBackground));
+            _decorations.Add((borderControl, backgroundBrush, borderBrush, isBackground, blockId, blockUseDynamic));
         }
 
         // 诊断：分体模式底色适配命中情况（数量变化才记录，避免刷屏）。
@@ -4761,6 +4785,140 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
         // 排除 GridOverlay 内提醒覆盖层的 line-background Border（父级为 Grid#GridOverlay）。
         return border.Parent is not Grid grid || grid.Name != HostContract.GridOverlay;
+    }
+
+    /// <summary>
+    /// 从分体根组件背景 Border 回溯到 ComponentPresenter，读取其组件设置的 Id（组件唯一 GUID）。
+    /// 分体块背景按此 Id 索引（<see cref="InjectorSettings.SplitBlockBackgrounds"/>）。
+    /// </summary>
+    private static string? GetSplitBlockComponentId(Border border)
+    {
+        try
+        {
+            var presenter = border.GetVisualAncestors()
+                .OfType<Control>()
+                .FirstOrDefault(x => x.GetType().FullName == HostContract.ComponentPresenterTypeName);
+            if (presenter == null)
+            {
+                return null;
+            }
+
+            var settings = presenter.GetType().GetProperty(HostContract.ComponentPresenterSettingsProperty,
+                BindingFlags.Instance | BindingFlags.Public)?.GetValue(presenter);
+            return settings?.GetType().GetProperty(HostContract.ComponentSettingsIdProperty,
+                BindingFlags.Instance | BindingFlags.Public)?.GetValue(settings) as string;
+        }
+        catch
+        {
+            // 反射失败不阻断装饰流程，回退到全局底色。
+            return null;
+        }
+    }
+
+    /// <summary>读取分体块对应的组件显示名（NameCache），不可用时回退为 Id 前缀。</summary>
+    private static string GetSplitBlockDisplayName(Border border, string id)
+    {
+        try
+        {
+            var presenter = border.GetVisualAncestors()
+                .OfType<Control>()
+                .FirstOrDefault(x => x.GetType().FullName == HostContract.ComponentPresenterTypeName);
+            if (presenter != null)
+            {
+                var settings = presenter.GetType().GetProperty(HostContract.ComponentPresenterSettingsProperty,
+                    BindingFlags.Instance | BindingFlags.Public)?.GetValue(presenter);
+                var name = settings?.GetType().GetProperty(HostContract.ComponentSettingsNameCacheProperty,
+                    BindingFlags.Instance | BindingFlags.Public)?.GetValue(settings) as string;
+                if (!string.IsNullOrWhiteSpace(name))
+                {
+                    return name;
+                }
+            }
+        }
+        catch
+        {
+            // 忽略，回退为 Id 前缀。
+        }
+
+        return id.Length >= 8 ? id[..8] : id;
+    }
+
+    /// <summary>
+    /// 按分体块设置构建背景画刷（纯色或渐变；块级可单独跟随 SMTC 动态色，
+    /// 此时起始色用当前动态色 <paramref name="fallbackDynamic"/>）。
+    /// </summary>
+    private static IBrush? BuildBlockBackgroundBrush(SplitBlockBackgroundSetting block, Color fallbackDynamic)
+    {
+        var color = block.UseDynamicColor
+            ? fallbackDynamic
+            : TryParseColor(block.Color, out var c) ? c : fallbackDynamic;
+        if (block.GradientEnabled && TryParseColor(block.GradientEndColor, out var end))
+        {
+            var (startPoint, endPoint) = GradientGeometry.Points(block.GradientDirection);
+            return new LinearGradientBrush
+            {
+                StartPoint = startPoint,
+                EndPoint = endPoint,
+                GradientStops = [new GradientStop(color, 0), new GradientStop(end, 1)]
+            };
+        }
+
+        return new SolidColorBrush(color);
+    }
+
+    /// <summary>分体块信息（组件 Id、显示名、所属行号）。</summary>
+    public sealed record SplitBlockInfo(string Id, string Name, int LineNumber);
+
+    /// <summary>
+    /// 枚举当前主界面的分体块（根组件背景），按实际显示顺序返回（含所属行号）。
+    /// 供设置页分体块选择展示；非分体模式或主窗口不可用时返回空。
+    /// </summary>
+    public static IReadOnlyList<SplitBlockInfo> EnumerateSplitBlocks()
+    {
+        var mainWindow = AppBase.Current?.MainWindow;
+        if (mainWindow == null)
+        {
+            return [];
+        }
+
+        var result = new List<SplitBlockInfo>();
+        var seen = new HashSet<string>();
+        foreach (var border in mainWindow.GetVisualDescendants().OfType<Border>())
+        {
+            if (!IsSplitComponentBackground(border))
+            {
+                continue;
+            }
+
+            var id = GetSplitBlockComponentId(border);
+            if (string.IsNullOrEmpty(id) || !seen.Add(id))
+            {
+                continue;
+            }
+
+            result.Add(new SplitBlockInfo(id, GetSplitBlockDisplayName(border, id), GetSplitBlockLineNumber(border)));
+        }
+
+        return result;
+    }
+
+    /// <summary>读取分体块所属 MainWindowLine 的行号（用于分行展示）。</summary>
+    private static int GetSplitBlockLineNumber(Border border)
+    {
+        try
+        {
+            var line = border.GetVisualAncestors().OfType<Control>()
+                .FirstOrDefault(x => x.GetType().FullName == HostContract.MainWindowLineTypeName);
+            return line != null &&
+                   line.GetType().GetProperty(HostContract.MainWindowLineLineNumberProperty,
+                       BindingFlags.Instance | BindingFlags.Public)?.GetValue(line) is int n
+                ? n
+                : 0;
+        }
+        catch
+        {
+            return 0;
+        }
     }
 
     /// <summary>按用户配置的渐变方向构建线性渐变画刷。</summary>

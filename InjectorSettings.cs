@@ -129,6 +129,41 @@ public enum GradientDirection
 }
 
 /// <summary>
+/// 分体主界面中某个根组件（分体块）的独立背景设置。
+/// 键为宿主 <c>ComponentSettings.Id</c>（组件唯一 GUID）；未配置/未启用的分体块回退到全局底色。
+/// </summary>
+public sealed class SplitBlockBackgroundSetting
+{
+    /// <summary>是否启用该分体块的独立背景（关闭时使用全局底色）。</summary>
+    public bool Enabled { get; set; }
+
+    /// <summary>分体块背景起始色（ARGB 字符串）。</summary>
+    public string Color { get; set; } = "#CC202020";
+
+    /// <summary>分体块渐变开关。</summary>
+    public bool GradientEnabled { get; set; }
+
+    /// <summary>分体块渐变终止色。</summary>
+    public string GradientEndColor { get; set; } = "#CC4040A0";
+
+    /// <summary>分体块渐变方向。</summary>
+    public GradientDirection GradientDirection { get; set; } = GradientDirection.TopLeftToBottomRight;
+
+    /// <summary>是否跟随 SMTC 动态取色（块级应用；关闭时用固定 <see cref="Color"/>）。</summary>
+    public bool UseDynamicColor { get; set; }
+
+    public SplitBlockBackgroundSetting Clone() => new()
+    {
+        Enabled = Enabled,
+        Color = Color,
+        GradientEnabled = GradientEnabled,
+        GradientEndColor = GradientEndColor,
+        GradientDirection = GradientDirection,
+        UseDynamicColor = UseDynamicColor
+    };
+}
+
+/// <summary>
 /// 背景填充纹理类型（叠加在背景色之上，可与背景图片同时使用）。
 /// </summary>
 public enum BackgroundTexture
@@ -659,6 +694,8 @@ public sealed class InjectorSettings
     private double _shadowOffsetX;
     private double _shadowOffsetY = 6;
     private double _shadowOpacity = 0.8;
+    /// <summary>分体主界面各根组件（分体块）的独立背景设置（键 = 宿主 ComponentSettings.Id）。</summary>
+    private Dictionary<string, SplitBlockBackgroundSetting> _splitBlockBackgrounds = [];
     private bool _borderEnabled;
     private string _borderColor = "#99FFFFFF";
     private double _borderThickness = 1;
@@ -804,6 +841,13 @@ public sealed class InjectorSettings
 
     /// <summary>编辑器「吸管」取到的当前色（新建形状 / 文本 / 画笔的默认色，自动记忆）。</summary>
     public string EditorPickedColor { get => _editorPickedColor; set => Set(ref _editorPickedColor, value?.Trim() ?? ""); }
+
+    /// <summary>分体主界面各根组件（分体块）的独立背景设置（键 = 宿主 ComponentSettings.Id）。</summary>
+    public Dictionary<string, SplitBlockBackgroundSetting> SplitBlockBackgrounds
+    {
+        get => _splitBlockBackgrounds;
+        set => Set(ref _splitBlockBackgrounds, value ?? []);
+    }
 
     /// <summary>关闭宿主点位失效检查与降级提示。</summary>
     public bool DisableDegradationCheck { get => _disableDegradationCheck; set => Set(ref _disableDegradationCheck, value); }
@@ -1044,6 +1088,7 @@ public sealed class InjectorSettings
         WallpaperDesignerEnabled = source.WallpaperDesignerEnabled;
         WallpaperZOrder = source.WallpaperZOrder;
         WallpaperLayers = source.WallpaperLayers.Select(l => l.Clone()).ToList();
+        SplitBlockBackgrounds = source.SplitBlockBackgrounds.ToDictionary(kv => kv.Key, kv => kv.Value.Clone());
         WallpaperCheckerFollowTheme = source.WallpaperCheckerFollowTheme;
         WallpaperCheckerColor1 = source.WallpaperCheckerColor1;
         WallpaperCheckerColor2 = source.WallpaperCheckerColor2;
