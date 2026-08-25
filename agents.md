@@ -87,6 +87,15 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
 - 用户显式修改圆角时，`SaveAndApply` 会把 `Shape` 自动切为 `RoundedRectangle` 使自定义圆角生效。
 - `ResetToDefaults()`（恢复默认）会保留 `StyleSheetPath` 与 `WatchStyleSheet`，其余回中性默认。
 
+### 7. 分体主界面背景识别（底色填充）
+
+- 分体主界面开关：全局 `Settings.IsIslandSeperated`（注意宿主拼写 Seperated 单 p）；行级 `MainWindowLineSettings.IslandSeparationMode`（0 继承 / 1 禁用 / 2 启用）。
+- 分体模式（IsIslandSeperated=True）下宿主隐藏 `Border#BackgroundBorder`（`BackgroundBorderWrapper` IsVisible 绑定取反），改由每行根组件模板渲染 `<Border Classes="line-background"/>`（无 Name）作为背景。
+- 底色填充必须同时识别两者：非分体 `BackgroundBorder`（按 Name）+ 分体根组件背景（Name 空、带 `line-background` 类、且不在 `Grid#GridOverlay` 内，见 `IsSplitComponentBackground()`）。`GridOverlay` 内提醒覆盖层的 Border 也带 `line-background` 类，必须排除。
+- 分体开关/行级分体切换会即时重建行模板，装饰需重应用：插件订阅宿主 `Settings.IsIslandSeperated` 的 PropertyChanged（`EnsureSplitSwitchSubscription`）+ `OnStateTick` 50ms 轮询统计分体背景数量签名兜底。
+- 样式类名 `line-background` 在 `HostContract.LineBackgroundClass`，纳入契约对照表（`classNames` 分组），宿主升级可联网覆盖。
+- 目前仅底色/边框/阴影装饰适配了分体；底纹（`ApplyTextureHost`）、底图（`ApplyWallpaper`）仍按 `BackgroundBorder` 定位宿主，分体模式下尚未适配。
+
 ## 设置持久化
 
 - `InjectorSettings` 用 System.Text.Json 序列化到 `settings.json`（全字段写入）。改动字段默认值时只影响「缺字段」的旧配置与全新安装；已有 JSON 会覆盖新默认。

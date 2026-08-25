@@ -51,6 +51,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
     /// <summary>自定义「轮播容器」切换上翻动画时注入的样式。</summary>
     private Styles? _carouselStyles;
     private FileSystemWatcher? _styleSheetWatcher;
+    /// <summary>上次加载的样式表内容签名（内容未变化时跳过重新加载，避免每次 Apply 触发样式重评估）。</summary>
+    private string _lastStyleSheetSignature = string.Empty;
     private Grid? _windowRoot;
     private readonly List<Action> _decorationRestorers = [];
     private readonly Dictionary<Control, object?> _lineMasks = [];
@@ -104,6 +106,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private string _fakeWeatherSignature = string.Empty;
     /// <summary>虚假天气：宿主 Settings 的 PropertyChanged 订阅。</summary>
     private PropertyChangedEventHandler? _hostWeatherHandler;
+    /// <summary>分体主界面：宿主 Settings.IsIslandSeperated 的 PropertyChanged 订阅（切换分体时重应用装饰）。</summary>
+    private PropertyChangedEventHandler? _hostSplitHandler;
     /// <summary>点击特效：主界面轻微跳跃的开始时间。</summary>
     private DateTime _clickBounceStart = DateTime.MinValue;
     /// <summary>点击特效：主界面轻微跳跃是否进行中。</summary>
@@ -119,8 +123,14 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private Color _shadowTransitionTo;
     private DateTime _colorTransitionStart = DateTime.MinValue;
     private bool _colorTransitionActive;
-    private readonly List<(Border Border, IBrush? Background, IBrush? BorderBrush)> _decorations = [];
+    private readonly List<(Border Border, IBrush? Background, IBrush? BorderBrush, bool IsBackground)> _decorations = [];
     private DropShadowEffect? _shadowEffect;
+    /// <summary>上次记录到的分体背景 Border 数量（诊断日志节流，变化时才写日志）。</summary>
+    private int _lastSplitBackgroundLogCount = -1;
+    /// <summary>分体状态签名：上次 OnStateTick 统计到的分体背景 Border 数量（变化时重应用装饰）。</summary>
+    private int _lastSplitCountForStateTick = -1;
+    /// <summary>上次因分体背景 Border 失效（stale）而重应用装饰的时间（节流防死循环）。</summary>
+    private DateTime _lastStaleReapplyAt = DateTime.MinValue;
 
     private readonly DispatcherTimer _wallpaperTimer;
     private Border? _wallpaperHost;
@@ -269,8 +279,16 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
+        EnsureSplitSwitchSubscription();
         _islandRoot.Opacity = _originalOpacity * _settings.Opacity;
         ApplyTransform(0);
+        // 样式表先加载：ReloadStyleSheet 会移除/重新添加样式并触发全树样式重评估，
+        // 可能导致分体根组件的 ContentTemplate 重建（分体背景 Border 被替换）。
+        // 若其后才 ApplyDecorations，刚设置的底色会随重建丢失；故调整为先加载样式、后应用装饰。
+        ReloadStyleSheet();
+        ReloadNotificationTransitionStyles();
+        ReloadCarouselAnimationStyles();
+        ConfigureStyleSheetWatcher();
         ApplyDecorations();
         ApplyShapeToHost();
         ApplyWallpaper();
@@ -279,10 +297,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
         ApplyMouseHoverKeepVisible();
         ApplyClickEffectState();
         ApplyFakeWeatherState();
-        ReloadStyleSheet();
-        ReloadNotificationTransitionStyles();
-        ReloadCarouselAnimationStyles();
-        ConfigureStyleSheetWatcher();
         _animationClock.Restart();
         _stateTimer.Start();
         UpdateAnimationTimer();
@@ -295,14 +309,35 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
+        // 内容签名节流：样式表内容未变化时不重复移除/添加，避免每次 Apply 都触发
+        // 全树样式重评估（会使分体根组件 ContentTemplate 重建、刚设置的底色丢失）。
+        string content;
+        try
+        {
+            content = !_settings.Enabled || string.IsNullOrWhiteSpace(_settings.StyleSheetPath) ||
+                      !File.Exists(_settings.StyleSheetPath)
+                ? string.Empty
+                : File.ReadAllText(_settings.StyleSheetPath);
+        }
+        catch
+        {
+            content = string.Empty;
+        }
+
+        if (content == _lastStyleSheetSignature)
+        {
+            return;
+        }
+
+        _lastStyleSheetSignature = content;
+
         if (_loadedStyles != null)
         {
             StyleHost.Remove(_loadedStyles);
             _loadedStyles = null;
         }
 
-        if (!_settings.Enabled || string.IsNullOrWhiteSpace(_settings.StyleSheetPath) ||
-            !File.Exists(_settings.StyleSheetPath))
+        if (content.Length == 0)
         {
             return;
         }
@@ -310,7 +345,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         try
         {
             var uri = new Uri(Path.GetFullPath(_settings.StyleSheetPath));
-                _loadedStyles = LoadExternalStyles(File.ReadAllText(_settings.StyleSheetPath), uri);
+            _loadedStyles = LoadExternalStyles(content, uri);
             if (_loadedStyles != null)
             {
                 StyleHost.Add(_loadedStyles);
@@ -756,6 +791,51 @@ internal sealed class MainWindowStyleInjector : IDisposable
             _observedLines.Remove(line);
             _lineMasks.Remove(line);
             _nativeEffectPlayers.Remove(line);
+        }
+
+        // 分体模式检测：全局「分体主界面」开关与行级 IslandSeparationMode 都会即时重建行模板，
+        // 背景 Border 结构（分体根组件 line-background ↔ BackgroundBorder）随之变化。
+        // 此处统计分体背景 Border 数量作为签名，并检查已应用的分体背景是否仍挂载在可视树中
+        // （宿主重建模板/组件时旧 Border 会失效但数量可能不变），变化/失效时重应用装饰。
+        try
+        {
+            var splitCount = descendants.Count(x => x is Border b && IsSplitComponentBackground(b));
+            var staleSplitBorder = false;
+            var staleDetail = string.Empty;
+            foreach (var d in _decorations)
+            {
+                if (d.IsBackground && d.Border.Name != HostContract.BackgroundBorder && !d.Border.IsAttachedToVisualTree())
+                {
+                    staleSplitBorder = true;
+                    staleDetail += $" [hash={d.Border.GetHashCode()}({(int)d.Border.Bounds.Width}x{(int)d.Border.Bounds.Height}) parent={d.Border.Parent?.GetType().Name}]";
+                }
+            }
+
+            if (splitCount != _lastSplitCountForStateTick || staleSplitBorder)
+            {
+                var countChanged = splitCount != _lastSplitCountForStateTick;
+                _lastSplitCountForStateTick = splitCount;
+                // stale 节流：宿主重建模板时旧 Border 失效会反复触发，且 Apply 加载样式表
+                // 本身也可能触发重建（见 ReloadStyleSheet 注释）；加冷却避免形成死循环。
+                if (staleSplitBorder && !countChanged && (DateTime.UtcNow - _lastStaleReapplyAt).TotalMilliseconds < 1500)
+                {
+                    // 冷却中，跳过本次重应用。
+                }
+                else
+                {
+                    if (staleSplitBorder)
+                    {
+                        _lastStaleReapplyAt = DateTime.UtcNow;
+                    }
+
+                    DebugLog($"OnStateTick: 分体背景变化（count={splitCount}, stale={staleSplitBorder}{staleDetail}），重应用装饰");
+                    Dispatcher.UIThread.Post(Apply, DispatcherPriority.Background);
+                }
+            }
+        }
+        catch
+        {
+            // 分体签名统计失败不中止 50ms 状态轮询。
         }
 
         UpdatePrepareWarningOverlay();
@@ -1293,6 +1373,50 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
     }
 
+    // ============ 分体主界面开关 ============
+
+    /// <summary>
+    /// 订阅宿主「分体主界面」（Settings.IsIslandSeperated）开关变化：
+    /// 分体模式下宿主隐藏 BackgroundBorder、改用每行根组件的 line-background 作为背景，
+    /// 开关切换时模板会变化，需重应用装饰重新收集背景 Border。
+    /// </summary>
+    private void EnsureSplitSwitchSubscription()
+    {
+        if (_hostSplitHandler != null)
+        {
+            return;
+        }
+
+        if (GetHostSettings() is not INotifyPropertyChanged notifier)
+        {
+            return;
+        }
+
+        _hostSplitHandler = OnHostSplitSettingChanged;
+        notifier.PropertyChanged += _hostSplitHandler;
+    }
+
+    private void OnHostSplitSettingChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != HostContract.IsIslandSeperatedProperty)
+        {
+            return;
+        }
+
+        DebugLog("OnHostSplitSettingChanged: 分体主界面开关变化，重应用装饰");
+        Dispatcher.UIThread.Post(Apply, DispatcherPriority.Background);
+    }
+
+    private void UnsubscribeSplitSwitch()
+    {
+        if (_hostSplitHandler != null && GetHostSettings() is INotifyPropertyChanged notifier)
+        {
+            notifier.PropertyChanged -= _hostSplitHandler;
+        }
+
+        _hostSplitHandler = null;
+    }
+
     private void InjectFakeWeather()
     {
         var settings = GetHostSettings();
@@ -1515,9 +1639,10 @@ internal sealed class MainWindowStyleInjector : IDisposable
             ? _dynamicShadowColor
             : ParseColorOrDefault(_settings.ShadowColor, _dynamicShadowColor);
 
-        foreach (var (borderControl, backgroundBrush, borderBrush) in _decorations)
+        foreach (var (borderControl, backgroundBrush, borderBrush, isBackground) in _decorations)
         {
-            if (borderControl.Name == HostContract.BackgroundBorder && backgroundBrush != null)
+            // 分体模式下背景 Border 无 Name，统一用标记字段识别（兼容 BackgroundBorder 与分体根组件背景）。
+            if (isBackground && backgroundBrush != null)
             {
                 UpdateBrushColor(backgroundBrush, background);
             }
@@ -4483,11 +4608,13 @@ internal sealed class MainWindowStyleInjector : IDisposable
             : ParseColorOrDefault(_settings.ShadowColor, _dynamicShadowColor);
         // 全屏底图模式：删除底色、边框与阴影，让全屏图片完全接管背景。
         var fullscreenActive = HasFullscreenLayer();
+        var splitBackgroundCount = 0;
 
         foreach (var borderControl in _mainWindow.GetVisualDescendants().OfType<Border>()
                      .Where(x => x.Name == HostContract.BackgroundBorder ||
                                  x.Name == HostContract.BackgroundBorderOverlayMask ||
-                                 x.Name == HostContract.OverlayMask))
+                                 x.Name == HostContract.OverlayMask ||
+                                 IsSplitComponentBackground(x)))
         {
             var originalCornerRadius = borderControl.CornerRadius;
             var originalBackground = borderControl.Background;
@@ -4505,8 +4632,18 @@ internal sealed class MainWindowStyleInjector : IDisposable
             // 裁切不一致）。统一由 ApplyShapeToHost() 写入宿主原生 RadiusX/RadiusY，
             // 让背景样式、内容裁切与遮罩全部同步到同一圆角。
 
+            // 分体模式（IsIslandSeperated）下宿主隐藏 Border#BackgroundBorder，
+            // 真实背景由每行根组件模板的 Border.line-background 提供；两者都按背景装饰处理。
+            var isBackground = borderControl.Name == HostContract.BackgroundBorder ||
+                               IsSplitComponentBackground(borderControl);
+            if (isBackground && borderControl.Name != HostContract.BackgroundBorder)
+            {
+                // 仅统计分体根组件背景（BackgroundBorder 非分体，不计数）。
+                splitBackgroundCount++;
+            }
+
             IBrush? backgroundBrush = null;
-            if (borderControl.Name == HostContract.BackgroundBorder)
+            if (isBackground)
             {
                 if (fullscreenActive)
                 {
@@ -4534,7 +4671,35 @@ internal sealed class MainWindowStyleInjector : IDisposable
                 borderControl.BorderThickness = new Thickness(_settings.BorderThickness);
             }
 
-            _decorations.Add((borderControl, backgroundBrush, borderBrush));
+            _decorations.Add((borderControl, backgroundBrush, borderBrush, isBackground));
+        }
+
+        // 诊断：分体模式底色适配命中情况（数量变化才记录，避免刷屏）。
+        if (splitBackgroundCount != _lastSplitBackgroundLogCount)
+        {
+            _lastSplitBackgroundLogCount = splitBackgroundCount;
+            if (splitBackgroundCount > 0)
+            {
+                DebugLog($"ApplyDecorations: 分体模式底色适配 — 命中分体根组件背景 Border x{splitBackgroundCount} (customBg={_settings.CustomBackgroundEnabled})");
+                foreach (var d in _decorations)
+                {
+                    if (!d.IsBackground || d.Border.Name == HostContract.BackgroundBorder)
+                    {
+                        continue;
+                    }
+
+                    var b = d.Border;
+                    var parent = b.Parent as Control;
+                    DebugLog($"  分体背景: visible={b.IsVisible} inTree={b.IsAttachedToVisualTree()} " +
+                             $"bounds=({b.Bounds.Width:0.#}x{b.Bounds.Height:0.#}) " +
+                             $"parent={b.Parent?.GetType().Name}[{parent?.Name}] " +
+                             $"bg={(d.Background is SolidColorBrush s ? s.Color.ToString() : d.Background?.ToString() ?? "null")}");
+                }
+            }
+            else
+            {
+                DebugLog("ApplyDecorations: 未检测到分体根组件背景 Border（非分体模式或宿主结构有变化）");
+            }
         }
 
         if (!_settings.ShadowEnabled || fullscreenActive)
@@ -4568,6 +4733,24 @@ internal sealed class MainWindowStyleInjector : IDisposable
             restore();
         }
         _decorationRestorers.Clear();
+    }
+
+    /// <summary>
+    /// 判断 Border 是否为「分体主界面」下每行根组件的背景 Border。
+    /// 分体模式（IsIslandSeperated=True）时宿主隐藏 Border#BackgroundBorder，
+    /// 改由每行根组件模板渲染 &lt;Border Classes="line-background"/&gt;（无 Name）作为背景。
+    /// GridOverlay 里提醒覆盖层的 Border 同样带 line-background 类但位于 Grid#GridOverlay 内，需排除。
+    /// </summary>
+    private static bool IsSplitComponentBackground(Border border)
+    {
+        if (!string.IsNullOrEmpty(border.Name) ||
+            !border.Classes.Contains(HostContract.LineBackgroundClass))
+        {
+            return false;
+        }
+
+        // 排除 GridOverlay 内提醒覆盖层的 line-background Border（父级为 Grid#GridOverlay）。
+        return border.Parent is not Grid grid || grid.Name != HostContract.GridOverlay;
     }
 
     /// <summary>按用户配置的渐变方向构建线性渐变画刷。</summary>
@@ -4667,6 +4850,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         RestoreMouseHoverKeepVisible();
         DetachClickHandler();
         DisableFakeWeather();
+        UnsubscribeSplitSwitch();
         RemoveTextureHost();
         RemoveAllPrepareOnClassOverlays();
         _lineMasks.Clear();

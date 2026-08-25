@@ -132,6 +132,13 @@ internal static class HostContract
     /// <summary>注入时加到主界面根的样式类名。</summary>
     public static string InjectorRootClass { get; private set; } = "classisland-injector-root";
 
+    /// <summary>
+    /// 行背景 Border 的样式类。非分体模式下 <c>BackgroundBorder</c> 带此类；
+    /// 分体模式（IsIslandSeperated）下宿主隐藏 <c>BackgroundBorder</c>，
+    /// 改由每行根组件模板渲染 <c>&lt;Border Classes="line-background"/&gt;</c> 作为背景。
+    /// </summary>
+    public static string LineBackgroundClass { get; private set; } = "line-background";
+
     // ---- 伪类 ----
 
     /// <summary>提醒遮罩进入伪类。</summary>
@@ -197,6 +204,7 @@ internal static class HostContract
 
         ApplyString(catalog.ClassNames, nameof(InjectorWindowClass), v => InjectorWindowClass = v);
         ApplyString(catalog.ClassNames, nameof(InjectorRootClass), v => InjectorRootClass = v);
+        ApplyString(catalog.ClassNames, nameof(LineBackgroundClass), v => LineBackgroundClass = v);
 
         ApplyString(catalog.PseudoClasses, nameof(PseudoMaskIn), v => PseudoMaskIn = v);
         ApplyString(catalog.PseudoClasses, nameof(PseudoMaskOut), v => PseudoMaskOut = v);
