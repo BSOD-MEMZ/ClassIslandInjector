@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- 独立探针：完全 vtable 手动调用 Media Foundation，绕开 .NET ComImport marshaller -->
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <AssemblyName>VideoProbe</AssemblyName>
+    <RootNamespace>VideoProbe</RootNamespace>
+  </PropertyGroup>
+</Project>

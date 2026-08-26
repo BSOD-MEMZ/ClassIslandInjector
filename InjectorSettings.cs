@@ -200,6 +200,16 @@ public enum WallpaperDisplayMode
 }
 
 /// <summary>
+/// 动态视频填充的显示方式。
+/// </summary>
+public enum VideoFillFit
+{
+    Fill,
+    Fit,
+    Stretch
+}
+
+/// <summary>
 /// 底图图层的水平锚点：图片的对应参考边/中心对齐主界面的水平锚点后再偏移。
 /// </summary>
 public enum WallpaperLayerAnchorX
@@ -750,6 +760,15 @@ public sealed class InjectorSettings
     private List<WallpaperLayerItem> _wallpaperLayers = [];
     private WallpaperLayerZOrder _wallpaperZOrder = WallpaperLayerZOrder.BehindBackground;
     private bool _wallpaperDesignerEnabled = true; // 全新安装默认启用专家模式（图层编辑器），老配置已有值则保持原样
+    // 动态视频填充（专家模式，Media Foundation 解码）
+    private bool _videoFillEnabled;
+    private string _videoFillPath = string.Empty;
+    private double _videoFillOpacity = 0.6;
+    private VideoFillFit _videoFillFit = VideoFillFit.Fill;
+    private double _videoFillBlurRadius;
+    private int _videoFillMaxDimension = 1280;
+    private double _videoFillTargetFps = 24;
+    private bool _videoFillLoop = true;
     private bool _wallpaperCheckerFollowTheme = true;
     private string _wallpaperCheckerColor1 = "#2D2F34";
     private string _wallpaperCheckerColor2 = "#26282D";
@@ -929,6 +948,22 @@ public sealed class InjectorSettings
     public WallpaperLayerZOrder WallpaperZOrder { get => _wallpaperZOrder; set => Set(ref _wallpaperZOrder, value); }
     /// <summary>是否启用 Photoshop 风格图层式底图（由图层编辑器写入）。</summary>
     public bool WallpaperDesignerEnabled { get => _wallpaperDesignerEnabled; set => Set(ref _wallpaperDesignerEnabled, value); }
+    /// <summary>是否启用动态视频填充（Media Foundation 解码本地视频作为主界面动态背景）。</summary>
+    public bool VideoFillEnabled { get => _videoFillEnabled; set => Set(ref _videoFillEnabled, value); }
+    /// <summary>动态视频填充的视频文件路径。</summary>
+    public string VideoFillPath { get => _videoFillPath; set => Set(ref _videoFillPath, value?.Trim() ?? ""); }
+    /// <summary>动态视频填充的整体不透明度。</summary>
+    public double VideoFillOpacity { get => _videoFillOpacity; set => Set(ref _videoFillOpacity, Math.Clamp(value, 0, 1)); }
+    /// <summary>动态视频填充的显示方式。</summary>
+    public VideoFillFit VideoFillFit { get => _videoFillFit; set => Set(ref _videoFillFit, value); }
+    /// <summary>动态视频填充的高斯模糊半径（0 为关闭）。</summary>
+    public double VideoFillBlurRadius { get => _videoFillBlurRadius; set => Set(ref _videoFillBlurRadius, Math.Clamp(value, 0, 60)); }
+    /// <summary>动态视频填充的解码降采样上限（宽高中较大者，像素）。</summary>
+    public int VideoFillMaxDimension { get => _videoFillMaxDimension; set => Set(ref _videoFillMaxDimension, Math.Clamp(value, 240, 1920)); }
+    /// <summary>动态视频填充的目标帧率（fps）。</summary>
+    public double VideoFillTargetFps { get => _videoFillTargetFps; set => Set(ref _videoFillTargetFps, Math.Clamp(value, 1, 60)); }
+    /// <summary>动态视频填充是否循环播放。</summary>
+    public bool VideoFillLoop { get => _videoFillLoop; set => Set(ref _videoFillLoop, value); }
     /// <summary>底图编辑器舞台棋盘格是否跟随主题深浅色（关闭时用自定义两色）。</summary>
     public bool WallpaperCheckerFollowTheme { get => _wallpaperCheckerFollowTheme; set => Set(ref _wallpaperCheckerFollowTheme, value); }
     /// <summary>棋盘格颜色 1（关闭「跟随主题」时使用）。</summary>
@@ -1108,6 +1143,14 @@ public sealed class InjectorSettings
         WallpaperDesignerEnabled = source.WallpaperDesignerEnabled;
         WallpaperZOrder = source.WallpaperZOrder;
         WallpaperLayers = source.WallpaperLayers.Select(l => l.Clone()).ToList();
+        VideoFillEnabled = source.VideoFillEnabled;
+        VideoFillPath = source.VideoFillPath;
+        VideoFillOpacity = source.VideoFillOpacity;
+        VideoFillFit = source.VideoFillFit;
+        VideoFillBlurRadius = source.VideoFillBlurRadius;
+        VideoFillMaxDimension = source.VideoFillMaxDimension;
+        VideoFillTargetFps = source.VideoFillTargetFps;
+        VideoFillLoop = source.VideoFillLoop;
         SplitBlockBackgrounds = source.SplitBlockBackgrounds.ToDictionary(kv => kv.Key, kv => kv.Value.Clone());
         WallpaperCheckerFollowTheme = source.WallpaperCheckerFollowTheme;
         WallpaperCheckerColor1 = source.WallpaperCheckerColor1;

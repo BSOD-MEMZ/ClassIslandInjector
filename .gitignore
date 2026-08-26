@@ -59,3 +59,6 @@ appsettings.*.Local.json
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+
+# ===== FFmpeg 下载/解压缓存（dll 通过 NuGet 或手动部署，不入库）=====
+tools/ffmpeg-dl/

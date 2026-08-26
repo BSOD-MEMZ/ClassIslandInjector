@@ -4,6 +4,7 @@ using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
+using Avalonia.Platform;
 using Avalonia.Styling;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
@@ -17,6 +18,7 @@ using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Runtime.Loader;
 
 namespace ClassIslandInjector;
@@ -140,6 +142,16 @@ internal sealed class MainWindowStyleInjector : IDisposable
     /// <summary>宿主 GridRoot 的 SizeChanged 处理器引用（重建注入器 / 恢复宿主时注销，避免叠加订阅）。</summary>
     private EventHandler<SizeChangedEventArgs>? _islandGridSizeChangedHandler;
     private BlurEffect? _wallpaperBlur;
+    /// <summary>动态视频填充宿主（插在底图宿主之上、宿主内容之下，专家模式配置）。</summary>
+    private Border? _videoFillHost;
+    private Image? _videoFillImage;
+    /// <summary>动态视频填充解码器（Media Foundation Source Reader）。</summary>
+    private MfVideoFrameSource? _videoSource;
+    /// <summary>动态视频填充当前帧位图（按解码尺寸复用）。</summary>
+    private WriteableBitmap? _videoFillBitmap;
+    private BlurEffect? _videoFillBlur;
+    /// <summary>解码重启签名（路径|最大尺寸|帧率|循环），变化时重启解码线程。</summary>
+    private string _videoFillSignature = string.Empty;
     /// <summary>每行主界面的底纹宿主（键为 MainWindowLine 模板 GridRoot），
     /// 插在底色填充之上、组件内容之下。</summary>
     private readonly Dictionary<Grid, Border> _textureHosts = [];
@@ -295,6 +307,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         ApplyDecorations();
         ApplyShapeToHost();
         ApplyWallpaper();
+        ApplyVideoFill();
         ApplyTextureHost();
         ApplyDynamicThemeColorState();
         ApplyMouseHoverKeepVisible();
@@ -1800,7 +1813,11 @@ internal sealed class MainWindowStyleInjector : IDisposable
             islandGrid.SizeChanged -= _islandGridSizeChangedHandler;
         }
 
-        _islandGridSizeChangedHandler = (_, _) => UpdateWallpaperBounds();
+        _islandGridSizeChangedHandler = (_, _) =>
+        {
+            UpdateWallpaperBounds();
+            UpdateVideoFillBounds();
+        };
         islandGrid.SizeChanged += _islandGridSizeChangedHandler;
         islandGrid.Children.Insert(0, _wallpaperHost);
         _wallpaperHostMode = mode;
@@ -2038,6 +2055,222 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _wallpaperLoadedSource = WallpaperSource.None;
         _wallpaperLoadedPath = string.Empty;
         DisposeWallpaperBitmap();
+    }
+
+    // ============ 动态视频填充（Media Foundation，专家模式）============
+
+    /// <summary>
+    /// 应用 / 更新动态视频填充：启用了视频路径时建立宿主并启动解码线程（参数变化时重启），
+    /// 否则移除。每次 Apply 调用，幂等。
+    /// </summary>
+    private void ApplyVideoFill()
+    {
+        if (_mainWindow == null)
+        {
+            return;
+        }
+
+        var enabled = _settings.Enabled && _settings.VideoFillEnabled &&
+                      !string.IsNullOrWhiteSpace(_settings.VideoFillPath);
+        if (!enabled)
+        {
+            RemoveVideoFill();
+            return;
+        }
+
+        var path = _settings.VideoFillPath;
+        if (_videoFillHost == null)
+        {
+            _videoFillImage = new Image
+            {
+                IsHitTestVisible = false,
+                Stretch = Stretch.Fill
+            };
+            _videoFillHost = new Border
+            {
+                IsHitTestVisible = false,
+                ClipToBounds = true,
+                VerticalAlignment = VerticalAlignment.Stretch,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                Child = _videoFillImage
+            };
+            var islandGrid = _mainWindow.FindControl<Grid>(HostContract.GridRoot);
+            if (islandGrid != null)
+            {
+                PositionVideoFillHost(islandGrid);
+            }
+        }
+
+        // 透明度 / 模糊跟随设置即时生效。
+        _videoFillHost.Opacity = _settings.VideoFillOpacity;
+        ApplyVideoFillBlur();
+
+        // 参数或路径变化时重启解码线程（保留宿主与位图）。
+        var signature = $"{path}|{_settings.VideoFillMaxDimension}|{_settings.VideoFillTargetFps}|{_settings.VideoFillLoop}";
+        if (_videoSource != null && _videoFillSignature == signature)
+        {
+            UpdateVideoFillBounds();
+            return;
+        }
+
+        _videoSource?.Dispose();
+        _videoSource = null;
+        var source = new MfVideoFrameSource();
+        if (!source.Open(path, _settings.VideoFillMaxDimension))
+        {
+            RemoveVideoFill();
+            return;
+        }
+
+        _videoFillSignature = signature;
+        _videoSource = source;
+        source.Start(OnVideoFrame, _settings.VideoFillTargetFps, _settings.VideoFillLoop);
+        UpdateVideoFillBounds();
+    }
+
+    /// <summary>把视频填充宿主插到底图宿主之后（wallpaper 之上、宿主内容之下）。</summary>
+    private void PositionVideoFillHost(Grid islandGrid)
+    {
+        if (_videoFillHost == null)
+        {
+            return;
+        }
+
+        var desired = _wallpaperHost != null && _wallpaperHost.Parent == islandGrid
+            ? islandGrid.Children.IndexOf(_wallpaperHost) + 1
+            : 0;
+        if (_videoFillHost.Parent == islandGrid)
+        {
+            var current = islandGrid.Children.IndexOf(_videoFillHost);
+            if (current == desired)
+            {
+                return;
+            }
+
+            islandGrid.Children.Remove(_videoFillHost);
+        }
+
+        islandGrid.Children.Insert(Math.Min(desired, islandGrid.Children.Count), _videoFillHost);
+    }
+
+    /// <summary>
+    /// 把视频填充宿主约束到主界面各行的 BackgroundBorder 并集边界内（与底图同逻辑）。
+    /// </summary>
+    private void UpdateVideoFillBounds(IEnumerable<Control>? descendants = null)
+    {
+        if (_videoFillHost == null)
+        {
+            return;
+        }
+
+        var controls = descendants ?? _mainWindow?.GetVisualDescendants().OfType<Control>();
+        if (controls != null)
+        {
+            ApplyOverlayHostBounds(_videoFillHost, controls);
+        }
+
+        ApplyOverlayClip(_videoFillHost);
+    }
+
+    /// <summary>解码线程回调：把帧投递到 UI 线程更新位图，处理完通知解码器可写下一帧。</summary>
+    private void OnVideoFrame(MfVideoFrame frame)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            try
+            {
+                UpdateVideoFillImage(frame);
+            }
+            catch
+            {
+                // 解码器释放竞态 / 位图已释放等：忽略，不冒泡到宿主。
+            }
+            finally
+            {
+                _videoSource?.MarkFrameConsumed();
+            }
+        });
+    }
+
+    /// <summary>把解码帧写入可复用的 WriteableBitmap 并挂到视频填充 Image。</summary>
+    private void UpdateVideoFillImage(MfVideoFrame frame)
+    {
+        if (_videoFillImage == null || _videoSource == null)
+        {
+            return;
+        }
+
+        var w = frame.Width;
+        var h = frame.Height;
+        if (_videoFillBitmap == null ||
+            _videoFillBitmap.PixelSize.Width != w ||
+            _videoFillBitmap.PixelSize.Height != h)
+        {
+            _videoFillBitmap?.Dispose();
+            _videoFillBitmap = new WriteableBitmap(new PixelSize(w, h), new Vector(96, 96),
+                PixelFormat.Bgra8888, AlphaFormat.Premul);
+        }
+
+        using (var fb = _videoFillBitmap.Lock())
+        {
+            var srcStride = frame.Stride;
+            var dstStride = fb.RowBytes;
+            var src = frame.Pixels;
+            var dst = fb.Address;
+            if (srcStride == dstStride)
+            {
+                var copyLen = Math.Min(src.Length, (int)(fb.RowBytes * h));
+                Marshal.Copy(src, 0, dst, copyLen);
+            }
+            else
+            {
+                for (var y = 0; y < h; y++)
+                {
+                    var rowLen = Math.Min(srcStride, dstStride);
+                    Marshal.Copy(src, y * srcStride, IntPtr.Add(dst, y * dstStride), rowLen);
+                }
+            }
+        }
+
+        _videoFillImage.Source = _videoFillBitmap;
+    }
+
+    /// <summary>按设置对视频填充宿主应用高斯模糊（0 为关闭）。</summary>
+    private void ApplyVideoFillBlur()
+    {
+        if (_videoFillHost == null)
+        {
+            return;
+        }
+
+        var radius = Math.Max(0, _settings.VideoFillBlurRadius);
+        if (radius <= 0)
+        {
+            _videoFillHost.Effect = null;
+            return;
+        }
+
+        _videoFillBlur ??= new BlurEffect();
+        _videoFillBlur.Radius = radius;
+        _videoFillHost.Effect = _videoFillBlur;
+    }
+
+    /// <summary>移除视频填充：停解码线程、释放位图与宿主。</summary>
+    private void RemoveVideoFill()
+    {
+        _videoSource?.Dispose();
+        _videoSource = null;
+        _videoFillSignature = string.Empty;
+        _videoFillBitmap?.Dispose();
+        _videoFillBitmap = null;
+        _videoFillImage = null;
+        if (_videoFillHost != null && _videoFillHost.Parent is Panel panel)
+        {
+            panel.Children.Remove(_videoFillHost);
+        }
+
+        _videoFillHost = null;
+        _videoFillBlur = null;
     }
 
     // ============ 图层式底图（Photoshop 风格编辑器产物）============
@@ -5030,6 +5263,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _colorTransitionActive = false;
         _dynamicColorsInitialized = false;
         RemoveWallpaper();
+        RemoveVideoFill();
         DisposeFullscreenHost();
         StopSpectrum();
         RevertDynamicThemeColor();

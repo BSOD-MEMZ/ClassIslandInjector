@@ -136,6 +136,17 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly Spin _wallpaperOffsetY = Spinner(-0.5, 0.5, 0.01);
     private readonly Spin _wallpaperSlideshowInterval = Spinner(2, 3600, 1, "0");
     private readonly Spin _wallpaperBlur = Spinner(0, 60, 1);
+    // 动态视频填充（仅专家模式显示）
+    private readonly ToggleSwitch _videoFillEnabled = Toggle();
+    private readonly TextBox _videoFillPath = new() { MinWidth = 260, IsReadOnly = true };
+    private readonly Slider _videoFillOpacity = Slider(0, 1, 0.05);
+    private readonly ComboBox _videoFillFit = Combo(VideoFillFits);
+    private readonly Spin _videoFillBlur = Spinner(0, 60, 1);
+    private readonly Spin _videoFillMaxDimension = Spinner(240, 1920, 80, "0");
+    private readonly Spin _videoFillFps = Spinner(1, 60, 1, "0");
+    private readonly ToggleSwitch _videoFillLoop = Toggle();
+    /// <summary>「动态视频填充」组（仅专家模式显示）。</summary>
+    private SettingsExpander _videoFillGroup = null!;
     /// <summary>「打开图层编辑器」入口（仅专家模式显示）。</summary>
     private SettingsExpanderItem _wallpaperEditorItem = null!;
     /// <summary>基础模式专属设置项（专家模式时整体隐藏）。</summary>
@@ -260,6 +271,13 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         new(WallpaperDisplayMode.Fit, "适应（完整显示）"),
         new(WallpaperDisplayMode.Stretch, "拉伸（变形）"),
         new(WallpaperDisplayMode.Tile, "平铺"),
+    ];
+
+    private static readonly Choice<VideoFillFit>[] VideoFillFits =
+    [
+        new(VideoFillFit.Fill, "填充（裁剪）"),
+        new(VideoFillFit.Fit, "适应（完整显示）"),
+        new(VideoFillFit.Stretch, "拉伸（变形）"),
     ];
 
     private static readonly Choice<IslandAnimationMode>[] IslandAnimationModes =
@@ -1049,6 +1067,18 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             UpdateWallpaperModeVisibility();
         };
         panel.Children.Add(_wallpaperGroup);
+        // 动态视频填充：专家模式专属，紧跟「背景图片」组（视觉上在「打开图层编辑器」按钮下方）。
+        _videoFillGroup = SwitchableGroup("\uE7F4", "动态视频填充", "用本地视频作为主界面动态背景（Media Foundation 解码，建议 H.264/MP4）。", _videoFillEnabled,
+            Item("视频文件", "MP4 等视频文件的路径。", VideoFillPathFooter()),
+            Item("不透明度", "视频填充的整体透明度。", _videoFillOpacity),
+            Item("显示方式", "视频在主界面内的显示方式。", _videoFillFit),
+            Item("模糊", "对视频填充应用高斯模糊（0 为关闭）。", _videoFillBlur),
+            Item("最大分辨率", "解码降采样上限（宽高中较大者，像素），降低资源占用。", _videoFillMaxDimension),
+            Item("目标帧率", "解码播放帧率上限（fps），越低越省资源。", _videoFillFps),
+            Item("循环播放", "播放到结尾后自动回到开头继续。", _videoFillLoop));
+        _videoFillGroup.Name = "VideoFillGroup";
+        _videoFillEnabled.Name = "VideoFillToggle";
+        panel.Children.Add(_videoFillGroup);
         UpdateWallpaperModeVisibility();
         _smtcDynamicGroup = Group("\uE51E", "动态取色", "从音乐软件或浏览器获取 SMTC 信息，并进行莫奈取色",
             Item("暂停/停止时恢复原色", "媒体暂停或停止播放时，从专辑取色平滑恢复为原始颜色，恢复播放后再跟随专辑。", _revertColorsWhenPaused),
@@ -2543,6 +2573,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                      _border, _borderColor, _borderThickness,
                      _wallpaperEnabled, _wallpaperModeBox, _wallpaperSource, _wallpaperPath, _wallpaperOpacity, _wallpaperDisplayMode,
                      _wallpaperScale, _wallpaperOffsetX, _wallpaperOffsetY, _wallpaperSlideshowInterval, _wallpaperBlur,
+                     _videoFillEnabled, _videoFillPath, _videoFillOpacity, _videoFillFit, _videoFillBlur, _videoFillMaxDimension, _videoFillFps, _videoFillLoop,
                      _visibilityAnimation, _visibilityAnimationEnabled, _visibilityDuration,
                      _emphasisAnimation, _emphasisAnimationEnabled, _emphasisAmount, _emphasisDuration,
                      _notificationTransition, _notificationTransitionEnabled, _notificationTransitionDuration,
@@ -2904,6 +2935,14 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _wallpaperOffsetY.DoubleValue = settings.WallpaperOffsetY;
         _wallpaperSlideshowInterval.DoubleValue = settings.WallpaperSlideshowIntervalSeconds;
         _wallpaperBlur.DoubleValue = settings.WallpaperBlurRadius;
+        _videoFillEnabled.IsChecked = settings.VideoFillEnabled;
+        _videoFillPath.Text = settings.VideoFillPath;
+        _videoFillOpacity.Value = settings.VideoFillOpacity;
+        Select(_videoFillFit, VideoFillFits, settings.VideoFillFit);
+        _videoFillBlur.DoubleValue = settings.VideoFillBlurRadius;
+        _videoFillMaxDimension.DoubleValue = settings.VideoFillMaxDimension;
+        _videoFillFps.DoubleValue = settings.VideoFillTargetFps;
+        _videoFillLoop.IsChecked = settings.VideoFillLoop;
         UpdateWallpaperModeVisibility();
         Select(_visibilityAnimation, VisibilityAnimations, settings.VisibilityAnimation);
         _visibilityAnimationEnabled.IsChecked = settings.VisibilityAnimation != VisibilityAnimation.None;
@@ -3062,6 +3101,14 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.WallpaperOffsetY = _wallpaperOffsetY.DoubleValue;
             settings.WallpaperSlideshowIntervalSeconds = _wallpaperSlideshowInterval.DoubleValue;
             settings.WallpaperBlurRadius = _wallpaperBlur.DoubleValue;
+            settings.VideoFillEnabled = _videoFillEnabled.IsChecked == true;
+            settings.VideoFillPath = _videoFillPath.Text ?? string.Empty;
+            settings.VideoFillOpacity = _videoFillOpacity.Value;
+            settings.VideoFillFit = Selected(_videoFillFit, VideoFillFit.Fill);
+            settings.VideoFillBlurRadius = _videoFillBlur.DoubleValue;
+            settings.VideoFillMaxDimension = (int)Math.Round(_videoFillMaxDimension.DoubleValue);
+            settings.VideoFillTargetFps = _videoFillFps.DoubleValue;
+            settings.VideoFillLoop = _videoFillLoop.IsChecked == true;
             settings.VisibilityAnimation = _visibilityAnimationEnabled.IsChecked == true
                 ? Selected(_visibilityAnimation, VisibilityAnimation.None)
                 : VisibilityAnimation.None;
@@ -3403,6 +3450,42 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         }
     }
 
+    private Control VideoFillPathFooter()
+    {
+        var pickButton = Button("选择…", () => _ = PickVideoFillPathAsync());
+        return new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 4,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children = { _videoFillPath, pickButton }
+        };
+    }
+
+    private async Task PickVideoFillPathAsync()
+    {
+        var topLevel = TopLevel.GetTopLevel(this);
+        if (topLevel?.StorageProvider is not { } provider)
+        {
+            return;
+        }
+
+        var files = await provider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "选择动态视频",
+            AllowMultiple = false,
+            FileTypeFilter =
+            [
+                new FilePickerFileType("视频") { Patterns = ["*.mp4", "*.wmv", "*.avi", "*.mkv", "*.mov"] },
+                FilePickerFileTypes.All
+            ]
+        });
+        if (files.Count > 0)
+        {
+            _videoFillPath.Text = files[0].TryGetLocalPath() ?? string.Empty;
+        }
+    }
+
     /// <summary>
     /// 打开 Photoshop 风格底图图层编辑器。编辑器关闭后刷新本页，
     /// 使「图层模式 / 层级」等状态与持久化设置保持一致。
@@ -3450,6 +3533,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             ? mode.Value
             : InjectorRuntime.Settings.WallpaperDesignerEnabled;
         _wallpaperEditorItem.IsVisible = designer;
+        _videoFillGroup.IsVisible = designer;
         _wallpaperSourceItem.IsVisible = !designer;
         _wallpaperOpacityItem.IsVisible = !designer;
         _wallpaperDisplayModeItem.IsVisible = !designer;

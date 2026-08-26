@@ -33,6 +33,18 @@ internal static class InjectorRuntime
         Settings = InjectorSettingsStore.Load(configDirectory, pluginDirectory);
         _presets = InjectorPresetStore.Load(configDirectory);
         SmtcAlbumColorPicker.SetLogPath(Path.Combine(configDirectory, "album-color.log"));
+        MfVideoFrameSource.LogPath = Path.Combine(configDirectory, "video-fill.log");
+        FFmpegVideoDecoder.LogPath = Path.Combine(configDirectory, "video-fill.log");
+        // FFmpeg native dll 部署在插件目录（与 ClassIslandInjector.dll 同目录）。
+        try
+        {
+            FFmpeg.AutoGen.ffmpeg.RootPath = pluginDirectory;
+        }
+        catch
+        {
+            // RootPath 设置失败不影响（仅影响 FFmpeg dll 加载）。
+        }
+
         DiagnosticLog.CrashLogPath = Path.Combine(configDirectory, "crash.log");
         // 注册全局异常兜底（漏网异常静默写入 crash.log）并同步日志开关（须在设置加载之后）。
         DiagnosticLog.RegisterGlobalHandlers();

@@ -7,6 +7,8 @@
     <RootNamespace>ClassIslandInjector</RootNamespace>
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <CreateCipx>true</CreateCipx>
+    <!-- FFmpeg 解码（自带解码器，绕开系统 MF）需要指针操作 -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- tools\ 下的独立工具项目（如 SmtcProbe 探针）不应被本插件项目编译 -->
     <DefaultItemExcludes>$(DefaultItemExcludes);tools\**</DefaultItemExcludes>
   </PropertyGroup>
@@ -16,6 +18,7 @@
       <ExcludeAssets>runtime;native</ExcludeAssets>
     </PackageReference>
     <PackageReference Include="Clipper2" Version="2.0.0" />
+    <PackageReference Include="FFmpeg.AutoGen" Version="7.1.1" />
     <PackageReference Include="MaterialColorUtilities" Version="0.3.0" />
     <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
     <PackageReference Include="System.Drawing.Common" Version="8.0.25" />
