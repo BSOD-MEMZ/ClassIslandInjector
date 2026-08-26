@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
@@ -93,9 +94,11 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private SettingsExpander _borderGroup = null!;
     private SettingsExpander _wallpaperGroup = null!;
     // ===== 分体块背景（分体主界面独立配色）=====
-    private SettingsExpander _splitBlockGroup = null!;
-    /// <summary>分体块背景分组内校验提示用 InfoBar（复制样式前的提示）。</summary>
-    private InfoBar _splitBlockInfoBar = null!;
+    /// <summary>分体块背景独立区域（页面顶部大标题下方，非卡片）。</summary>
+    private StackPanel _splitBlockSection = null!;
+    /// <summary>右上角 Toast 防刷屏：上一条提醒文本与时间。</summary>
+    private string _lastReminder = string.Empty;
+    private DateTime _lastReminderAt;
     /// <summary>分体块勾选列表（键 = 组件 Id，值 = 复选框）。</summary>
     private readonly StackPanel _splitBlockList = new() { Spacing = 4 };
     private readonly Dictionary<string, CheckBox> _splitBlockChecks = [];
@@ -216,6 +219,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         MinWidth = 220,
         HorizontalContentAlignment = HorizontalAlignment.Left
     };
+    private readonly ToggleSwitch _presetAssociation = Toggle();
+    private readonly TextBlock _presetAssociationStatus = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.8 };
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.8 };
     /// <summary>实时预览开关：开启后设置项修改立即保存应用（可视化编辑器仍为手动保存）。默认开启。</summary>
     private readonly ToggleSwitch _livePreview = new()
@@ -395,6 +400,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         WireVisualEditor();
         WireLivePreview();
         WireSplitBlockLiveSync();
+        WirePresetAssociation();
         // 调试开关即时生效（须在 LoadFromSettings 之前挂接，加载持久化值时也会触发）。
         _reduceVisualBurden.PropertyChanged += (_, _) => ApplyVisualBurdenReduction();
         _disableVersionCheck.PropertyChanged += (_, _) => UpdatePluginUpdateInfoBar(_contractTableList.SelectedItem as ContractIndexEntry);
@@ -854,6 +860,34 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         };
 
         panel.Children.Add(new IconText { Glyph = "\uEC4A", Text = "样式注入器", Margin = new Thickness(0, 0, 0, 4) });
+
+        // 分体块背景：独立区域，直接放在页面顶部（大标题下方），不做成可折叠卡片。
+        // 非分体主界面模式下整个区域隐藏（由 RefreshSplitBlockList 控制 IsVisible）。
+        _splitBlockSection = new StackPanel
+        {
+            Spacing = 8,
+            Margin = new Thickness(0, 4, 0, 0)
+        };
+        _splitBlockSection.Children.Add(new IconText { Glyph = "\uE51F", Text = "分体块背景", Margin = new Thickness(0, 8, 0, 0) });
+        _splitBlockSection.Children.Add(new TextBlock
+        {
+            Text = "分体主界面模式下，可为每个分体组件块设置独立的背景颜色。勾选分块后，下方「底色填充」分组的配置会即时应用到选中的分块（所见即所得）。",
+            TextWrapping = TextWrapping.Wrap,
+            Opacity = 0.8
+        });
+        _splitBlockSection.Children.Add(SplitBlockListFooter());
+        _splitBlockSection.Children.Add(new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 4,
+            Children =
+            {
+                Button("将当前块的样式应用到其他块", ApplyCurrentBlockStyleToOthers),
+                Button("清除选中分块", ClearSplitBlockColors)
+            }
+        });
+        panel.Children.Add(_splitBlockSection);
+
         if (MainWindowStyleInjector.IsSeparatedMode())
         {
             panel.Children.Add(new InfoBar
@@ -925,30 +959,13 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         };
         panel.Children.Add(_smtcTutorialInfoBar);
 
-        // 分体块背景：分体主界面模式下为每个分体组件块设置独立背景（复用下方「底色填充」的配置）。
-        _splitBlockGroup = new SettingsExpander
-        {
-            IconSource = new FluentIconSource("\uE51F"),
-            Header = "分体块背景",
-            Description = "分体主界面模式下，可为每个分体组件块设置独立的背景颜色。勾选分块后，下方「底色填充」分组的配置会即时应用到选中的分块（所见即所得）。",
-            IsExpanded = true
-        };
-        _allExpanders.Add(_splitBlockGroup);
-        _splitBlockInfoBar = new InfoBar
-        {
-            Severity = InfoBarSeverity.Warning,
-            IsOpen = false,
-            IsClosable = true
-        };
-        _splitBlockGroup.Items.Add(_splitBlockInfoBar);
-        _splitBlockGroup.Items.Add(Item("选择分块", "按行显示所有分体块（即主界面的根组件）。勾选后，下方「底色填充」分组的配置会即时应用到选中的分块；取消勾选则停止跟随。", SplitBlockListFooter()));
-        _splitBlockGroup.Items.Add(Item("将当前块的样式应用到其他块", "先只勾选一个分体块作为样式来源，再在弹出的对话框中勾选要应用到的目标分块，点「确定」即把来源块的独立配色复制过去。", Button("将当前块的样式应用到其他块", ApplyCurrentBlockStyleToOthers)));
-        _splitBlockGroup.Items.Add(Item("清除选中分块", "移除选中分块的独立配色，恢复使用全局底色。", Button("清除", ClearSplitBlockColors)));
-        panel.Children.Add(_splitBlockGroup);
+        // 分体块背景已上移到页面顶部（大标题下方）作为独立区域，这里不再重复。
 
         AddSection(panel, "\uF42F", "用户预设");
         panel.Children.Add(Setting("\uF42F", "保存当前为预设", "把插件当前全部设置项保存为一个命名预设（同名覆盖）", PresetSaveFooter()));
         panel.Children.Add(Setting("\uF42F", "套用 / 删除预设", "套用会把全部设置项替换为该预设保存时的状态。", PresetManageFooter()));
+        panel.Children.Add(Setting("\uF42F", "导出 / 导入预设", "把预设（含底图等静态资源与作者信息）导出为 .cizip 文件分享给别人，或从别人分享的 .cizip 导入预设。", PresetExchangeFooter()));
+        panel.Children.Add(Setting("\uF42F", "双击安装预设包", "注册 .cizip 文件关联：双击预设包即可启动 ClassIsland 并进入安装确认。", PresetAssociationFooter()));
         panel.Children.Add(Setting("\uE0BD", "恢复插件默认", "把全部设置恢复为插件默认（不会修改 Overrides.axaml）", Button("恢复默认", ResetToDefaults)));
 
         AddSection(panel, "\uE51F", "背景");
@@ -1298,6 +1315,30 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         actions.Children.Add(Button("重启 ClassIsland", RestartClassIsland));
         panel.Children.Add(actions);
         panel.Children.Add(_status);
+
+        // 拖拽 .cizip / .zip 预设包到设置页即可导入安装。
+        // 必须先 SetAllowDrop(true)，否则控件不接收拖放（指针显示禁用、DragOver 不触发）。
+        DragDrop.SetAllowDrop(panel, true);
+        panel.AddHandler(DragDrop.DragOverEvent, (_, e) =>
+        {
+            // 拖入文件即可放置；是否预设包在 Drop 时再校验（DragOver 阶段取不到文件也放行）。
+            e.DragEffects = e.Data.Contains(DataFormats.Files)
+                ? DragDropEffects.Copy
+                : DragDropEffects.None;
+            e.Handled = true;
+        });
+        panel.AddHandler(DragDrop.DropEvent, async (_, e) =>
+        {
+            var path = GetDraggedPresetPackage(e.Data);
+            if (path == null)
+            {
+                return;
+            }
+
+            e.Handled = true;
+            await ImportPresetFromPath(path);
+        });
+
         return new ScrollViewer { Content = panel };
     }
 
@@ -1475,11 +1516,11 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         if (blocks.Count == 0)
         {
             // 非分体主界面：不显示分体块选择区域。
-            _splitBlockGroup.IsVisible = false;
+            _splitBlockSection.IsVisible = false;
             return;
         }
 
-        _splitBlockGroup.IsVisible = true;
+        _splitBlockSection.IsVisible = true;
         var lineGroups = blocks.GroupBy(b => b.LineNumber).OrderBy(g => g.Key).ToList();
         foreach (var lineGroup in lineGroups)
         {
@@ -1613,12 +1654,27 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         SaveAndApply();
     }
 
-    /// <summary>在分体块背景分组内显示校验提示 InfoBar。</summary>
+    /// <summary>从宿主窗口右上角弹出操作提醒 Toast（自动消失，5 秒内同文本不重复防刷屏）。</summary>
+    private void ShowReminder(string message, InfoBarSeverity severity = InfoBarSeverity.Informational, string? title = null)
+    {
+        var now = DateTime.Now;
+        if (message == _lastReminder && (now - _lastReminderAt).TotalSeconds < 5)
+        {
+            return;
+        }
+
+        _lastReminder = message;
+        _lastReminderAt = now;
+        if (TopLevel.GetTopLevel(this) is Window host)
+        {
+            new ReminderToastWindow().ShowFor(host, message, severity, title);
+        }
+    }
+
+    /// <summary>分体块背景校验失败时从右上角弹出警告 Toast。</summary>
     private void ShowSplitBlockInfoBar(string title, string message)
     {
-        _splitBlockInfoBar.Title = title;
-        _splitBlockInfoBar.Message = message;
-        _splitBlockInfoBar.IsOpen = true;
+        ShowReminder($"{title}：{message}", InfoBarSeverity.Warning, title);
     }
 
     /// <summary>
@@ -1983,6 +2039,270 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         Children = { _userPresetList, Button("复制", CopyUserPreset), Button("套用", ApplyUserPreset), Button("删除", DeleteUserPreset) }
     };
 
+    private Control PresetExchangeFooter() => new StackPanel
+    {
+        Orientation = Orientation.Horizontal,
+        Spacing = 4,
+        VerticalAlignment = VerticalAlignment.Center,
+        Children = { Button("导出选中预设", ExportPresetToFile), Button("导入预设", ImportPresetFromFile) }
+    };
+
+    private Control PresetAssociationFooter() => new StackPanel
+    {
+        Spacing = 4,
+        Children =
+        {
+            new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 4,
+                Children = { _presetAssociation, Button("重新注册", ReRegisterPresetAssociation) }
+            },
+            _presetAssociationStatus
+        }
+    };
+
+    /// <summary>刷新 .cizip 文件关联状态提示。</summary>
+    private void RefreshPresetAssociationStatus()
+    {
+        try
+        {
+            _presetAssociationStatus.Text = PresetFileAssociation.IsRegistered()
+                ? "已注册：双击 .cizip 预设包即可启动 ClassIsland 并进入安装确认。"
+                : "未注册：双击 .cizip 预设包将无法直接安装。";
+        }
+        catch
+        {
+            _presetAssociationStatus.Text = "无法读取文件关联状态。";
+        }
+    }
+
+    /// <summary>开关变化时立即确保文件关联（不等待实时预览防抖）。</summary>
+    private void WirePresetAssociation()
+    {
+        _presetAssociation.PropertyChanged += (_, e) =>
+        {
+            if (e.Property != ToggleSwitch.IsCheckedProperty || _suppressLivePreview)
+            {
+                return;
+            }
+
+            var enabled = _presetAssociation.IsChecked == true;
+            // 立即写设置（触发 Changed → 持久化）并确保关联状态。
+            InjectorRuntime.Settings.PresetFileAssociationEnabled = enabled;
+            PresetFileAssociation.Ensure(enabled);
+            RefreshPresetAssociationStatus();
+        };
+    }
+
+    /// <summary>强制重新注册文件关联（用户手动修复关联失效）。</summary>
+    private void ReRegisterPresetAssociation()
+    {
+        try
+        {
+            PresetFileAssociation.Unregister();
+            PresetFileAssociation.Register();
+            RefreshPresetAssociationStatus();
+            ShowReminder("已重新注册 .cizip 文件关联。", InfoBarSeverity.Success, "注册完成");
+        }
+        catch (Exception ex)
+        {
+            ShowReminder($"重新注册失败：{ex.Message}", InfoBarSeverity.Error, "注册失败");
+        }
+    }
+
+    /// <summary>把当前选中的预设导出为 .cizip（含底图等静态资源与作者/学校元数据），供分享给他人。</summary>
+    private async void ExportPresetToFile()
+    {
+        if (_userPresetList.SelectedItem is not string name)
+        {
+            ShowReminder("请先在预设列表中选择要导出的预设。", InfoBarSeverity.Warning, "未选择预设");
+            return;
+        }
+
+        var preset = InjectorRuntime.GetUserPresetClone(name);
+        if (preset == null)
+        {
+            ShowReminder("内置「无预设」不可导出，请选择其他预设。", InfoBarSeverity.Warning, "无法导出");
+            return;
+        }
+
+        // 收集作者 / 学校（记忆上次填写，便于二次导出）。
+        var authorBox = new TextBox
+        {
+            Text = InjectorRuntime.Settings.PresetExportAuthor,
+            MinWidth = 240,
+            Watermark = "可选，如：张三"
+        };
+        var schoolBox = new TextBox
+        {
+            Text = InjectorRuntime.Settings.PresetExportSchool,
+            MinWidth = 240,
+            Watermark = "可选，如：某某中学"
+        };
+        var host = TopLevel.GetTopLevel(this) as Window;
+        var infoDialog = new ContentDialog
+        {
+            Title = $"导出预设「{name}」",
+            Content = new StackPanel
+            {
+                Spacing = 8,
+                Children =
+                {
+                    new TextBlock { Text = "填写作者与学校信息（写入预设包，接收方安装前可见）：", TextWrapping = TextWrapping.Wrap },
+                    authorBox,
+                    schoolBox
+                }
+            },
+            PrimaryButtonText = "下一步",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary
+        };
+        var infoResult = await (host != null ? infoDialog.ShowAsync(host) : infoDialog.ShowAsync());
+        if (infoResult != ContentDialogResult.Primary)
+        {
+            return; // 用户取消
+        }
+
+        // 记忆本次填写的作者 / 学校（直接写设置对象，触发 Changed → 持久化）。
+        InjectorRuntime.Settings.PresetExportAuthor = authorBox.Text?.Trim() ?? string.Empty;
+        InjectorRuntime.Settings.PresetExportSchool = schoolBox.Text?.Trim() ?? string.Empty;
+
+        var topLevel = TopLevel.GetTopLevel(this);
+        if (topLevel?.StorageProvider is not { } provider)
+        {
+            return;
+        }
+
+        var invalid = Path.GetInvalidFileNameChars();
+        var safeName = new string(name.Where(c => !invalid.Contains(c)).ToArray());
+        var file = await provider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = "导出预设",
+            SuggestedFileName = $"{safeName}.cizip",
+            DefaultExtension = "cizip",
+            FileTypeChoices =
+            [
+                new FilePickerFileType("ClassIsland 预设包") { Patterns = ["*.cizip"] }
+            ]
+        });
+        if (file == null)
+        {
+            return; // 用户取消
+        }
+
+        var path = file.TryGetLocalPath();
+        if (string.IsNullOrEmpty(path))
+        {
+            ShowReminder("无法获取保存位置。", InfoBarSeverity.Error, "导出失败");
+            return;
+        }
+
+        var metadata = new PresetMetadata
+        {
+            Author = authorBox.Text?.Trim() ?? string.Empty,
+            School = schoolBox.Text?.Trim() ?? string.Empty,
+            CreatedAt = DateTime.Now.ToString("O"),
+            HostVersion = InjectorRuntime.HostVersion,
+            PluginVersion = Plugin.Manifest?.Version ?? string.Empty
+        };
+        var result = PresetExchange.Export(preset, metadata, path);
+        if (result.Success)
+        {
+            ShowReminder($"预设「{name}」已导出：{result.Message}", InfoBarSeverity.Success, "导出成功");
+        }
+        else
+        {
+            ShowReminder(result.Message, InfoBarSeverity.Error, "导出失败");
+        }
+    }
+
+    /// <summary>从 zip 文件导入他人分享的预设（含底图等静态资源），合并到预设列表。</summary>
+    private async void ImportPresetFromFile()
+    {
+        var topLevel = TopLevel.GetTopLevel(this);
+        if (topLevel?.StorageProvider is not { } provider)
+        {
+            return;
+        }
+
+        var files = await provider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "导入预设",
+            AllowMultiple = false,
+            FileTypeFilter =
+            [
+                new FilePickerFileType("ClassIsland 预设包") { Patterns = ["*.cizip", "*.zip"] },
+                FilePickerFileTypes.All
+            ]
+        });
+        if (files.Count == 0)
+        {
+            return; // 用户取消
+        }
+
+        var path = files[0].TryGetLocalPath();
+        if (string.IsNullOrEmpty(path))
+        {
+            ShowReminder("无法读取所选文件。", InfoBarSeverity.Error, "导入失败");
+            return;
+        }
+
+        await ImportPresetFromPath(path);
+    }
+
+    /// <summary>从 .cizip / .zip 预设包文件导入（读包 → 弹元数据确认 → 导入预设列表）。</summary>
+    private async Task ImportPresetFromPath(string path)
+    {
+        var importRoot = Path.Combine(InjectorRuntime.ConfigDirectory, "imported");
+        var result = PresetExchange.Import(path, importRoot);
+        if (!result.Success || result.Preset == null)
+        {
+            ShowReminder(result.Message, InfoBarSeverity.Error, "导入失败");
+            return;
+        }
+
+        // 弹安装确认（展示作者 / 学校 / 打包时间等元数据）。
+        var host = TopLevel.GetTopLevel(this) as Window;
+        var confirm = await PresetInstallDialog.ShowAsync(host, result.Preset.Name, result.Metadata);
+        if (confirm != ContentDialogResult.Primary)
+        {
+            return; // 用户取消安装
+        }
+
+        var importedName = InjectorRuntime.ImportUserPreset(result.Preset);
+        RefreshUserPresets();
+        _userPresetList.SelectedItem = InjectorRuntime.GetPresetNames()
+            .FirstOrDefault(n => string.Equals(n, importedName, StringComparison.OrdinalIgnoreCase));
+        ShowReminder($"已导入预设「{importedName}」：{result.Message}", InfoBarSeverity.Success, "导入成功");
+    }
+
+    /// <summary>从拖拽数据里取第一个 .cizip / .zip 预设包路径（无则返回 null）。</summary>
+    private static string? GetDraggedPresetPackage(IDataObject data)
+    {
+        if (!data.Contains(DataFormats.Files))
+        {
+            return null;
+        }
+
+        foreach (var file in data.GetFiles() ?? [])
+        {
+            var path = file.TryGetLocalPath();
+            if (string.IsNullOrEmpty(path))
+            {
+                continue; // 非本地文件（如云端占位）跳过。
+            }
+
+            var ext = Path.GetExtension(path).ToLowerInvariant();
+            if (ext is ".cizip" or ".zip")
+            {
+                return path;
+            }
+        }
+
+        return null;
+    }
+
     private void ReloadStyleSheet()
     {
         InjectorRuntime.ReloadStyleSheet();
@@ -2186,7 +2506,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                      _countdownLightBandColor, _countdownLightBandThickness, _countdownLightBandAngle, _countdownLightBandSpeed,
                      _prepareWarningEnabled, _prepareWarningColor, _prepareWarningTriggerSeconds, _prepareWarningFlashSpeed, _prepareWarningFlashAmount,
                      _prepareWarningFrameThickness, _prepareWarningOpacity,
-                     _styleSheetPath, _watchStyleSheet
+                     _styleSheetPath, _watchStyleSheet, _presetAssociation
                  })
         {
             control.PropertyChanged += (_, _) => TriggerLivePreview();
@@ -2467,6 +2787,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _animationPeriod.DoubleValue = settings.AnimationPeriodSeconds;
         _styleSheetPath.Text = settings.StyleSheetPath;
         _watchStyleSheet.IsChecked = settings.WatchStyleSheet;
+        _presetAssociation.IsChecked = settings.PresetFileAssociationEnabled;
         _cornerRadius.DoubleValue = settings.CornerRadius;
         _customBackground.IsChecked = settings.CustomBackgroundEnabled;
         _backgroundColor.Color = ReadColor(settings.BackgroundColor, Color.FromArgb(0xCC, 0x20, 0x20, 0x20));
@@ -2595,6 +2916,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _cinematicFlash.Value = settings.CinematicFlashAmount;
         RefreshUserPresets();
         RefreshSplitBlockList();
+        RefreshPresetAssociationStatus();
     }
 
     private void SaveAndApply()
@@ -2614,6 +2936,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.AnimationPeriodSeconds = _animationPeriod.DoubleValue;
             settings.StyleSheetPath = _styleSheetPath.Text ?? string.Empty;
             settings.WatchStyleSheet = _watchStyleSheet.IsChecked == true;
+            settings.PresetFileAssociationEnabled = _presetAssociation.IsChecked == true;
             var cornerRadiusChanged = settings.CornerRadius != _cornerRadius.DoubleValue;
             settings.CornerRadius = _cornerRadius.DoubleValue;
             // 用户显式修改圆角时，把形状切换为 RoundedRectangle，让自定义圆角生效；

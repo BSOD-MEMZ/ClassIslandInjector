@@ -47,16 +47,20 @@ internal sealed class ReminderToastWindow : Window
     }
 
     /// <summary>在宿主窗口右上角展示一条提醒；展示完自动 Close，宿主关闭时一并收起。</summary>
-    public void ShowFor(Window host, string message)
+    public void ShowFor(Window host, string message, InfoBarSeverity severity = InfoBarSeverity.Informational, string? title = null)
     {
         // 每次全新构建 InfoBar：复用控件在窗口隐藏后重显示时，布局高度会残留/坍缩。
         var infoBar = new InfoBar
         {
-            Severity = InfoBarSeverity.Informational,
+            Severity = severity,
             IsOpen = true,
             IsClosable = true,
             Message = message
         };
+        if (!string.IsNullOrEmpty(title))
+        {
+            infoBar.Title = title;
+        }
         infoBar.CloseButtonClick += (_, _) => Dismiss();
         _card.Child = infoBar;
 

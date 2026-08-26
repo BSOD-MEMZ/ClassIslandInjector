@@ -32,5 +32,7 @@ public sealed class Plugin : PluginBase
     {
         InjectorRuntime.Attach();
         InjectorRuntime.ScheduleStartupNavigation();
+        // 确保 .cizip 文件关联按开关生效，并注册「双击预设包安装」的 Uri 处理器。
+        InjectorRuntime.OnAppStarted();
     }
 }

@@ -688,6 +688,12 @@ public sealed class InjectorSettings
     private bool _rasterizeWarningDismissed;
     private bool _canvasRasterizeWarningDismissed;
     private string _editorPickedColor = "#FFFFFFFF";
+    /// <summary>导出预设时上次填写的作者（记忆，导出对话框预填）。</summary>
+    private string _presetExportAuthor = string.Empty;
+    /// <summary>导出预设时上次填写的学校 / 组织（记忆，导出对话框预填）。</summary>
+    private string _presetExportSchool = string.Empty;
+    /// <summary>是否注册 .cizip 文件关联（双击预设包时启动 ClassIsland 并进入安装流程）。</summary>
+    private bool _presetFileAssociationEnabled = true;
     private bool _shadowEnabled;
     private string _shadowColor = "#99000000";
     private double _shadowBlur = 16;
@@ -841,6 +847,15 @@ public sealed class InjectorSettings
 
     /// <summary>编辑器「吸管」取到的当前色（新建形状 / 文本 / 画笔的默认色，自动记忆）。</summary>
     public string EditorPickedColor { get => _editorPickedColor; set => Set(ref _editorPickedColor, value?.Trim() ?? ""); }
+
+    /// <summary>导出预设时上次填写的作者（记忆，导出对话框预填）。</summary>
+    public string PresetExportAuthor { get => _presetExportAuthor; set => Set(ref _presetExportAuthor, value?.Trim() ?? ""); }
+
+    /// <summary>导出预设时上次填写的学校 / 组织（记忆，导出对话框预填）。</summary>
+    public string PresetExportSchool { get => _presetExportSchool; set => Set(ref _presetExportSchool, value?.Trim() ?? ""); }
+
+    /// <summary>是否注册 .cizip 文件关联（双击预设包时启动 ClassIsland 并进入安装流程）。</summary>
+    public bool PresetFileAssociationEnabled { get => _presetFileAssociationEnabled; set => Set(ref _presetFileAssociationEnabled, value); }
 
     /// <summary>分体主界面各根组件（分体块）的独立背景设置（键 = 宿主 ComponentSettings.Id）。</summary>
     public Dictionary<string, SplitBlockBackgroundSetting> SplitBlockBackgrounds
@@ -1123,6 +1138,9 @@ public sealed class InjectorSettings
         CinematicShakeAmount = source.CinematicShakeAmount;
         CinematicBlurRadius = source.CinematicBlurRadius;
         CinematicFlashAmount = source.CinematicFlashAmount;
+        PresetExportAuthor = source.PresetExportAuthor;
+        PresetExportSchool = source.PresetExportSchool;
+        PresetFileAssociationEnabled = source.PresetFileAssociationEnabled;
         EndUpdate();
     }
 

@@ -1,8 +1,10 @@
 using Avalonia;
+using Avalonia.Controls;
 using Avalonia.Threading;
 using ClassIsland.Core;
 using ClassIsland.Core.Abstractions.Services;
 using ClassIsland.Shared;
+using FluentAvalonia.UI.Controls;
 
 namespace ClassIslandInjector;
 
@@ -132,6 +134,148 @@ internal static class InjectorRuntime
             }
         });
         timer.Start();
+    }
+
+    /// <summary>
+    /// 应用启动后调用：确保 .cizip 文件关联按开关注册/移除，并注册预设安装 Uri 处理器
+    /// （冷启动由宿主自导航、已运行由 IPC 转发，最终都分发到该处理器）。
+    /// </summary>
+    public static void OnAppStarted()
+    {
+        EnsureFileAssociation();
+        RegisterUriInstallHandler();
+    }
+
+    /// <summary>按设置开关确保 .cizip 文件关联（开启注册，关闭移除）。</summary>
+    public static void EnsureFileAssociation()
+    {
+        try
+        {
+            PresetFileAssociation.Ensure(Settings.PresetFileAssociationEnabled);
+        }
+        catch
+        {
+            // 注册表不可写（受控环境）等异常不阻塞启动。
+        }
+    }
+
+    /// <summary>
+    /// 注册 <c>classisland://plugins/classisland.injector/install</c> 的安装处理器。
+    /// 双击 .cizip → ClassIsland 以 --uri 启动 → 导航分发到此处理器 → 弹安装确认。
+    /// </summary>
+    private static void RegisterUriInstallHandler()
+    {
+        try
+        {
+            IAppHost.TryGetService<IUriNavigationService>()?.HandlePluginsNavigation(
+                "classisland.injector/install",
+                args => Dispatcher.UIThread.Post(() => HandlePresetInstallUri(args.Uri)));
+        }
+        catch
+        {
+            // 宿主未提供 Uri 导航服务时静默失败，不影响其余功能。
+        }
+    }
+
+    /// <summary>处理预设安装 Uri：解析文件路径 → 读包 → 弹元数据确认 → 导入。</summary>
+    private static void HandlePresetInstallUri(Uri uri)
+    {
+        var file = GetQueryValue(uri.Query, "file");
+        if (string.IsNullOrEmpty(file) || !File.Exists(file))
+        {
+            ShowPresetToast("找不到预设包文件，请确认文件未被移动或删除。", "无法安装");
+            return;
+        }
+
+        var result = PresetExchange.Import(file, Path.Combine(ConfigDirectory, "imported"));
+        if (!result.Success || result.Preset == null)
+        {
+            ShowPresetToast(result.Message, "安装失败");
+            return;
+        }
+
+        var host = GetBestDialogHost();
+        _ = ConfirmAndImportAsync(host, result);
+    }
+
+    /// <summary>
+    /// 选择最适合弹对话框的宿主窗口：优先宿主设置窗口，其次当前激活的常规窗口，
+    /// 最后才兜底主界面。避免把 ContentDialog 挂到主界面小窗/置顶效果窗上
+    /// （对话框会被限制在容器内、卡在角落点不到）。
+    /// </summary>
+    private static Window? GetBestDialogHost()
+    {
+        // 优先：宿主设置窗口（SettingsWindowNew 为 singleton，已创建且可见则优先使用）。
+        try
+        {
+            var type = Type.GetType("ClassIsland.Views.SettingsWindowNew, ClassIsland");
+            if (type != null && IAppHost.Host?.Services.GetService(type) is Window settingsWindow && settingsWindow.IsVisible)
+            {
+                return settingsWindow;
+            }
+        }
+        catch
+        {
+            // 宿主类型/服务不可用时忽略。
+        }
+
+        // 其次：当前激活的常规窗口（排除主界面小窗、置顶效果窗）。
+        var root = AppBase.Current?.GetRootWindow();
+        if (root != null &&
+            root.GetType().FullName is not ("ClassIsland.Views.MainWindow" or "ClassIsland.Views.TopmostEffectWindow") &&
+            !root.Topmost)
+        {
+            return root;
+        }
+
+        // 兜底：主界面。
+        return AppBase.Current?.MainWindow;
+    }
+
+    /// <summary>弹安装确认对话框（展示元数据），确认后把预设导入列表。</summary>
+    private static async Task ConfirmAndImportAsync(Window? host, PresetExchange.Result result)
+    {
+        var preset = result.Preset!;
+        var confirm = await Views.PresetInstallDialog.ShowAsync(host, preset.Name, result.Metadata);
+        if (confirm != ContentDialogResult.Primary)
+        {
+            return;
+        }
+
+        var importedName = ImportUserPreset(preset);
+        ShowPresetToast($"已安装预设「{importedName}」。", "安装成功", InfoBarSeverity.Success);
+    }
+
+    /// <summary>右上角 Toast 展示预设安装相关提醒（无设置页打开时也可用）。</summary>
+    private static void ShowPresetToast(string message, string title, InfoBarSeverity severity = InfoBarSeverity.Informational)
+    {
+        try
+        {
+            if (AppBase.Current?.MainWindow is { } host)
+            {
+                new Views.ReminderToastWindow().ShowFor(host, message, severity, title);
+            }
+        }
+        catch
+        {
+            // 宿主窗口未就绪等情况下静默失败。
+        }
+    }
+
+    /// <summary>从 Uri query（如 ?file=xxx）解析指定键的值（URL 解码，+ 视为空格）。</summary>
+    private static string? GetQueryValue(string query, string key)
+    {
+        var q = query.StartsWith('?') ? query[1..] : query;
+        foreach (var part in q.Split('&'))
+        {
+            var kv = part.Split('=', 2);
+            if (kv.Length == 2 && string.Equals(kv[0], key, StringComparison.OrdinalIgnoreCase))
+            {
+                return Uri.UnescapeDataString(kv[1].Replace('+', ' '));
+            }
+        }
+
+        return null;
     }
 
     public static void SaveAndApply()
@@ -325,6 +469,54 @@ internal static class InjectorRuntime
 
         SavePresets();
         return true;
+    }
+
+    /// <summary>
+    /// 获取用户预设的深拷贝（供导出使用；不存在或为内置「无预设」时返回 null）。
+    /// </summary>
+    public static UserPreset? GetUserPresetClone(string name)
+    {
+        if (string.Equals(name, InjectorPresetStore.NoPresetName, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var preset = _presets.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
+        return preset == null
+            ? null
+            : new UserPreset { Name = preset.Name, Settings = preset.Settings.Clone() };
+    }
+
+    /// <summary>
+    /// 导入用户预设。不再覆盖同名预设：若名称已存在，自动追加短 GUID 后缀保证唯一
+    /// （生成后仍与现有预设冲突则重新生成，彻底避免重名）。
+    /// </summary>
+    /// <returns>实际导入的预设名。</returns>
+    public static string ImportUserPreset(UserPreset preset)
+    {
+        var name = preset.Name.Trim();
+        if (name.Length == 0 ||
+            string.Equals(name, InjectorPresetStore.NoPresetName, StringComparison.OrdinalIgnoreCase))
+        {
+            name = "导入的预设";
+        }
+
+        name = MakeUniquePresetName(name);
+        _presets.Add(new UserPreset { Name = name, Settings = preset.Settings });
+        SavePresets();
+        return name;
+    }
+
+    /// <summary>生成不与现有预设冲突的名称：冲突时追加短 GUID 后缀，直到唯一。</summary>
+    private static string MakeUniquePresetName(string baseName)
+    {
+        var name = baseName;
+        while (_presets.Any(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase)))
+        {
+            name = $"{baseName} ({Guid.NewGuid().ToString("N")[..8]})";
+        }
+
+        return name;
     }
 
     private static void SavePresets()
