@@ -15,10 +15,25 @@ $projectDir = $PSScriptRoot
 $pluginDir  = "D:\Dev\ClassIsland\data\Plugins\classisland.injector"
 $outputDir  = Join-Path $projectDir "bin\Release\net8.0-windows10.0.19041.0"
 
+# 定位可用的 dotnet：本机已知可用安装（带 SDK 8.0.423）在 %LOCALAPPDATA%\Microsoft\dotnet，
+# 而 PATH 中靠前的 C:\Program Files\dotnet 是残缺安装（--list-sdks 能列出但 build 报找不到 SDK）。
+# 因此优先取 LOCALAPPDATA，其次 PATH，再回退 Program Files。
+$candidates = @(
+    (Join-Path $env:LOCALAPPDATA "Microsoft\dotnet\dotnet.exe"),
+    (Get-Command dotnet -ErrorAction SilentlyContinue).Source,
+    (Join-Path $env:ProgramFiles "dotnet\dotnet.exe"),
+    (Join-Path ${env:ProgramFiles(x86)} "dotnet\dotnet.exe")
+) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+$dotnet = $candidates | Select-Object -First 1
+if (-not $dotnet) {
+    Write-Host "未找到 dotnet，请先安装 .NET SDK（https://dotnet.microsoft.com/download）。" -ForegroundColor Red
+    exit 1
+}
+
 if (-not $NoBuild) {
     Write-Host "==> 构建（Release，不生成 cipx）..." -ForegroundColor Cyan
     Push-Location $projectDir
-    dotnet build ClassIslandInjector.csproj -c Release -p:CreateCipx=false
+    & $dotnet build ClassIslandInjector.csproj -c Release -p:CreateCipx=false
     $code = $LASTEXITCODE
     Pop-Location
     if ($code -ne 0) {

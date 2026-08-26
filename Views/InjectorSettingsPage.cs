@@ -94,6 +94,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private SettingsExpander _wallpaperGroup = null!;
     // ===== 分体块背景（分体主界面独立配色）=====
     private SettingsExpander _splitBlockGroup = null!;
+    /// <summary>分体块背景分组内校验提示用 InfoBar（复制样式前的提示）。</summary>
+    private InfoBar _splitBlockInfoBar = null!;
     /// <summary>分体块勾选列表（键 = 组件 Id，值 = 复选框）。</summary>
     private readonly StackPanel _splitBlockList = new() { Spacing = 4 };
     private readonly Dictionary<string, CheckBox> _splitBlockChecks = [];
@@ -932,7 +934,15 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             IsExpanded = true
         };
         _allExpanders.Add(_splitBlockGroup);
+        _splitBlockInfoBar = new InfoBar
+        {
+            Severity = InfoBarSeverity.Warning,
+            IsOpen = false,
+            IsClosable = true
+        };
+        _splitBlockGroup.Items.Add(_splitBlockInfoBar);
         _splitBlockGroup.Items.Add(Item("选择分块", "按行显示所有分体块（即主界面的根组件）。勾选后，下方「底色填充」分组的配置会即时应用到选中的分块；取消勾选则停止跟随。", SplitBlockListFooter()));
+        _splitBlockGroup.Items.Add(Item("将当前块的样式应用到其他块", "先只勾选一个分体块作为样式来源，再在弹出的对话框中勾选要应用到的目标分块，点「确定」即把来源块的独立配色复制过去。", Button("将当前块的样式应用到其他块", ApplyCurrentBlockStyleToOthers)));
         _splitBlockGroup.Items.Add(Item("清除选中分块", "移除选中分块的独立配色，恢复使用全局底色。", Button("清除", ClearSplitBlockColors)));
         panel.Children.Add(_splitBlockGroup);
 
@@ -1354,6 +1364,74 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _status.Text = $"已删除预设“{name}”。";
     }
 
+    /// <summary>把选中的预设复制为新预设（弹出对话框输入新名称）。</summary>
+    private async void CopyUserPreset()
+    {
+        if (_userPresetList.SelectedItem is not string name)
+        {
+            _status.Text = "请先选择一个预设。";
+            return;
+        }
+
+        // 内置「无预设」不可复制。
+        if (string.Equals(name, InjectorPresetStore.NoPresetName, StringComparison.OrdinalIgnoreCase))
+        {
+            _status.Text = "内置「无预设」不可复制。";
+            return;
+        }
+
+        var nameBox = new TextBox
+        {
+            Text = $"{name} 副本",
+            MinWidth = 260
+        };
+        var dialog = new ContentDialog
+        {
+            Title = $"复制预设“{name}”",
+            Content = new StackPanel
+            {
+                Spacing = 8,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "为新预设命名（与已有预设同名时覆盖）：",
+                        TextWrapping = TextWrapping.Wrap
+                    },
+                    nameBox
+                }
+            },
+            PrimaryButtonText = "复制",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary
+        };
+
+        var result = await ShowDialogAsync(dialog);
+        if (result != ContentDialogResult.Primary)
+        {
+            return;
+        }
+
+        var newName = nameBox.Text?.Trim();
+        if (string.IsNullOrEmpty(newName))
+        {
+            _status.Text = "请输入新预设名称。";
+            return;
+        }
+
+        if (InjectorRuntime.CopyPreset(name, newName))
+        {
+            RefreshUserPresets();
+            _userPresetList.SelectedItem = InjectorRuntime.GetPresetNames()
+                .FirstOrDefault(n => string.Equals(n, newName, StringComparison.OrdinalIgnoreCase));
+            _status.Text = $"已把预设“{name}”复制为“{newName}”。";
+        }
+        else
+        {
+            _status.Text = $"复制预设“{name}”失败：预设不存在或名称无效。";
+        }
+    }
+
     private void RefreshUserPresets()
     {
         var names = InjectorRuntime.GetPresetNames();
@@ -1532,6 +1610,120 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         }
 
         _status.Text = $"已清除 {selected.Count} 个分体块的独立配色。";
+        SaveAndApply();
+    }
+
+    /// <summary>在分体块背景分组内显示校验提示 InfoBar。</summary>
+    private void ShowSplitBlockInfoBar(string title, string message)
+    {
+        _splitBlockInfoBar.Title = title;
+        _splitBlockInfoBar.Message = message;
+        _splitBlockInfoBar.IsOpen = true;
+    }
+
+    /// <summary>
+    /// 把当前唯一选中的分体块的独立配色复制到用户选择的其他分体块。
+    /// 要求恰好选中一个分体块作为样式来源；弹出对话框重新勾选目标分块后点「确定」应用。
+    /// </summary>
+    private async void ApplyCurrentBlockStyleToOthers()
+    {
+        var selected = _splitBlockChecks.Where(kv => kv.Value.IsChecked == true).Select(kv => kv.Key).ToList();
+        if (selected.Count == 0)
+        {
+            ShowSplitBlockInfoBar("请先选中一个分体块", "要复制样式到其他块，请先只勾选一个分体块作为样式来源。");
+            return;
+        }
+
+        if (selected.Count > 1)
+        {
+            ShowSplitBlockInfoBar("只能选中一个分体块", "当前选中了多个分体块，请只勾选一个分体块作为样式来源。");
+            return;
+        }
+
+        var sourceId = selected[0];
+        var settings = InjectorRuntime.Settings;
+        if (!settings.SplitBlockBackgrounds.TryGetValue(sourceId, out var source))
+        {
+            ShowSplitBlockInfoBar("当前分体块还没有独立配色", "请先为该分体块勾选并应用「底色填充」的配置，再复制到其他块。");
+            return;
+        }
+
+        // 弹出对话框：重新勾选要应用到的目标分块（默认全选除来源外的所有块，来源块不可选）。
+        var blocks = MainWindowStyleInjector.EnumerateSplitBlocks();
+        var names = blocks.ToDictionary(b => b.Id, b => b.Name);
+        var sourceName = names.TryGetValue(sourceId, out var displayName) ? displayName : sourceId;
+        var checks = new Dictionary<string, CheckBox>();
+        var targetPanel = new StackPanel { Spacing = 6 };
+        foreach (var block in blocks)
+        {
+            var isSource = block.Id == sourceId;
+            var check = new CheckBox
+            {
+                Content = block.Name,
+                IsChecked = !isSource,
+                IsEnabled = !isSource
+            };
+            checks[block.Id] = check;
+            targetPanel.Children.Add(check);
+        }
+
+        var dialog = new ContentDialog
+        {
+            Title = $"将“{sourceName}”的样式应用到…",
+            Content = new StackPanel
+            {
+                Spacing = 8,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "勾选要应用该样式（独立配色）的目标分块：",
+                        TextWrapping = TextWrapping.Wrap
+                    },
+                    new ScrollViewer { Content = targetPanel, MaxHeight = 320 }
+                }
+            },
+            PrimaryButtonText = "确定",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary
+        };
+
+        var result = await ShowDialogAsync(dialog);
+        if (result != ContentDialogResult.Primary)
+        {
+            return;
+        }
+
+        var targets = checks.Where(kv => kv.Value.IsChecked == true).Select(kv => kv.Key).ToList();
+        if (targets.Count == 0)
+        {
+            ShowSplitBlockInfoBar("未选择目标分体块", "没有勾选任何目标分体块，未做任何更改。");
+            return;
+        }
+
+        settings.BeginUpdate();
+        try
+        {
+            foreach (var id in targets)
+            {
+                settings.SplitBlockBackgrounds[id] = source.Clone();
+            }
+        }
+        finally
+        {
+            settings.EndUpdate();
+        }
+
+        // 目标分块现在已有独立配色，同步勾选状态（程序性赋值不触发 Click，不会误写盘）。
+        foreach (var id in targets)
+        {
+            if (_splitBlockChecks.TryGetValue(id, out var check))
+            {
+                check.IsChecked = true;
+            }
+        }
+
+        _status.Text = $"已把“{sourceName}”的样式应用到 {targets.Count} 个分体块。";
         SaveAndApply();
     }
 
@@ -1788,7 +1980,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         Orientation = Orientation.Horizontal,
         Spacing = 4,
         VerticalAlignment = VerticalAlignment.Center,
-        Children = { _userPresetList, Button("套用", ApplyUserPreset), Button("删除", DeleteUserPreset) }
+        Children = { _userPresetList, Button("复制", CopyUserPreset), Button("套用", ApplyUserPreset), Button("删除", DeleteUserPreset) }
     };
 
     private void ReloadStyleSheet()

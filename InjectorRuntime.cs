@@ -287,6 +287,46 @@ internal static class InjectorRuntime
         }
     }
 
+    /// <summary>
+    /// 把命名用户预设复制为新预设（新名称与已有预设同名时覆盖）。
+    /// </summary>
+    /// <returns>是否成功复制。</returns>
+    public static bool CopyPreset(string sourceName, string newName)
+    {
+        // 内置「无预设」不可复制。
+        if (string.Equals(sourceName, InjectorPresetStore.NoPresetName, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var source = _presets.FirstOrDefault(p => string.Equals(p.Name, sourceName, StringComparison.OrdinalIgnoreCase));
+        if (source == null)
+        {
+            return false;
+        }
+
+        var trimmed = newName.Trim();
+        // 空名称或试图覆盖内置「无预设」均视为无效。
+        if (trimmed.Length == 0 ||
+            string.Equals(trimmed, InjectorPresetStore.NoPresetName, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var existing = _presets.FirstOrDefault(p => string.Equals(p.Name, trimmed, StringComparison.OrdinalIgnoreCase));
+        if (existing != null)
+        {
+            existing.Settings = source.Settings.Clone();
+        }
+        else
+        {
+            _presets.Add(new UserPreset { Name = trimmed, Settings = source.Settings.Clone() });
+        }
+
+        SavePresets();
+        return true;
+    }
+
     private static void SavePresets()
     {
         InjectorPresetStore.Save(ConfigDirectory, _presets);
