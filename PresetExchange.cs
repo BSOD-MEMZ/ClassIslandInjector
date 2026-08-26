@@ -15,6 +15,9 @@ public sealed class PresetMetadata
     /// <summary>预设作者所属学校 / 组织（可选）。</summary>
     public string School { get; set; } = string.Empty;
 
+    /// <summary>预设备注 / 描述（商店展示用，可选）。</summary>
+    public string Description { get; set; } = string.Empty;
+
     /// <summary>打包时间（ISO 8601）。</summary>
     public string CreatedAt { get; set; } = DateTime.Now.ToString("O");
 
@@ -46,8 +49,9 @@ internal static class PresetExchange
     /// <summary>
     /// 导出用户预设到 zip（含引用的本地静态资源：自定义样式表 / 底图 / 图层图片）。
     /// 对不存在或非本地来源的路径一律清空，避免把导出者的本机绝对路径带进包里。
+    /// 可附带主界面预览图（<paramref name="previewPng"/>，PNG 字节），写入 preview.png 供商店展示。
     /// </summary>
-    public static Result Export(UserPreset preset, PresetMetadata metadata, string zipPath)
+    public static Result Export(UserPreset preset, PresetMetadata metadata, string zipPath, byte[]? previewPng = null)
     {
         try
         {
@@ -112,13 +116,17 @@ internal static class PresetExchange
                 }
             }
 
-            // 4. 最后写入清洗后的设置快照与元数据（资源已全部进包）。
+            // 4. 最后写入清洗后的设置快照、元数据与预览图（资源已全部进包）。
             AddTextEntry(archive, PresetFileName, JsonSerializer.Serialize(new UserPreset
             {
                 Name = preset.Name,
                 Settings = settings
             }, JsonOptions));
             AddTextEntry(archive, MetadataFileName, JsonSerializer.Serialize(metadata, JsonOptions));
+            if (previewPng is { Length: > 0 })
+            {
+                AddBytesEntry(archive, "preview.png", previewPng);
+            }
 
             return new Result(true, $"已导出（含 {copied} 个资源文件）。");
         }
@@ -294,6 +302,13 @@ internal static class PresetExchange
         var entry = archive.CreateEntry(entryName);
         using var writer = new StreamWriter(entry.Open());
         writer.Write(content);
+    }
+
+    private static void AddBytesEntry(ZipArchive archive, string entryName, byte[] bytes)
+    {
+        var entry = archive.CreateEntry(entryName, CompressionLevel.Optimal);
+        using var output = entry.Open();
+        output.Write(bytes);
     }
 
     private static void AddFile(ZipArchive archive, string localPath, string entryName)

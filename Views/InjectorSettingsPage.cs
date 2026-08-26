@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using ClassIsland.Core;
@@ -2127,7 +2128,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             return;
         }
 
-        // 收集作者 / 学校（记忆上次填写，便于二次导出）。
+        // 收集作者 / 学校 / 备注（记忆上次填写，便于二次导出）。
         var authorBox = new TextBox
         {
             Text = InjectorRuntime.Settings.PresetExportAuthor,
@@ -2140,6 +2141,15 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             MinWidth = 240,
             Watermark = "可选，如：某某中学"
         };
+        var noteBox = new TextBox
+        {
+            Text = InjectorRuntime.Settings.PresetExportNote,
+            MinWidth = 260,
+            Height = 72,
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            Watermark = "可选：描述这个预设的亮点 / 适用场景（商店展示用）"
+        };
         var host = TopLevel.GetTopLevel(this) as Window;
         var infoDialog = new ContentDialog
         {
@@ -2149,9 +2159,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                 Spacing = 8,
                 Children =
                 {
-                    new TextBlock { Text = "填写作者与学校信息（写入预设包，接收方安装前可见）：", TextWrapping = TextWrapping.Wrap },
+                    new TextBlock { Text = "填写作者、学校与备注（写入预设包，接收方安装前可见）：", TextWrapping = TextWrapping.Wrap },
                     authorBox,
-                    schoolBox
+                    schoolBox,
+                    noteBox
                 }
             },
             PrimaryButtonText = "下一步",
@@ -2164,9 +2175,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             return; // 用户取消
         }
 
-        // 记忆本次填写的作者 / 学校（直接写设置对象，触发 Changed → 持久化）。
+        // 记忆本次填写的作者 / 学校 / 备注（直接写设置对象，触发 Changed → 持久化）。
         InjectorRuntime.Settings.PresetExportAuthor = authorBox.Text?.Trim() ?? string.Empty;
         InjectorRuntime.Settings.PresetExportSchool = schoolBox.Text?.Trim() ?? string.Empty;
+        InjectorRuntime.Settings.PresetExportNote = noteBox.Text?.Trim() ?? string.Empty;
 
         var topLevel = TopLevel.GetTopLevel(this);
         if (topLevel?.StorageProvider is not { } provider)
@@ -2198,15 +2210,23 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             return;
         }
 
+        // 截取主界面当前外观作为预览图（失败不影响导出）。
+        var preview = await CaptureMainWindowPreviewAsync();
+        if (preview != null)
+        {
+            ShowReminder("已自动截取主界面预览图。", InfoBarSeverity.Informational, "预览图");
+        }
+
         var metadata = new PresetMetadata
         {
             Author = authorBox.Text?.Trim() ?? string.Empty,
             School = schoolBox.Text?.Trim() ?? string.Empty,
+            Description = noteBox.Text?.Trim() ?? string.Empty,
             CreatedAt = DateTime.Now.ToString("O"),
             HostVersion = InjectorRuntime.HostVersion,
             PluginVersion = Plugin.Manifest?.Version ?? string.Empty
         };
-        var result = PresetExchange.Export(preset, metadata, path);
+        var result = PresetExchange.Export(preset, metadata, path, preview);
         if (result.Success)
         {
             ShowReminder($"预设「{name}」已导出：{result.Message}", InfoBarSeverity.Success, "导出成功");
@@ -2249,6 +2269,37 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         }
 
         await ImportPresetFromPath(path);
+    }
+
+    /// <summary>截取主界面当前外观作为预设预览图（PNG 字节；主界面不可用或截图失败返回 null）。</summary>
+    private static async Task<byte[]?> CaptureMainWindowPreviewAsync()
+    {
+        try
+        {
+            if (AppBase.Current?.MainWindow is not { Content: Visual visual })
+            {
+                return null;
+            }
+
+            // 等待当前布局稳定后再截，避免截到未完成的布局。
+            await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Loaded);
+            var bounds = visual.Bounds;
+            if (bounds.Width < 1 || bounds.Height < 1)
+            {
+                return null;
+            }
+
+            var size = new PixelSize((int)bounds.Width, (int)bounds.Height);
+            using var bitmap = new RenderTargetBitmap(size);
+            bitmap.Render(visual);
+            using var ms = new MemoryStream();
+            bitmap.Save(ms);
+            return ms.ToArray();
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>从 .cizip / .zip 预设包文件导入（读包 → 弹元数据确认 → 导入预设列表）。</summary>

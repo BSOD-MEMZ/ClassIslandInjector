@@ -692,6 +692,8 @@ public sealed class InjectorSettings
     private string _presetExportAuthor = string.Empty;
     /// <summary>导出预设时上次填写的学校 / 组织（记忆，导出对话框预填）。</summary>
     private string _presetExportSchool = string.Empty;
+    /// <summary>导出预设时上次填写的备注（记忆，导出对话框预填）。</summary>
+    private string _presetExportNote = string.Empty;
     /// <summary>是否注册 .cizip 文件关联（双击预设包时启动 ClassIsland 并进入安装流程）。</summary>
     private bool _presetFileAssociationEnabled = true;
     private bool _shadowEnabled;
@@ -853,6 +855,9 @@ public sealed class InjectorSettings
 
     /// <summary>导出预设时上次填写的学校 / 组织（记忆，导出对话框预填）。</summary>
     public string PresetExportSchool { get => _presetExportSchool; set => Set(ref _presetExportSchool, value?.Trim() ?? ""); }
+
+    /// <summary>导出预设时上次填写的备注（记忆，导出对话框预填）。</summary>
+    public string PresetExportNote { get => _presetExportNote; set => Set(ref _presetExportNote, value?.Trim() ?? ""); }
 
     /// <summary>是否注册 .cizip 文件关联（双击预设包时启动 ClassIsland 并进入安装流程）。</summary>
     public bool PresetFileAssociationEnabled { get => _presetFileAssociationEnabled; set => Set(ref _presetFileAssociationEnabled, value); }
@@ -1140,6 +1145,7 @@ public sealed class InjectorSettings
         CinematicFlashAmount = source.CinematicFlashAmount;
         PresetExportAuthor = source.PresetExportAuthor;
         PresetExportSchool = source.PresetExportSchool;
+        PresetExportNote = source.PresetExportNote;
         PresetFileAssociationEnabled = source.PresetFileAssociationEnabled;
         EndUpdate();
     }

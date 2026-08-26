@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "indexUrl": "https://xxtsoft.top/support/injector/presets/index.json",
+  "updatedAt": "2026-08-26T12:00:00+08:00",
+  "presets": [
+    {
+      "id": "demo-glassmorphism",
+      "name": "玻璃拟态",
+      "author": "xxt8582753",
+      "school": "某某中学",
+      "description": "半透明毛玻璃质感的主界面配色，适合深色壁纸；配合图层式底图使用效果更佳。",
+      "pluginVersion": "1.1.0.4",
+      "minPluginVersion": "",
+      "createdAt": "2026-08-26T12:00:00+08:00",
+      "downloadUrl": "https://xxtsoft.top/support/injector/presets/demo-glassmorphism.cizip",
+      "previewUrl": "https://xxtsoft.top/support/injector/presets/demo-glassmorphism.png",
+      "sizeBytes": 0
+    },
+    {
+      "id": "demo-simple-dark",
+      "name": "简洁暗色",
+      "author": "xxt8582753",
+      "school": "",
+      "description": "极简暗色风格，低饱和低亮度，适合投影环境。",
+      "pluginVersion": "1.1.0.4",
+      "minPluginVersion": "",
+      "createdAt": "2026-08-26T12:05:00+08:00",
+      "downloadUrl": "https://xxtsoft.top/support/injector/presets/demo-simple-dark.cizip",
+      "previewUrl": "https://xxtsoft.top/support/injector/presets/demo-simple-dark.png",
+      "sizeBytes": 0
+    }
+  ]
+}

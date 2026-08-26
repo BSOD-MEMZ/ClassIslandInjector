@@ -36,6 +36,11 @@ internal static class PresetInstallDialog
                 AddRow(metaPanel, "学校 / 组织", metadata.School);
             }
 
+            if (!string.IsNullOrWhiteSpace(metadata.Description))
+            {
+                AddRow(metaPanel, "备注", metadata.Description);
+            }
+
             if (DateTime.TryParse(metadata.CreatedAt, out var created))
             {
                 AddRow(metaPanel, "打包时间", created.ToLocalTime().ToString("yyyy-MM-dd HH:mm"));
