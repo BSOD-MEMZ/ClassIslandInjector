@@ -760,7 +760,7 @@ public sealed class InjectorSettings
     private List<WallpaperLayerItem> _wallpaperLayers = [];
     private WallpaperLayerZOrder _wallpaperZOrder = WallpaperLayerZOrder.BehindBackground;
     private bool _wallpaperDesignerEnabled = true; // 全新安装默认启用专家模式（图层编辑器），老配置已有值则保持原样
-    // 动态视频填充（专家模式，Media Foundation 解码）
+    // 动态视频填充（专家模式，FFmpeg 解码）
     private bool _videoFillEnabled;
     private string _videoFillPath = string.Empty;
     private double _videoFillOpacity = 0.6;
@@ -769,6 +769,12 @@ public sealed class InjectorSettings
     private int _videoFillMaxDimension = 1280;
     private double _videoFillTargetFps = 24;
     private bool _videoFillLoop = true;
+    /// <summary>是否启用视频工程背景（多片段拼接，由视频编辑器生成）。</summary>
+    private bool _videoProjectEnabled;
+    /// <summary>视频工程 JSON 路径（配置目录\video-project.json）。</summary>
+    private string _videoProjectPath = string.Empty;
+    /// <summary>自定义 FFmpeg 下载源 URL（用户自建镜像，安装器优先使用）。</summary>
+    private string _customFfmpegDownloadUrl = string.Empty;
     private bool _wallpaperCheckerFollowTheme = true;
     private string _wallpaperCheckerColor1 = "#2D2F34";
     private string _wallpaperCheckerColor2 = "#26282D";
@@ -948,7 +954,7 @@ public sealed class InjectorSettings
     public WallpaperLayerZOrder WallpaperZOrder { get => _wallpaperZOrder; set => Set(ref _wallpaperZOrder, value); }
     /// <summary>是否启用 Photoshop 风格图层式底图（由图层编辑器写入）。</summary>
     public bool WallpaperDesignerEnabled { get => _wallpaperDesignerEnabled; set => Set(ref _wallpaperDesignerEnabled, value); }
-    /// <summary>是否启用动态视频填充（Media Foundation 解码本地视频作为主界面动态背景）。</summary>
+    /// <summary>是否启用动态视频填充（FFmpeg 解码本地视频作为主界面动态背景，需 FFmpeg 解码库）。</summary>
     public bool VideoFillEnabled { get => _videoFillEnabled; set => Set(ref _videoFillEnabled, value); }
     /// <summary>动态视频填充的视频文件路径。</summary>
     public string VideoFillPath { get => _videoFillPath; set => Set(ref _videoFillPath, value?.Trim() ?? ""); }
@@ -964,6 +970,12 @@ public sealed class InjectorSettings
     public double VideoFillTargetFps { get => _videoFillTargetFps; set => Set(ref _videoFillTargetFps, Math.Clamp(value, 1, 60)); }
     /// <summary>动态视频填充是否循环播放。</summary>
     public bool VideoFillLoop { get => _videoFillLoop; set => Set(ref _videoFillLoop, value); }
+    /// <summary>是否启用视频工程背景（多片段拼接，由视频编辑器生成并渲染）。</summary>
+    public bool VideoProjectEnabled { get => _videoProjectEnabled; set => Set(ref _videoProjectEnabled, value); }
+    /// <summary>视频工程 JSON 路径（配置目录\video-project.json）。</summary>
+    public string VideoProjectPath { get => _videoProjectPath; set => Set(ref _videoProjectPath, value?.Trim() ?? ""); }
+    /// <summary>自定义 FFmpeg 下载源 URL（用户自建镜像；留空使用内置源）。</summary>
+    public string CustomFfmpegDownloadUrl { get => _customFfmpegDownloadUrl; set => Set(ref _customFfmpegDownloadUrl, value?.Trim() ?? ""); }
     /// <summary>底图编辑器舞台棋盘格是否跟随主题深浅色（关闭时用自定义两色）。</summary>
     public bool WallpaperCheckerFollowTheme { get => _wallpaperCheckerFollowTheme; set => Set(ref _wallpaperCheckerFollowTheme, value); }
     /// <summary>棋盘格颜色 1（关闭「跟随主题」时使用）。</summary>
@@ -1151,6 +1163,9 @@ public sealed class InjectorSettings
         VideoFillMaxDimension = source.VideoFillMaxDimension;
         VideoFillTargetFps = source.VideoFillTargetFps;
         VideoFillLoop = source.VideoFillLoop;
+        VideoProjectEnabled = source.VideoProjectEnabled;
+        VideoProjectPath = source.VideoProjectPath;
+        CustomFfmpegDownloadUrl = source.CustomFfmpegDownloadUrl;
         SplitBlockBackgrounds = source.SplitBlockBackgrounds.ToDictionary(kv => kv.Key, kv => kv.Value.Clone());
         WallpaperCheckerFollowTheme = source.WallpaperCheckerFollowTheme;
         WallpaperCheckerColor1 = source.WallpaperCheckerColor1;

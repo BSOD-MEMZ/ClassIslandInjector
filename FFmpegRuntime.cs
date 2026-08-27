@@ -1,0 +1,371 @@
+using System.Diagnostics;
+using System.IO.Compression;
+
+namespace ClassIslandInjector;
+
+/// <summary>
+/// FFmpeg 解码库运行时管理：检测插件所需的 FFmpeg 共享库（avcodec-63.dll 等，
+/// 版本由 FFmpeg.AutoGen 的 LibraryVersionMap 决定）是否已安装，缺失时提供
+/// 联机下载安装入口。
+///
+/// 库文件放在配置目录的 ffmpeg 子目录（用户数据目录，部署脚本不会清空），
+/// 通过 <c>ffmpeg.RootPath</c> 指向该目录供 FFmpeg.AutoGen 加载。
+///
+/// 加载机制（已验证）：FFmpeg.AutoGen 是惰性加载——静态构造不加载任何 dll，
+/// 首次调用 FFmpeg 函数时才按当时的 RootPath 查找并加载。因此：
+///  - 文件缺失时「绝不调用任何 FFmpeg 函数」（否则失败委托会被缓存为占位，
+///    之后即使装好库也要重启才能恢复）；
+///  - 文件齐全后再设置 RootPath 并做一次轻量验证（<see cref="EnsureLoaded"/>）。
+/// </summary>
+public static class FFmpegRuntime
+{
+    /// <summary>FFmpegVideoDecoder 实际使用的库名（avcodec 依赖 avutil+swresample，须一起部署）。</summary>
+    private static readonly string[] RequiredLibraryNames = ["avcodec", "avformat", "avutil", "swscale", "swresample"];
+
+    /// <summary>FFmpeg 共享库目录（配置目录\ffmpeg）。</summary>
+    public static string LibraryDirectory { get; private set; } = string.Empty;
+
+    /// <summary>内置默认下载源（用户自建精简镜像，xxtsoft.top）。优先级最高，失败再回退其它源。</summary>
+    public const string DefaultSourceUrl = "https://xxtsoft.top/support/injector/ffmpeg-8.1-win64-shared-min.zip";
+
+    /// <summary>是否已安装全部所需解码库。</summary>
+    public static bool IsAvailable { get; private set; }
+
+    /// <summary>缺失的库文件名列表（IsAvailable 为 false 时用于提示）。</summary>
+    public static IReadOnlyList<string> MissingLibraries { get; private set; } = [];
+
+    /// <summary>所需库文件名列表（按当前 FFmpeg.AutoGen 版本动态计算）。</summary>
+    public static IReadOnlyList<string> RequiredFileNames { get; private set; } = [];
+
+    /// <summary>最近一次加载验证失败的说明（dll 损坏等）。</summary>
+    public static string? LastError { get; private set; }
+
+    /// <summary>当前 FFmpeg 版本系列（如 8.x），由 avcodec 主版本推断，用于下载提示。</summary>
+    public static string FfmpegVersion => $"{GetFfmpegMajor()}.x";
+
+    private static bool _loaded;
+
+    /// <summary>初始化：设置库目录并检测可用性。App 启动时调用一次。</summary>
+    public static void Initialize(string libraryDirectory)
+    {
+        LibraryDirectory = libraryDirectory;
+        Refresh();
+    }
+
+    /// <summary>
+    /// 读取 FFmpeg.AutoGen 的库版本映射。读取会触发其静态构造，但静态构造是惰性的
+    /// （已验证不加载 dll、不抛异常），因此安全。读取失败时回退 FFmpeg 9.0 的已知版本。
+    /// </summary>
+    private static Dictionary<string, int> GetLibraryVersionMap()
+    {
+        try
+        {
+            return new Dictionary<string, int>(FFmpeg.AutoGen.ffmpeg.LibraryVersionMap);
+        }
+        catch
+        {
+            return new Dictionary<string, int>
+            {
+                ["avcodec"] = 62, ["avformat"] = 62, ["avutil"] = 60,
+                ["swresample"] = 6, ["swscale"] = 9,
+            };
+        }
+    }
+
+    /// <summary>重新检测可用性（启动与下载安装后调用）。仅检查文件存在，不做加载验证。</summary>
+    public static void Refresh()
+    {
+        var versionMap = GetLibraryVersionMap();
+        var required = RequiredLibraryNames
+            .Where(versionMap.ContainsKey)
+            .Select(name => $"{name}-{versionMap[name]}.dll")
+            .ToList();
+        RequiredFileNames = required;
+
+        var missing = required
+            .Where(fileName => !File.Exists(Path.Combine(LibraryDirectory, fileName)))
+            .ToList();
+        MissingLibraries = missing;
+        IsAvailable = missing.Count == 0;
+        if (!IsAvailable)
+        {
+            _loaded = false;
+        }
+    }
+
+    /// <summary>
+    /// 确保 FFmpeg 已配置可加载：设置 RootPath 并触发一次轻量加载验证。
+    /// 仅在 IsAvailable（文件齐全）时调用；失败说明 dll 损坏/依赖缺失，降级并提示重启。
+    /// </summary>
+    public static bool EnsureLoaded()
+    {
+        if (!IsAvailable)
+        {
+            return false;
+        }
+
+        if (_loaded)
+        {
+            return true;
+        }
+
+        try
+        {
+            FFmpeg.AutoGen.ffmpeg.RootPath = LibraryDirectory;
+            // 依次触发各库惰性加载：avutil（无依赖）→ avcodec(+swresample) → avformat → swscale。
+            _ = FFmpeg.AutoGen.ffmpeg.av_version_info();
+            _ = FFmpeg.AutoGen.ffmpeg.avcodec_version();
+            _ = FFmpeg.AutoGen.ffmpeg.avformat_version();
+            _ = FFmpeg.AutoGen.ffmpeg.swscale_version();
+            _loaded = true;
+            LastError = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LastError = ex.Message;
+            IsAvailable = false;
+            _loaded = false;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 联机下载并安装 FFmpeg 共享库到配置目录。依次尝试多个源（GitHub 官方
+    /// release → ghps.cc 代理 → gyan.dev），解压后把所需 dll 复制到库目录并重新检测。
+    /// 全部失败时给出手动放置指引。
+    /// </summary>
+    public static async Task<(bool Success, string Message)> InstallAsync(
+        IProgress<FfmpegInstallProgress>? progress = null, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            Directory.CreateDirectory(LibraryDirectory);
+            var githubUrls = BuildGithubCandidates().ToList();
+            var sources = new List<string>();
+            // 用户设置的自定义源最优先；随后是内置默认源（xxtsoft.top 精简镜像）；
+            // 都失败再回退 GitHub / 代理 / gyan。
+            var customUrl = InjectorRuntime.Settings.CustomFfmpegDownloadUrl;
+            if (!string.IsNullOrWhiteSpace(customUrl) &&
+                !customUrl.Equals(DefaultSourceUrl, StringComparison.OrdinalIgnoreCase))
+            {
+                sources.Add(customUrl);
+            }
+
+            sources.Add(DefaultSourceUrl);
+            foreach (var githubUrl in githubUrls)
+            {
+                sources.Add(githubUrl);
+                sources.Add("https://ghps.cc/" + githubUrl);
+            }
+            sources.Add("https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip");
+
+            using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+            foreach (var url in sources)
+            {
+                var sourceHost = new Uri(url).Host;
+                Report(progress, "正在连接下载源…", indeterminate: true,
+                    log: $"→ 尝试从 {sourceHost} 获取 FFmpeg {FfmpegVersion} 共享库");
+                var tempZip = Path.Combine(Path.GetTempPath(), $"classisland-injector-ffmpeg-{Guid.NewGuid():N}.zip");
+                try
+                {
+                    using (var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken))
+                    {
+                        response.EnsureSuccessStatusCode();
+                        var totalBytes = response.Content.Headers.ContentLength ?? 0;
+                        await using (var stream = await response.Content.ReadAsStreamAsync(cancellationToken))
+                        await using (var file = File.Create(tempZip))
+                        {
+                            var buffer = new byte[81920];
+                            long downloaded = 0;
+                            var sw = Stopwatch.StartNew();
+                            var window = new Queue<(long Bytes, double Seconds)>();
+                            long lastReportAt = 0;
+                            while (true)
+                            {
+                                var read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken);
+                                if (read == 0)
+                                {
+                                    break;
+                                }
+
+                                await file.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+                                downloaded += read;
+
+                                // 速度滑动窗口（最近约 3 秒）。
+                                window.Enqueue((read, sw.Elapsed.TotalSeconds));
+                                while (window.Count > 0 && sw.Elapsed.TotalSeconds - window.Peek().Seconds > 3.0)
+                                {
+                                    window.Dequeue();
+                                }
+
+                                var windowStart = window.Count > 0 ? window.Peek().Seconds : sw.Elapsed.TotalSeconds;
+                                var windowSpan = Math.Max(sw.Elapsed.TotalSeconds - windowStart, 0.1);
+                                var speed = window.Sum(w => w.Bytes) / windowSpan;
+                                var remaining = totalBytes > 0 && speed > 0
+                                    ? TimeSpan.FromSeconds((totalBytes - downloaded) / speed)
+                                    : (TimeSpan?)null;
+                                // 节流上报（约 150ms 一次），避免高频回调压垮 UI。
+                                if (sw.ElapsedMilliseconds - lastReportAt >= 150 || downloaded >= totalBytes)
+                                {
+                                    lastReportAt = sw.ElapsedMilliseconds;
+                                    Report(progress, "正在下载…", downloaded, totalBytes, speed, remaining,
+                                        indeterminate: totalBytes <= 0);
+                                }
+                            }
+                        }
+                    }
+
+                    Report(progress, "正在解压 FFmpeg 解码库…", indeterminate: true, log: "→ 下载完成，正在解压…");
+                    var installed = ExtractRequiredLibraries(tempZip);
+                    if (installed != null)
+                    {
+                        Refresh();
+                        if (IsAvailable)
+                        {
+                            Report(progress, "安装完成", indeterminate: true, log: $"✓ 已安装 {installed.Count} 个解码库");
+                            return (true, $"FFmpeg 解码库安装完成（{installed.Count} 个文件）。");
+                        }
+                    }
+                    else
+                    {
+                        Report(progress, "版本不匹配，尝试下一源…", indeterminate: true,
+                            log: "✗ 包内不包含所需版本的解码库");
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    Report(progress, $"{sourceHost} 下载失败，尝试下一源…", indeterminate: true, log: $"✗ {ex.Message}");
+                }
+                finally
+                {
+                    try
+                    {
+                        File.Delete(tempZip);
+                    }
+                    catch
+                    {
+                        // 临时文件删除失败忽略
+                    }
+                }
+            }
+
+            Refresh();
+            var missing = string.Join("、", MissingLibraries);
+            return (false,
+                $"所有下载源均失败。请检查网络后重试，或手动下载 FFmpeg {FfmpegVersion} 共享库\n" +
+                $"（{missing}）放入：{LibraryDirectory}\n然后重新打开本设置页即可生效。");
+        }
+        catch (OperationCanceledException)
+        {
+            return (false, "下载已取消。");
+        }
+        catch (Exception ex)
+        {
+            return (false, $"下载失败：{ex.Message}");
+        }
+    }
+
+    /// <summary>按 avcodec 主版本推断 FFmpeg 主版本（61→7、62→8、63→9）。</summary>
+    private static int GetFfmpegMajor()
+    {
+        var versionMap = GetLibraryVersionMap();
+        return versionMap.TryGetValue("avcodec", out var v) ? v - 54 : 9;
+    }
+
+    /// <summary>
+    /// 构造 BtbN/FFmpeg-Builds latest release 的共享库 zip 候选地址（版本动态匹配）。
+    /// avcodec 主版本无法唯一确定 FFmpeg minor（62 同时对应 8.0/8.1），因此生成多个精确候选依次尝试。
+    /// </summary>
+    private static IEnumerable<string> BuildGithubCandidates()
+    {
+        var major = GetFfmpegMajor();
+        var known = new[] { "9.0", "8.1", "8.0", "7.1", "7.0" };
+        foreach (var version in known.Where(v => v.StartsWith($"{major}.", StringComparison.Ordinal)))
+        {
+            yield return $"https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/" +
+                         $"ffmpeg-n{version}-latest-win64-gpl-shared-{version}.zip";
+        }
+
+        // 兜底：未知 minor 时按 major.0 构造（可能 404，由下一候选兜底）。
+        yield return $"https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/" +
+                     $"ffmpeg-n{major}.0-latest-win64-gpl-shared-{major}.0.zip";
+    }
+
+    /// <summary>从 zip 中提取所需 dll 到库目录；缺少任一所需文件返回 null。</summary>
+    private static List<string>? ExtractRequiredLibraries(string zipPath)
+    {
+        var required = RequiredFileNames;
+        var installed = new List<string>();
+        try
+        {
+            using var zip = ZipFile.OpenRead(zipPath);
+            foreach (var entry in zip.Entries)
+            {
+                var fileName = Path.GetFileName(entry.FullName);
+                if (string.IsNullOrEmpty(fileName))
+                {
+                    continue;
+                }
+
+                var match = required.FirstOrDefault(r => r.Equals(fileName, StringComparison.OrdinalIgnoreCase));
+                if (match == null)
+                {
+                    continue;
+                }
+
+                entry.ExtractToFile(Path.Combine(LibraryDirectory, match), overwrite: true);
+                if (!installed.Contains(match))
+                {
+                    installed.Add(match);
+                }
+            }
+        }
+        catch
+        {
+            return null; // zip 损坏
+        }
+
+        return installed.Count >= required.Count ? installed : null;
+    }
+
+    /// <summary>报告一条安装进度（阶段/字节/速度/ETA/日志）。</summary>
+    private static void Report(IProgress<FfmpegInstallProgress>? progress, string stage,
+        long downloaded = 0, long total = 0, double speedBytesPerSecond = 0, TimeSpan? remaining = null,
+        bool indeterminate = true, string? log = null)
+    {
+        progress?.Report(new FfmpegInstallProgress
+        {
+            Stage = stage,
+            DownloadedBytes = downloaded,
+            TotalBytes = total,
+            SpeedBytesPerSecond = speedBytesPerSecond,
+            Remaining = remaining,
+            Indeterminate = indeterminate,
+            LogLine = log,
+        });
+    }
+}
+
+/// <summary>FFmpeg 安装进度快照（安装器窗口消费）。</summary>
+public sealed class FfmpegInstallProgress
+{
+    /// <summary>当前阶段描述（如「正在下载…」「正在解压…」）。</summary>
+    public string Stage { get; init; } = string.Empty;
+    /// <summary>已下载字节数。</summary>
+    public long DownloadedBytes { get; init; }
+    /// <summary>总字节数（0 表示未知，进度条进入不确定模式）。</summary>
+    public long TotalBytes { get; init; }
+    /// <summary>实时下载速度（字节/秒）。</summary>
+    public double SpeedBytesPerSecond { get; init; }
+    /// <summary>剩余时间估算（依据当前速度）。</summary>
+    public TimeSpan? Remaining { get; init; }
+    /// <summary>进度是否不确定（非下载阶段或总大小未知）。</summary>
+    public bool Indeterminate { get; init; } = true;
+    /// <summary>追加一行安装日志（可为 null）。</summary>
+    public string? LogLine { get; init; }
+}

@@ -145,8 +145,21 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly Spin _videoFillMaxDimension = Spinner(240, 1920, 80, "0");
     private readonly Spin _videoFillFps = Spinner(1, 60, 1, "0");
     private readonly ToggleSwitch _videoFillLoop = Toggle();
+    /// <summary>「使用编辑工程」开关（视频编辑器导出的多片段工程优先于单文件）。</summary>
+    private readonly ToggleSwitch _videoProjectToggle = Toggle();
     /// <summary>「动态视频填充」组（仅专家模式显示）。</summary>
     private SettingsExpander _videoFillGroup = null!;
+    /// <summary>FFmpeg 解码库缺失提示（缺失时显示，含下载按钮）。</summary>
+    private InfoBar _ffmpegInfoBar = null!;
+    private Button _ffmpegDownloadButton = null!;
+    private readonly TextBlock _ffmpegStatusText = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.8 };
+    /// <summary>自定义 FFmpeg 下载源输入（用户自建镜像，始终可编辑，不受库可用性禁用）。</summary>
+    private readonly TextBox _customFfmpegUrl = new()
+    {
+        MinWidth = 300,
+        Watermark = "https://example.com/ffmpeg-8.1-win64-shared-min.zip"
+    };
+    private StackPanel _customFfmpegPanel = null!;
     /// <summary>「打开图层编辑器」入口（仅专家模式显示）。</summary>
     private SettingsExpanderItem _wallpaperEditorItem = null!;
     /// <summary>基础模式专属设置项（专家模式时整体隐藏）。</summary>
@@ -1068,7 +1081,24 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         };
         panel.Children.Add(_wallpaperGroup);
         // 动态视频填充：专家模式专属，紧跟「背景图片」组（视觉上在「打开图层编辑器」按钮下方）。
-        _videoFillGroup = SwitchableGroup("\uE7F4", "动态视频填充", "用本地视频作为主界面动态背景（Media Foundation 解码，建议 H.264/MP4）。", _videoFillEnabled,
+        // 视频解码完全依赖 FFmpeg 共享库：库缺失时整组禁用（见 RefreshFfmpegAvailability），
+        // 并在组下方显示 InfoBar 引导联机下载。
+        _ffmpegDownloadButton = Button("下载 FFmpeg 解码库", OpenFfmpegInstaller);
+        _ffmpegDownloadButton.Name = "FfmpegDownloadButton";
+        _ffmpegStatusText.Text = string.Empty;
+        _ffmpegInfoBar = new InfoBar
+        {
+            Severity = InfoBarSeverity.Warning,
+            Title = "缺少 FFmpeg 解码库",
+            IsClosable = false,
+            IsOpen = false,
+            ActionButton = _ffmpegDownloadButton,
+            Content = _ffmpegStatusText,
+        };
+        _ffmpegInfoBar.Name = "FfmpegInfoBar";
+        _videoFillGroup = Group("\uE7F4", "动态视频填充", "用本地视频作为主界面动态背景（FFmpeg 解码，建议 H.264/MP4）。",
+            Item("打开视频编辑器", "像 PR 一样裁剪/拼接视频片段、调整比例，渲染并应用到主界面。", Button("打开编辑器", OpenVideoEditor)),
+            Item("使用编辑工程", "优先播放视频编辑器导出的多片段工程；关闭则使用下方单文件。", _videoProjectToggle),
             Item("视频文件", "MP4 等视频文件的路径。", VideoFillPathFooter()),
             Item("不透明度", "视频填充的整体透明度。", _videoFillOpacity),
             Item("显示方式", "视频在主界面内的显示方式。", _videoFillFit),
@@ -1078,7 +1108,33 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("循环播放", "播放到结尾后自动回到开头继续。", _videoFillLoop));
         _videoFillGroup.Name = "VideoFillGroup";
         _videoFillEnabled.Name = "VideoFillToggle";
+        _videoFillGroup.Footer = _videoFillEnabled;
+        _videoFillEnabled.PropertyChanged += (_, _) => RefreshFfmpegAvailability();
         panel.Children.Add(_videoFillGroup);
+        panel.Children.Add(_ffmpegInfoBar);
+        // 自定义 FFmpeg 下载源：始终可编辑（在组外，不受库可用性禁用），供用户自建镜像。
+        _customFfmpegPanel = new StackPanel
+        {
+            Spacing = 4,
+            Margin = new Thickness(0, 6, 0, 0),
+            Children =
+            {
+                new TextBlock { Text = "自定义 FFmpeg 下载源（可选）", FontWeight = FontWeight.SemiBold },
+                new TextBlock
+                {
+                    Text = "安装器默认优先从内置精简源下载（xxtsoft.top/support/injector/…），失败自动回退 GitHub / 代理 / gyan。也可以填写你自己的镜像直链（可选）。",
+                    FontSize = 12,
+                    Opacity = 0.6,
+                    TextWrapping = TextWrapping.Wrap
+                },
+                _customFfmpegUrl
+            }
+        };
+        _customFfmpegPanel.Name = "CustomFfmpegSourcePanel";
+        panel.Children.Add(_customFfmpegPanel);
+        // 每次进入设置页都重新检测 FFmpeg 库（支持手动放置 dll 后重开本页生效）。
+        FFmpegRuntime.Refresh();
+        RefreshFfmpegAvailability();
         UpdateWallpaperModeVisibility();
         _smtcDynamicGroup = Group("\uE51E", "动态取色", "从音乐软件或浏览器获取 SMTC 信息，并进行莫奈取色",
             Item("暂停/停止时恢复原色", "媒体暂停或停止播放时，从专辑取色平滑恢复为原始颜色，恢复播放后再跟随专辑。", _revertColorsWhenPaused),
@@ -2943,6 +2999,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _videoFillMaxDimension.DoubleValue = settings.VideoFillMaxDimension;
         _videoFillFps.DoubleValue = settings.VideoFillTargetFps;
         _videoFillLoop.IsChecked = settings.VideoFillLoop;
+        _videoProjectToggle.IsChecked = settings.VideoProjectEnabled;
+        _customFfmpegUrl.Text = settings.CustomFfmpegDownloadUrl;
         UpdateWallpaperModeVisibility();
         Select(_visibilityAnimation, VisibilityAnimations, settings.VisibilityAnimation);
         _visibilityAnimationEnabled.IsChecked = settings.VisibilityAnimation != VisibilityAnimation.None;
@@ -3109,6 +3167,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.VideoFillMaxDimension = (int)Math.Round(_videoFillMaxDimension.DoubleValue);
             settings.VideoFillTargetFps = _videoFillFps.DoubleValue;
             settings.VideoFillLoop = _videoFillLoop.IsChecked == true;
+            settings.VideoProjectEnabled = _videoProjectToggle.IsChecked == true;
+            settings.CustomFfmpegDownloadUrl = _customFfmpegUrl.Text?.Trim() ?? string.Empty;
             settings.VisibilityAnimation = _visibilityAnimationEnabled.IsChecked == true
                 ? Selected(_visibilityAnimation, VisibilityAnimation.None)
                 : VisibilityAnimation.None;
@@ -3450,6 +3510,68 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         }
     }
 
+    /// <summary>按 FFmpeg 解码库可用性刷新视频填充组：缺失时禁用开关与各设置项并显示下载引导。</summary>
+    private void RefreshFfmpegAvailability()
+    {
+        if (_videoFillGroup == null || _ffmpegInfoBar == null)
+        {
+            return;
+        }
+
+        var available = FFmpegRuntime.IsAvailable;
+        _ffmpegInfoBar.IsOpen = !available;
+        _ffmpegInfoBar.Severity = available ? InfoBarSeverity.Success : InfoBarSeverity.Warning;
+        _ffmpegInfoBar.Title = available ? "FFmpeg 解码库已就绪" : "缺少 FFmpeg 解码库";
+        _ffmpegStatusText.Text = available
+            ? string.Empty
+            : $"视频背景依赖 FFmpeg {FFmpegRuntime.FfmpegVersion} 共享库。点击「下载 FFmpeg 解码库」自动获取安装，" +
+              $"或手动将（{string.Join("、", FFmpegRuntime.MissingLibraries)}）放入：\n{FFmpegRuntime.LibraryDirectory}";
+        _videoFillEnabled.IsEnabled = available;
+        var enabled = available && _videoFillEnabled.IsChecked == true;
+        foreach (var item in _videoFillGroup.Items)
+        {
+            if (item is Control control)
+            {
+                control.IsEnabled = enabled;
+            }
+        }
+    }
+
+    /// <summary>打开视频编辑器（PR 风格）。关闭后刷新本页（工程可能已渲染应用）。</summary>
+    private void OpenVideoEditor()
+    {
+        if (VideoEditorWindow.Current is { } existing)
+        {
+            existing.Activate();
+            return;
+        }
+
+        SaveAndApply();
+        var window = new VideoEditorWindow();
+        window.Closed += (_, _) => Dispatcher.UIThread.Post(LoadFromSettings);
+        window.Show();
+    }
+
+    /// <summary>打开 FFmpeg 解码库安装器窗口（仿 Linux 软件包管理器，含进度/速度/剩余时间估算）。</summary>
+    private void OpenFfmpegInstaller()
+    {
+        // 单实例：已打开时聚焦现有窗口。
+        if (FfmpegInstallWindow.Current is { } existing)
+        {
+            existing.Activate();
+            return;
+        }
+
+        var window = new FfmpegInstallWindow();
+        window.Closed += (_, _) =>
+        {
+            // 安装窗口关闭后重新检测可用性并刷新本页状态（下载成功或手动放库均生效）。
+            FFmpegRuntime.Refresh();
+            RefreshFfmpegAvailability();
+        };
+        window.Show();
+    }
+
     private Control VideoFillPathFooter()
     {
         var pickButton = Button("选择…", () => _ = PickVideoFillPathAsync());
@@ -3534,6 +3656,15 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             : InjectorRuntime.Settings.WallpaperDesignerEnabled;
         _wallpaperEditorItem.IsVisible = designer;
         _videoFillGroup.IsVisible = designer;
+        if (_ffmpegInfoBar != null)
+        {
+            _ffmpegInfoBar.IsVisible = designer;
+        }
+
+        if (_customFfmpegPanel != null)
+        {
+            _customFfmpegPanel.IsVisible = designer;
+        }
         _wallpaperSourceItem.IsVisible = !designer;
         _wallpaperOpacityItem.IsVisible = !designer;
         _wallpaperDisplayModeItem.IsVisible = !designer;

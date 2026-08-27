@@ -6,8 +6,8 @@ namespace ClassIslandInjector;
 
 /// <summary>
 /// 用 FFmpeg（自带解码器）逐帧解码视频 → 32bpp BGRA（自上而下、alpha=0xFF）。
-/// 完全绕开系统 Media Foundation——部分机器（如本机）MF 解码管道异常，
-/// 但 FFmpeg 自带解码器，任何 Windows 都能解 H.264/HEVC 等。
+/// 不再回退系统 Media Foundation（本机 MF 解码管道异常，且其 vtable 手动调用曾触发
+/// 原生崩溃）；解码库缺失时由 <see cref="FFmpegRuntime"/> 检测并引导下载。
 /// 纯拉帧模型：<see cref="ReadFrame"/> 每次返回一帧，EOF 由调用方决定循环（Restart）。
 /// </summary>
 internal sealed unsafe class FFmpegVideoDecoder : IDisposable
@@ -26,6 +26,9 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
     private int _outW;
     private int _outH;
     private byte[]? _bgra;
+
+    /// <summary>视频总时长（秒，来自容器 duration；0 表示未知）。</summary>
+    public double Duration { get; private set; }
 
     /// <summary>输出帧宽（BGRA）。</summary>
     public int OutputWidth => _outW;
@@ -101,7 +104,7 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
             }
 
             _sws = ffmpeg.sws_getContext(srcW, srcH, (AVPixelFormat)cp->format,
-                _outW, _outH, AVPixelFormat.AV_PIX_FMT_BGRA, ffmpeg.SWS_BILINEAR, null, null, null);
+                _outW, _outH, AVPixelFormat.AV_PIX_FMT_BGRA, (int)SwsFlags.SWS_BILINEAR, null, null, null);
             if (_sws == null)
             {
                 Log("sws_getContext 失败");
@@ -111,6 +114,7 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
             _pkt = ffmpeg.av_packet_alloc();
             _frame = ffmpeg.av_frame_alloc();
             _bgra = new byte[_outW * _outH * 4];
+            Duration = _fmtCtx->duration > 0 ? _fmtCtx->duration / 1000000.0 : 0;
             Log($"已打开 {path}: {srcW}x{srcH} → {_outW}x{_outH}（解码器={name}）");
             return true;
         }
@@ -191,6 +195,47 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
         catch (Exception ex)
         {
             Log($"Restart 异常: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>跳到指定时间点（秒），供视频片段入点裁剪。用视频流的 time_base 换算 timestamp。</summary>
+    public bool SeekTo(double seconds)
+    {
+        if (_fmtCtx == null || _codecCtx == null || _streamIndex < 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            if (seconds <= 0)
+            {
+                return Restart();
+            }
+
+            var stream = _fmtCtx->streams[_streamIndex];
+            var tb = stream->time_base;
+            var tbSeconds = tb.num / (double)tb.den;
+            if (tbSeconds <= 0)
+            {
+                return Restart();
+            }
+
+            var ts = (long)(seconds / tbSeconds);
+            var hr = ffmpeg.av_seek_frame(_fmtCtx, _streamIndex, ts, ffmpeg.AVSEEK_FLAG_BACKWARD);
+            if (hr < 0)
+            {
+                Log($"av_seek_frame 失败 {hr}（秒={seconds:0.###}）");
+                return false;
+            }
+
+            ffmpeg.avcodec_flush_buffers(_codecCtx);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log($"SeekTo 异常: {ex.Message}");
             return false;
         }
     }

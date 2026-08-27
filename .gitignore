@@ -62,3 +62,12 @@ Desktop.ini
 
 # ===== FFmpeg 下载/解压缓存（dll 通过 NuGet 或手动部署，不入库）=====
 tools/ffmpeg-dl/
+
+# ===== 根目录临时图片（无代码引用，勿提交）=====
+/image.png
+
+# ===== 已废弃模块残留（WMF 已从 git 删除，本地文件勿再入库）=====
+/MfVideoFrameSource.cs
+
+# ===== 分发产物（ffmpeg 精简包等，体积大，不入库）=====
+/dist/

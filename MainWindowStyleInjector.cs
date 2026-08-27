@@ -145,13 +145,29 @@ internal sealed class MainWindowStyleInjector : IDisposable
     /// <summary>动态视频填充宿主（插在底图宿主之上、宿主内容之下，专家模式配置）。</summary>
     private Border? _videoFillHost;
     private Image? _videoFillImage;
-    /// <summary>动态视频填充解码器（Media Foundation Source Reader）。</summary>
-    private MfVideoFrameSource? _videoSource;
+    /// <summary>多轨图层容器（工程模式：每轨一个 Image，轨道号越大越靠上层）。</summary>
+    private Grid? _videoTracksHost;
+    private readonly List<VideoTrackLayer> _videoTrackLayers = [];
+    /// <summary>动态视频填充解码器（FFmpeg，见 <see cref="FFmpegRuntime"/> 检测可用性）。</summary>
+    private VideoFrameSource? _videoSource;
     /// <summary>动态视频填充当前帧位图（按解码尺寸复用）。</summary>
     private WriteableBitmap? _videoFillBitmap;
     private BlurEffect? _videoFillBlur;
     /// <summary>解码重启签名（路径|最大尺寸|帧率|循环），变化时重启解码线程。</summary>
     private string _videoFillSignature = string.Empty;
+    /// <summary>视频工程播放器（多片段拼接；启用工程时替代单文件解码器）。</summary>
+    private VideoProjectPlayer? _videoProjectPlayer;
+    /// <summary>工程重启签名（路径|修改时间|尺寸|帧率），变化时重启播放器。</summary>
+    private string _videoProjectSignature = string.Empty;
+
+    /// <summary>视频工程多轨图层：一轨一个 Image + 复用位图。</summary>
+    private sealed class VideoTrackLayer
+    {
+        public required int Track { get; init; }
+        public required Image Image { get; init; }
+        /// <summary>字段（非属性）：需以 ref 传给位图写入助手。</summary>
+        public WriteableBitmap? Bitmap;
+    }
     /// <summary>每行主界面的底纹宿主（键为 MainWindowLine 模板 GridRoot），
     /// 插在底色填充之上、组件内容之下。</summary>
     private readonly Dictionary<Grid, Border> _textureHosts = [];
@@ -732,6 +748,13 @@ internal sealed class MainWindowStyleInjector : IDisposable
         if (_wallpaperHost != null)
         {
             UpdateWallpaperBounds(descendants);
+        }
+
+        // 视频填充宿主同样在 50ms 轮询中同步边界：分体开关/行级分体切换会重建行模板，
+        // 背景 Border 结构变化后这里能及时把视频约束回框架内。
+        if (_videoFillHost != null)
+        {
+            UpdateVideoFillBounds(descendants);
         }
 
         if (_textureHosts.Count > 0 ||
@@ -1963,7 +1986,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
     }
 
     /// <summary>
-    /// 把覆盖层宿主（底图）约束到主界面各行的 BackgroundBorder 并集边界内。
+    /// 把覆盖层宿主（底图/视频）约束到主界面各行的背景并集边界内。
+    /// 同时识别非分体的 BackgroundBorder 与分体模式每行根组件的 line-background
+    /// （分体下宿主隐藏 BackgroundBorder、改由根组件背景 Border 提供真实背景）。
     /// </summary>
     private void ApplyOverlayHostBounds(Border host, IEnumerable<Control> descendants)
     {
@@ -1973,7 +1998,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         var borders = descendants.OfType<Border>()
-            .Where(x => x.Name == HostContract.BackgroundBorder && x.IsVisible && x.Bounds.Width > 0 && x.Bounds.Height > 0)
+            .Where(x => (x.Name == HostContract.BackgroundBorder || IsSplitComponentBackground(x)) &&
+                        x.IsVisible && x.Bounds.Width > 0 && x.Bounds.Height > 0)
             .ToArray();
         if (borders.Length == 0)
         {
@@ -2057,7 +2083,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         DisposeWallpaperBitmap();
     }
 
-    // ============ 动态视频填充（Media Foundation，专家模式）============
+    // ============ 动态视频填充（FFmpeg，专家模式）============
 
     /// <summary>
     /// 应用 / 更新动态视频填充：启用了视频路径时建立宿主并启动解码线程（参数变化时重启），
@@ -2070,39 +2096,37 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
+        // 视频背景来源：视频工程（多片段拼接）优先，否则单文件。
         var enabled = _settings.Enabled && _settings.VideoFillEnabled &&
-                      !string.IsNullOrWhiteSpace(_settings.VideoFillPath);
+                      (HasVideoProject() || !string.IsNullOrWhiteSpace(_settings.VideoFillPath));
         if (!enabled)
         {
             RemoveVideoFill();
             return;
         }
 
-        var path = _settings.VideoFillPath;
-        if (_videoFillHost == null)
+        // FFmpeg 解码库缺失或加载失败：禁用视频填充（设置页同时禁用相关选项并引导下载）。
+        if (!FFmpegRuntime.IsAvailable || !FFmpegRuntime.EnsureLoaded())
         {
-            _videoFillImage = new Image
-            {
-                IsHitTestVisible = false,
-                Stretch = Stretch.Fill
-            };
-            _videoFillHost = new Border
-            {
-                IsHitTestVisible = false,
-                ClipToBounds = true,
-                VerticalAlignment = VerticalAlignment.Stretch,
-                HorizontalAlignment = HorizontalAlignment.Stretch,
-                Child = _videoFillImage
-            };
-            var islandGrid = _mainWindow.FindControl<Grid>(HostContract.GridRoot);
-            if (islandGrid != null)
-            {
-                PositionVideoFillHost(islandGrid);
-            }
+            RemoveVideoFill();
+            return;
         }
 
+        if (HasVideoProject())
+        {
+            // 切到工程模式：停掉单文件解码器。
+            _videoSource?.Dispose();
+            _videoSource = null;
+            _videoFillSignature = string.Empty;
+            ApplyVideoProjectFill();
+            return;
+        }
+
+        // ---- 单文件模式 ----
+        var path = _settings.VideoFillPath;
+        EnsureVideoFillHost();
         // 透明度 / 模糊跟随设置即时生效。
-        _videoFillHost.Opacity = _settings.VideoFillOpacity;
+        _videoFillHost!.Opacity = _settings.VideoFillOpacity;
         ApplyVideoFillBlur();
 
         // 参数或路径变化时重启解码线程（保留宿主与位图）。
@@ -2113,9 +2137,10 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
+        StopVideoProjectPlayer();
         _videoSource?.Dispose();
         _videoSource = null;
-        var source = new MfVideoFrameSource();
+        var source = new VideoFrameSource();
         if (!source.Open(path, _settings.VideoFillMaxDimension))
         {
             RemoveVideoFill();
@@ -2126,6 +2151,174 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _videoSource = source;
         source.Start(OnVideoFrame, _settings.VideoFillTargetFps, _settings.VideoFillLoop);
         UpdateVideoFillBounds();
+    }
+
+    /// <summary>当前是否启用了视频工程背景（路径存在时）。</summary>
+    private bool HasVideoProject() =>
+        _settings.VideoProjectEnabled &&
+        !string.IsNullOrWhiteSpace(_settings.VideoProjectPath) &&
+        File.Exists(_settings.VideoProjectPath);
+
+    /// <summary>建立视频填充宿主（Image + Border，插到底图宿主之后）。幂等。</summary>
+    private void EnsureVideoFillHost()
+    {
+        if (_videoFillHost != null)
+        {
+            return;
+        }
+
+        _videoFillImage = new Image
+        {
+            IsHitTestVisible = false,
+            Stretch = Stretch.Fill
+        };
+        _videoTracksHost = new Grid { IsHitTestVisible = false };
+        _videoTracksHost.Children.Add(_videoFillImage);
+        _videoFillHost = new Border
+        {
+            IsHitTestVisible = false,
+            ClipToBounds = true,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Child = _videoTracksHost
+        };
+        var islandGrid = _mainWindow?.FindControl<Grid>(HostContract.GridRoot);
+        if (islandGrid != null)
+        {
+            PositionVideoFillHost(islandGrid);
+        }
+    }
+
+    /// <summary>按视频工程（多片段拼接）建立播放：工程变化时重建播放器，否则只同步边界。</summary>
+    private void ApplyVideoProjectFill()
+    {
+        if (_mainWindow == null)
+        {
+            return;
+        }
+
+        EnsureVideoFillHost();
+        _videoFillHost!.Opacity = _settings.VideoFillOpacity;
+        ApplyVideoFillBlur();
+
+        var path = _settings.VideoProjectPath;
+        var signature = $"{path}|{File.GetLastWriteTimeUtc(path).Ticks}|{_settings.VideoFillMaxDimension}|{_settings.VideoFillTargetFps}";
+        if (_videoProjectPlayer != null && _videoProjectSignature == signature)
+        {
+            UpdateVideoFillBounds();
+            return;
+        }
+
+        _videoProjectPlayer?.Dispose();
+        _videoProjectPlayer = null;
+        var project = VideoProjectStore.Load(path);
+        if (project.Clips.Count == 0)
+        {
+            RemoveVideoFill();
+            return;
+        }
+
+        SyncVideoTrackLayers(project);
+        _videoProjectSignature = signature;
+        _videoProjectPlayer = new VideoProjectPlayer(project, _settings.VideoFillMaxDimension,
+            (int)_settings.VideoFillTargetFps, OnProjectFrame);
+        _videoProjectPlayer.Start();
+        UpdateVideoFillBounds();
+    }
+
+    /// <summary>工程播放帧回调（播放器线程）：投递 UI 线程更新对应轨道位图并应用其变换。</summary>
+    private void OnProjectFrame(VideoFrame frame, VideoClip clip, int track)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            try
+            {
+                if (_videoFillHost == null || track < 0 || track >= _videoTrackLayers.Count)
+                {
+                    return;
+                }
+
+                var layer = _videoTrackLayers[track];
+                WriteFrameToImage(layer.Image, ref layer.Bitmap, frame);
+                ApplyVideoClipTransform(layer.Image, clip, _videoFillHost);
+                layer.Image.IsVisible = true;
+            }
+            catch
+            {
+                // 解码器释放竞态 / 位图已释放等：忽略，不冒泡到宿主。
+            }
+            finally
+            {
+                // 通知播放器本轨道帧已消费，允许覆写缓冲。
+                _videoProjectPlayer?.MarkTrackConsumed(track);
+            }
+        });
+    }
+
+    /// <summary>按轨道数重建多轨图层（清空旧的，按轨道号从底到顶添加 Image）。</summary>
+    private void SyncVideoTrackLayers(VideoProject project)
+    {
+        if (_videoTracksHost == null)
+        {
+            return;
+        }
+
+        foreach (var layer in _videoTrackLayers)
+        {
+            layer.Bitmap?.Dispose();
+        }
+
+        _videoTrackLayers.Clear();
+        _videoTracksHost.Children.Clear();
+        var trackCount = project.TrackCount;
+        for (var t = 0; t < trackCount; t++)
+        {
+            var img = new Image { IsHitTestVisible = false, Stretch = Stretch.Fill, IsVisible = false };
+            _videoTrackLayers.Add(new VideoTrackLayer { Track = t, Image = img });
+            _videoTracksHost.Children.Add(img); // 后添加的渲染在上层：轨道号越大越靠上
+        }
+    }
+
+    /// <summary>把片段变换（缩放/旋转/偏移/不透明度/裁剪）应用到指定轨道 Image。</summary>
+    private void ApplyVideoClipTransform(Image image, VideoClip clip, Control host)
+    {
+        if (image == null || host == null)
+        {
+            return;
+        }
+
+        var group = new TransformGroup();
+        group.Children.Add(new ScaleTransform(clip.Scale, clip.Scale));
+        group.Children.Add(new RotateTransform(clip.Rotation));
+        group.Children.Add(new TranslateTransform(
+            clip.OffsetX * host.Bounds.Width,
+            clip.OffsetY * host.Bounds.Height));
+        image.RenderTransform = group;
+        image.RenderTransformOrigin = new RelativePoint(0.5, 0.5, RelativeUnit.Relative);
+        image.Opacity = Math.Clamp(clip.Opacity, 0, 1);
+
+        var w = host.Bounds.Width;
+        var h = host.Bounds.Height;
+        if (clip.CropLeft > 0 || clip.CropTop > 0 || clip.CropRight < 1 || clip.CropBottom < 1)
+        {
+            image.Clip = new RectangleGeometry(new Rect(
+                clip.CropLeft * w,
+                clip.CropTop * h,
+                Math.Max(0, (clip.CropRight - clip.CropLeft) * w),
+                Math.Max(0, (clip.CropBottom - clip.CropTop) * h)));
+        }
+        else
+        {
+            image.Clip = null;
+        }
+    }
+
+    /// <summary>停止工程播放器并清空签名。</summary>
+    private void StopVideoProjectPlayer()
+    {
+        _videoProjectPlayer?.Dispose();
+        _videoProjectPlayer = null;
+        _videoProjectSignature = string.Empty;
     }
 
     /// <summary>把视频填充宿主插到底图宿主之后（wallpaper 之上、宿主内容之下）。</summary>
@@ -2173,7 +2366,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
     }
 
     /// <summary>解码线程回调：把帧投递到 UI 线程更新位图，处理完通知解码器可写下一帧。</summary>
-    private void OnVideoFrame(MfVideoFrame frame)
+    private void OnVideoFrame(VideoFrame frame)
     {
         Dispatcher.UIThread.Post(() =>
         {
@@ -2192,26 +2385,32 @@ internal sealed class MainWindowStyleInjector : IDisposable
         });
     }
 
-    /// <summary>把解码帧写入可复用的 WriteableBitmap 并挂到视频填充 Image。</summary>
-    private void UpdateVideoFillImage(MfVideoFrame frame)
+    /// <summary>把解码帧写入可复用的 WriteableBitmap 并挂到单文件视频填充 Image。</summary>
+    private void UpdateVideoFillImage(VideoFrame frame)
     {
         if (_videoFillImage == null || _videoSource == null)
         {
             return;
         }
 
+        WriteFrameToImage(_videoFillImage, ref _videoFillBitmap, frame);
+    }
+
+    /// <summary>把解码帧写入可复用的 WriteableBitmap 并挂到目标 Image（显式失效触发局部重绘）。</summary>
+    private static void WriteFrameToImage(Image image, ref WriteableBitmap? bitmap, VideoFrame frame)
+    {
         var w = frame.Width;
         var h = frame.Height;
-        if (_videoFillBitmap == null ||
-            _videoFillBitmap.PixelSize.Width != w ||
-            _videoFillBitmap.PixelSize.Height != h)
+        if (bitmap == null ||
+            bitmap.PixelSize.Width != w ||
+            bitmap.PixelSize.Height != h)
         {
-            _videoFillBitmap?.Dispose();
-            _videoFillBitmap = new WriteableBitmap(new PixelSize(w, h), new Vector(96, 96),
+            bitmap?.Dispose();
+            bitmap = new WriteableBitmap(new PixelSize(w, h), new Vector(96, 96),
                 PixelFormat.Bgra8888, AlphaFormat.Premul);
         }
 
-        using (var fb = _videoFillBitmap.Lock())
+        using (var fb = bitmap.Lock())
         {
             var srcStride = frame.Stride;
             var dstStride = fb.RowBytes;
@@ -2232,7 +2431,10 @@ internal sealed class MainWindowStyleInjector : IDisposable
             }
         }
 
-        _videoFillImage.Source = _videoFillBitmap;
+        image.Source = bitmap;
+        // Source 是复用的同一实例：引用不变时 Image 不会自动触发重绘（仅当主界面动画时钟
+        // 恰好全窗口重绘时才会更新），显式失效让 Avalonia 只重绘视频区域，降低整体开销。
+        image.InvalidateVisual();
     }
 
     /// <summary>按设置对视频填充宿主应用高斯模糊（0 为关闭）。</summary>
@@ -2258,11 +2460,18 @@ internal sealed class MainWindowStyleInjector : IDisposable
     /// <summary>移除视频填充：停解码线程、释放位图与宿主。</summary>
     private void RemoveVideoFill()
     {
+        StopVideoProjectPlayer();
         _videoSource?.Dispose();
         _videoSource = null;
         _videoFillSignature = string.Empty;
         _videoFillBitmap?.Dispose();
         _videoFillBitmap = null;
+        foreach (var layer in _videoTrackLayers)
+        {
+            layer.Bitmap?.Dispose();
+        }
+
+        _videoTrackLayers.Clear();
         _videoFillImage = null;
         if (_videoFillHost != null && _videoFillHost.Parent is Panel panel)
         {
@@ -2270,6 +2479,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         _videoFillHost = null;
+        _videoTracksHost = null;
         _videoFillBlur = null;
     }
 

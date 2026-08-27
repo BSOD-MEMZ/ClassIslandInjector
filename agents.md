@@ -20,6 +20,8 @@
 | `MainWindowStyleInjector.cs`                                                                    | 核心注入器：注入/恢复主界面视觉效果、动态取色过渡、底图、Ripple、倒计时箭头等             |
 | `SmtcWatcher.cs`                                                                                | 事件驱动的 SMTC 会话监听器（WinRT），推送取色结果/缩略图/播放状态                         |
 | `SmtcAlbumColorPicker.cs`                                                                       | 纯取色工具（MaterialColorUtilities），**不含 WinRT**；含诊断日志                    |
+| `VideoFrameSource.cs` / `FFmpegVideoDecoder.cs` / `FFmpegRuntime.cs`                         | 视频背景解码（**纯 FFmpeg，无 WMF**）：后台解码线程、FFmpeg 解码器、库检测 + 联机下载 |
+| `VideoProject.cs` / `VideoProjectPlayer.cs` / `Views/VideoEditorWindow.cs`               | 视频工程（多片段拼接/变换）与 PR 风格视频编辑器（素材库/舞台/属性/时间轴）            |
 | `Views/InjectorSettingsPage.cs`                                                                 | 设置页 UI（FluentAvalonia`SettingsExpander`/`InfoBar`/`ContentDialog`）             |
 | `Views/IslandVisualEditor.cs`                                                                   | 可视化编辑器窗口 + 直接操作画布                                                           |
 | `CountdownArrowOverlay.cs` / `IslandRippleOverlay.cs` / `SuppressingTopmostEffectPlayer.cs` | 覆盖层效果组件                                                                            |
@@ -94,7 +96,7 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
 - 底色填充必须同时识别两者：非分体 `BackgroundBorder`（按 Name）+ 分体根组件背景（Name 空、带 `line-background` 类、且不在 `Grid#GridOverlay` 内，见 `IsSplitComponentBackground()`）。`GridOverlay` 内提醒覆盖层的 Border 也带 `line-background` 类，必须排除。
 - 分体开关/行级分体切换会即时重建行模板，装饰需重应用：插件订阅宿主 `Settings.IsIslandSeperated` 的 PropertyChanged（`EnsureSplitSwitchSubscription`）+ `OnStateTick` 50ms 轮询统计分体背景数量签名兜底。
 - 样式类名 `line-background` 在 `HostContract.LineBackgroundClass`，纳入契约对照表（`classNames` 分组），宿主升级可联网覆盖。
-- 目前仅底色/边框/阴影装饰适配了分体；底纹（`ApplyTextureHost`）、底图（`ApplyWallpaper`）仍按 `BackgroundBorder` 定位宿主，分体模式下尚未适配。
+- 目前底色/边框/阴影装饰已适配分体；底图/视频覆盖层宿主约束（`ApplyOverlayHostBounds`）也已识别分体背景（`IsSplitComponentBackground`），会把覆盖层约束到分体块并集边界内；仅底纹（`ApplyTextureHost`/`PositionTextureHost`）仍按 `BackgroundBorder` 定位，分体模式下尚未适配。
 
 ### 8. 分体块独立配色（一个分体一个颜色）
 
@@ -106,6 +108,19 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
 - 分块显示名：优先 `NameCache`（宿主可能未填充），其次 `AssociatedComponentInfo.Name`（组件类型名如「时钟」「课程表」），最后回退 Id 前缀（`GetSplitBlockDisplayName`）。
 - 运行时分块级背景**不依赖**全局「底色填充」开关：块有配置且 `Enabled` 时直接生效（用户显式应用了块配色）。
 - 新分体块设置字段需同步：字段 → 属性 → `CopyFrom` → 设置页 `LoadSplitBlockToEditor` / `ApplySplitBlockColorsToSelection`。
+
+### 9. 视频背景 = 纯 FFmpeg（无 WMF 备胎）
+
+- 视频解码只有 `FFmpegVideoDecoder`（FFmpeg.AutoGen **9.0.1**，惰性加载）；**WMF / Media Foundation 已整体删除**（曾因 vtable 手动调用 `SetCurrentMediaTypeByIndex` 触发原生访问违规击穿进程）。
+- FFmpeg 原生库（`avcodec-63.dll` 等，版本由 `ffmpeg.LibraryVersionMap` 动态决定）部署在**配置目录\ffmpeg**（用户数据目录，deploy 不清空），通过 `ffmpeg.RootPath` 指向。
+- `FFmpegRuntime` 职责：
+  - `Refresh()` 启动/下载后检测可用性——**仅查文件存在**。缺失时**绝不调用任何 ffmpeg 函数**（失败委托会被缓存为占位，之后装好库也要重启才能恢复）。
+  - `EnsureLoaded()` 仅在文件齐全时调用：设置 `RootPath` 并触发各库惰性加载验证（avutil → avcodec+swresample → avformat → swscale）。
+  - `InstallAsync()` 多源联机下载：**内置默认源 `https://xxtsoft.top/support/injector/ffmpeg-8.1-win64-shared-min.zip`（用户自建精简镜像，7.6MB，`FFmpegRuntime.DefaultSourceUrl`）** → 用户设置的自定义源（`CustomFfmpegDownloadUrl`，设置页「自定义 FFmpeg 下载源」）→ GitHub BtbN latest → ghps.cc 代理 → gyan.dev；解压匹配版本 dll 后重新检测。精简源包制作见 `dist/ffmpeg-8.1-win64-shared-min.zip` 与 `dist/README-ffmpeg-source.md`。
+- 运行时 `ApplyVideoFill` 先查 `FFmpegRuntime.IsAvailable` + `EnsureLoaded()`，缺失直接降级为无视频（不崩溃）。设置页缺失时禁用整个视频组并显示下载 InfoBar（`RefreshFfmpegAvailability`）；点击「下载」打开 `Views/FfmpegInstallWindow` 安装器窗口（仿 Linux 软件包管理器：进度条/实时速度/剩余时间估算/日志区，单实例，可取消），关闭窗口后 `FFmpegRuntime.Refresh()` 重新检测。
+- **视频卡顿修复要点**：覆盖层宿主必须约束到框架内（`ApplyOverlayHostBounds` 识别分体背景，见约束 7）；`_videoFillImage.Source` 是复用的同一实例，引用不变时 `Image` 不会自动重绘（曾依赖主界面动画时钟全窗口重绘导致卡爆），需每帧 `InvalidateVisual()` 局部重绘；`OnStateTick` 50ms 轮询同步 `UpdateVideoFillBounds`。
+- **视频工程（多片段拼接）**：`VideoProject`（JSON 存配置目录 video-project.json）+ `VideoProjectPlayer`（顺序播放片段、跳过入点、按帧数到出点切换下一片段、播完整个时间轴循环；**切换前先 `current.Stop()` 再 Post 到 UI 打开下一片段，否则旧解码线程继续读帧导致级联重开**）+ `Views/VideoEditorWindow`（PR 风格：左素材库、中舞台（宽高比 = 主界面 `GetCurrentIslandSize`）、右片段属性、底时间轴；编辑后「渲染并应用」写工程并 `VideoProjectEnabled=true`）。运行时 `ApplyVideoFill` 检测到工程（`HasVideoProject()`）则走 `ApplyVideoProjectFill`，单文件模式停工程播放器（反之亦然）。片段入点裁剪用 `FFmpegVideoDecoder.SeekTo`（`av_seek_frame` + 流 time_base 换算）。
+- **版本号必须从 `ffmpeg.LibraryVersionMap` 动态读取，勿硬编码**：9.0 是 avcodec-63/avformat-63/avutil-61/swresample-7/swscale-10；7.1 是 avcodec-61/.../swscale-8。升级 FFmpeg.AutoGen 时 `FFmpegVideoDecoder` 的 `ffmpeg.SWS_BILINEAR` 已改为 `(int)SwsFlags.SWS_BILINEAR`（9.x 起是枚举）。
 
 ## 设置持久化
 

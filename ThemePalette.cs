@@ -94,6 +94,12 @@ public static class ThemePalette
         return Color.FromArgb(alpha, c.R, c.G, c.B);
     }
 
+    /// <summary>主题强调色画刷。</summary>
+    public static IBrush AccentBrush() => new SolidColorBrush(AccentColor());
+
+    /// <summary>主题强调色 + 不透明度的画刷。</summary>
+    public static IBrush AccentBrushWithAlpha(byte alpha) => new SolidColorBrush(AccentColorWithAlpha(alpha));
+
     /// <summary>编辑器窗口的基础背景。</summary>
     public static IBrush WindowBackground() => new SolidColorBrush(IsDarkTheme()
         ? Color.FromRgb(24, 26, 30)

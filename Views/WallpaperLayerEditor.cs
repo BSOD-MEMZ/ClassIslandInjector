@@ -3755,27 +3755,5 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         }
     }
 
-    /// <summary>检查器用 NumericUpDown（必须把 StyleKey 指回基类，否则 FAUI 隐式主题找不到导致不可见）。</summary>
-    private sealed class EditorSpin : NumericUpDown
-    {
-        protected override Type StyleKeyOverride => typeof(NumericUpDown);
-
-        public EditorSpin(double minimum, double maximum, double increment, string format)
-        {
-            Minimum = (decimal)minimum;
-            Maximum = (decimal)maximum;
-            Increment = (decimal)increment;
-            FormatString = format;
-            Value = (decimal)minimum;
-            Width = 140;
-            VerticalAlignment = VerticalAlignment.Center;
-            HorizontalContentAlignment = HorizontalAlignment.Right;
-        }
-
-        public double DoubleValue
-        {
-            get => (double)(Value ?? 0);
-            set => Value = (decimal)Math.Clamp(value, (double)Minimum, (double)Maximum);
-        }
-    }
+    /// <summary>检查器用 NumericUpDown（共享实现见 <see cref="EditorSpin"/>，StyleKey 指回基类）。</summary>
 }
