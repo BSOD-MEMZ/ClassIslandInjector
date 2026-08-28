@@ -2239,7 +2239,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
                 }
 
                 var layer = _videoTrackLayers[track];
-                WriteFrameToImage(layer.Image, ref layer.Bitmap, frame);
+                WriteFrameToImage(layer.Image, ref layer.Bitmap, frame, clip.Grayscale);
                 ApplyVideoClipTransform(layer.Image, clip, _videoFillHost);
                 layer.Image.IsVisible = true;
             }
@@ -2288,7 +2288,10 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         var group = new TransformGroup();
-        group.Children.Add(new ScaleTransform(clip.Scale, clip.Scale));
+        // 翻转用负缩放（绕中心镜像，与渲染器 uv 取镜像一致）。
+        group.Children.Add(new ScaleTransform(
+            clip.Scale * clip.ScaleX * (clip.FlipH ? -1 : 1),
+            clip.Scale * clip.ScaleY * (clip.FlipV ? -1 : 1)));
         group.Children.Add(new RotateTransform(clip.Rotation));
         group.Children.Add(new TranslateTransform(
             clip.OffsetX * host.Bounds.Width,
@@ -2396,8 +2399,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
         WriteFrameToImage(_videoFillImage, ref _videoFillBitmap, frame);
     }
 
-    /// <summary>把解码帧写入可复用的 WriteableBitmap 并挂到目标 Image（显式失效触发局部重绘）。</summary>
-    private static void WriteFrameToImage(Image image, ref WriteableBitmap? bitmap, VideoFrame frame)
+    /// <summary>把解码帧写入可复用的 WriteableBitmap 并挂到目标 Image（显式失效触发局部重绘）。
+    /// grayscale&gt;0 时在写入时做灰度处理（0..1）。</summary>
+    private static void WriteFrameToImage(Image image, ref WriteableBitmap? bitmap, VideoFrame frame, double grayscale = 0)
     {
         var w = frame.Width;
         var h = frame.Height;
@@ -2416,7 +2420,51 @@ internal sealed class MainWindowStyleInjector : IDisposable
             var dstStride = fb.RowBytes;
             var src = frame.Pixels;
             var dst = fb.Address;
-            if (srcStride == dstStride)
+            if (grayscale > 0.001 && grayscale < 0.999)
+            {
+                // 混合灰度（非全灰）：逐像素处理。
+                for (var y = 0; y < h; y++)
+                {
+                    var si = y * srcStride;
+                    var di = y * dstStride;
+                    for (var x = 0; x < w; x++)
+                    {
+                        var b = src[si];
+                        var g = src[si + 1];
+                        var r = src[si + 2];
+                        var gray = (byte)((r * 299 + g * 587 + b * 114) / 1000);
+                        Marshal.WriteByte(dst, di, (byte)(gray * grayscale + b * (1 - grayscale)));
+                        Marshal.WriteByte(dst, di + 1, (byte)(gray * grayscale + g * (1 - grayscale)));
+                        Marshal.WriteByte(dst, di + 2, (byte)(gray * grayscale + r * (1 - grayscale)));
+                        Marshal.WriteByte(dst, di + 3, src[si + 3]);
+                        si += 4;
+                        di += 4;
+                    }
+                }
+            }
+            else if (grayscale >= 0.999)
+            {
+                // 全灰度：逐像素处理。
+                for (var y = 0; y < h; y++)
+                {
+                    var si = y * srcStride;
+                    var di = y * dstStride;
+                    for (var x = 0; x < w; x++)
+                    {
+                        var b = src[si];
+                        var g = src[si + 1];
+                        var r = src[si + 2];
+                        var gray = (byte)((r * 299 + g * 587 + b * 114) / 1000);
+                        Marshal.WriteByte(dst, di, gray);
+                        Marshal.WriteByte(dst, di + 1, gray);
+                        Marshal.WriteByte(dst, di + 2, gray);
+                        Marshal.WriteByte(dst, di + 3, src[si + 3]);
+                        si += 4;
+                        di += 4;
+                    }
+                }
+            }
+            else if (srcStride == dstStride)
             {
                 var copyLen = Math.Min(src.Length, (int)(fb.RowBytes * h));
                 Marshal.Copy(src, 0, dst, copyLen);

@@ -24,6 +24,8 @@ internal sealed class VideoProjectRenderer
         public int Track;
         public VideoFrameSource? Source;
         public VideoClip? ActiveClip;
+        /// <summary>覆盖层片段生成的静态帧（只生成一次，渲染输出分辨率）。</summary>
+        public VideoFrame? OverlayBuffer;
         /// <summary>最近一帧的拷贝（EOF 后冻结最后画面，避免轨道中途变透明）。</summary>
         public byte[]? LastBuffer;
         public int LastWidth;
@@ -89,21 +91,40 @@ internal sealed class VideoProjectRenderer
             for (var t = 0; t < trackCount; t++)
             {
                 var st = states[t];
-                if (st.Source == null || st.ActiveClip == null)
+                if (st.ActiveClip == null)
                 {
                     continue;
                 }
 
-                if (st.Source.TryReadFrame(out var fr) && fr != null)
+                if (st.ActiveClip.Kind == "Video")
                 {
-                    if (st.LastBuffer == null || st.LastBuffer.Length != fr.Pixels.Length)
+                    if (st.Source == null)
                     {
-                        st.LastBuffer = new byte[fr.Pixels.Length];
+                        continue;
                     }
 
-                    Buffer.BlockCopy(fr.Pixels, 0, st.LastBuffer, 0, fr.Pixels.Length);
-                    st.LastWidth = fr.Width;
-                    st.LastHeight = fr.Height;
+                    if (st.Source.TryReadFrame(out var fr) && fr != null)
+                    {
+                        if (st.LastBuffer == null || st.LastBuffer.Length != fr.Pixels.Length)
+                        {
+                            st.LastBuffer = new byte[fr.Pixels.Length];
+                        }
+
+                        Buffer.BlockCopy(fr.Pixels, 0, st.LastBuffer, 0, fr.Pixels.Length);
+                        st.LastWidth = fr.Width;
+                        st.LastHeight = fr.Height;
+                    }
+                }
+                else
+                {
+                    // 文本/形状覆盖层：生成静态帧（透明背景 + 预乘 alpha）。
+                    st.OverlayBuffer ??= OverlayFrameGenerator.Render(st.ActiveClip, _outW, _outH);
+                    if (st.OverlayBuffer != null)
+                    {
+                        st.LastBuffer = st.OverlayBuffer.Pixels;
+                        st.LastWidth = _outW;
+                        st.LastHeight = _outH;
+                    }
                 }
 
                 if (st.LastBuffer != null)
@@ -112,11 +133,62 @@ internal sealed class VideoProjectRenderer
                 }
             }
 
+            // 预乘 → 直通 + 不透明背景（黑底），供编码器使用。
+            for (var i = 0; i + 3 < output.Length; i += 4)
+            {
+                var a = output[i + 3];
+                if (a == 0)
+                {
+                    output[i] = 0;
+                    output[i + 1] = 0;
+                    output[i + 2] = 0;
+                }
+                else if (a < 255)
+                {
+                    output[i] = (byte)(output[i] * 255 / a);
+                    output[i + 1] = (byte)(output[i + 1] * 255 / a);
+                    output[i + 2] = (byte)(output[i + 2] * 255 / a);
+                }
+
+                output[i + 3] = 255;
+            }
+
+            // 滤镜片段：对整帧应用当前时刻最上层的滤镜（被滤镜覆盖的画面显示该效果）。
+            var filter = FindActiveFilter(clips, time);
+            if (filter != null && !string.IsNullOrEmpty(filter.Filter))
+            {
+                FilterUtils.ApplyInPlace(output, _outW, _outH, filter.Filter);
+            }
+
             encoder.EncodeFrame(output);
             _progress?.Invoke((double)(frame + 1) / totalFrames, $"渲染 {frame + 1}/{totalFrames} 帧");
         }
 
         encoder.Finish();
+    }
+
+    /// <summary>当前时刻最上层的滤镜片段（轨道号最大；同轨取起始最晚）。</summary>
+    private static VideoClip? FindActiveFilter(List<VideoClip> clips, double time)
+    {
+        VideoClip? best = null;
+        foreach (var clip in clips)
+        {
+            if (clip.Kind != "Filter")
+            {
+                continue;
+            }
+
+            if (time >= clip.StartTime && time < clip.StartTime + clip.Duration)
+            {
+                if (best == null || clip.Track > best.Track ||
+                    (clip.Track == best.Track && clip.StartTime >= best.StartTime))
+                {
+                    best = clip;
+                }
+            }
+        }
+
+        return best;
     }
 
     /// <summary>当前时刻指定轨道上的活跃片段（同轨重叠时取起始时间最晚的）。</summary>
@@ -144,6 +216,11 @@ internal sealed class VideoProjectRenderer
 
     private VideoFrameSource? Open(VideoClip clip)
     {
+        if (clip.Kind != "Video")
+        {
+            return null;
+        }
+
         try
         {
             var source = new VideoFrameSource();
@@ -170,6 +247,7 @@ internal sealed class VideoProjectRenderer
     {
         state.Source?.Dispose();
         state.Source = null;
+        state.OverlayBuffer = null;
     }
 
     /// <summary>把一轨画面按变换逐像素合成到输出画布（BGRA，alpha 混合）。</summary>
@@ -205,7 +283,8 @@ internal sealed class VideoProjectRenderer
 
         var baseX = (W - baseW) / 2.0;
         var baseY = (H - baseH) / 2.0;
-        var scale = Math.Max(0.01, clip.Scale);
+        var scaleX = Math.Max(0.01, clip.Scale * clip.ScaleX);
+        var scaleY = Math.Max(0.01, clip.Scale * clip.ScaleY);
         var offX = clip.OffsetX * W;
         var offY = clip.OffsetY * H;
         var rot = clip.Rotation * Math.PI / 180.0;
@@ -217,7 +296,10 @@ internal sealed class VideoProjectRenderer
         var cropT = clip.CropTop * H;
         var cropR = clip.CropRight * W;
         var cropB = clip.CropBottom * H;
-        var useAlpha = opacity < 0.999;
+        var flipH = clip.FlipH;
+        var flipV = clip.FlipV;
+        var gray = clip.Grayscale > 0.001;
+        var grayA = Math.Clamp(clip.Grayscale, 0, 1);
 
         for (var y = 0; y < H; y++)
         {
@@ -234,15 +316,25 @@ internal sealed class VideoProjectRenderer
                     continue;
                 }
 
-                // 逆变换：输出像素 → 源像素。
+                // 逆变换：输出像素 → 源像素（含翻转：翻转时对源坐标取镜像）。
                 var dx = x - cx - offX;
                 var dy = y - cy - offY;
                 var rx = dx * cos + dy * sin;
                 var ry = -dx * sin + dy * cos;
-                var sx = rx / scale + cx;
-                var sy = ry / scale + cy;
+                var sx = rx / scaleX + cx;
+                var sy = ry / scaleY + cy;
                 var u = (sx - baseX) / baseW * bw;
                 var v = (sy - baseY) / baseH * bh;
+                if (flipH)
+                {
+                    u = bw - u;
+                }
+
+                if (flipV)
+                {
+                    v = bh - v;
+                }
+
                 if (u < 0 || v < 0 || u >= bw || v >= bh)
                 {
                     continue;
@@ -255,21 +347,27 @@ internal sealed class VideoProjectRenderer
                 var sg = src[si + 1];
                 var sb = src[si + 2];
                 var oi = (row + x) * 4;
-                if (!useAlpha)
+
+                // 预乘 over 合成：a = 源像素 alpha × 片段不透明度（视频帧 alpha=255，退化为原逻辑）。
+                var srcA = src[si + 3] * opacity / 255.0;
+                if (srcA <= 0.001)
                 {
-                    output[oi] = sb;
-                    output[oi + 1] = sg;
-                    output[oi + 2] = sr;
-                    output[oi + 3] = 255;
+                    continue;
                 }
-                else
+
+                if (gray)
                 {
-                    var a = opacity;
-                    output[oi] = (byte)(output[oi] + (sb - output[oi]) * a);
-                    output[oi + 1] = (byte)(output[oi + 1] + (sg - output[oi + 1]) * a);
-                    output[oi + 2] = (byte)(output[oi + 2] + (sr - output[oi + 2]) * a);
-                    output[oi + 3] = 255;
+                    var g = (byte)((sr * 299 + sg * 587 + sb * 114) / 1000);
+                    sr = (byte)(g * grayA + sr * (1 - grayA));
+                    sg = (byte)(g * grayA + sg * (1 - grayA));
+                    sb = (byte)(g * grayA + sb * (1 - grayA));
                 }
+
+                var inv = 1 - srcA;
+                output[oi] = (byte)(sb + output[oi] * inv);
+                output[oi + 1] = (byte)(sg + output[oi + 1] * inv);
+                output[oi + 2] = (byte)(sr + output[oi + 2] * inv);
+                output[oi + 3] = (byte)((srcA + output[oi + 3] / 255.0 * inv) * 255);
             }
         }
     }

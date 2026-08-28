@@ -21,6 +21,9 @@ internal sealed class VideoProjectPlayer : IDisposable
     private readonly int _maxDimension;
     private readonly int _targetFps;
     private readonly Action<VideoFrame, VideoClip, int> _onFrame;
+    /// <summary>覆盖层帧生成尺寸（按输出比例，最长边 = _maxDimension）。</summary>
+    private readonly int _overlayW;
+    private readonly int _overlayH;
 
     private readonly object _sync = new();
     private Thread? _worker;
@@ -37,6 +40,10 @@ internal sealed class VideoProjectPlayer : IDisposable
         public int Track;
         public VideoFrameSource? Source;
         public VideoClip? ActiveClip;
+        /// <summary>覆盖层片段生成的静态帧（只生成一次）。</summary>
+        public VideoFrame? OverlayFrame;
+        /// <summary>本段覆盖层帧是否已发送给 UI。</summary>
+        public bool OverlaySent;
         /// <summary>UI 消费完本轨道上一帧后 Set，播放器据此才拉下一帧（防缓冲覆写）。</summary>
         public readonly ManualResetEventSlim Consumed = new(true);
     }
@@ -51,6 +58,10 @@ internal sealed class VideoProjectPlayer : IDisposable
         _maxDimension = maxDimension;
         _targetFps = Math.Max(1, targetFps);
         _onFrame = onFrame;
+        // 覆盖层帧尺寸：保持输出宽高比，最长边不超过 maxDimension。
+        var aspect = project.OutputWidth / Math.Max(1.0, project.OutputHeight);
+        _overlayW = maxDimension;
+        _overlayH = Math.Max(2, (int)(maxDimension / aspect));
     }
 
     public void Start()
@@ -170,7 +181,7 @@ internal sealed class VideoProjectPlayer : IDisposable
                 if (!ReferenceEquals(clip, state.ActiveClip))
                 {
                     CloseTrack(state);
-                    if (clip != null)
+                    if (clip != null && clip.Kind == "Video")
                     {
                         state.Source = OpenSource(clip);
                     }
@@ -178,7 +189,12 @@ internal sealed class VideoProjectPlayer : IDisposable
                     state.ActiveClip = clip;
                 }
 
-                if (state.Source != null && state.ActiveClip != null &&
+                if (state.ActiveClip == null)
+                {
+                    continue;
+                }
+
+                if (state.ActiveClip.Kind == "Video" && state.Source != null &&
                     state.Source.TryReadFrame(out var frame) && frame != null)
                 {
                     try
@@ -193,6 +209,26 @@ internal sealed class VideoProjectPlayer : IDisposable
                     // 等 UI 消费完本轨道上一帧再覆写缓冲（超时继续，可接受丢帧）。
                     state.Consumed.Reset();
                     state.Consumed.Wait(300);
+                }
+                else if (state.ActiveClip.Kind != "Video" && !state.OverlaySent)
+                {
+                    // 文本/形状覆盖层：生成一次静态帧并发送（静态内容无需每拍重发）。
+                    state.OverlayFrame ??= OverlayFrameGenerator.Render(state.ActiveClip, _overlayW, _overlayH);
+                    if (state.OverlayFrame != null)
+                    {
+                        state.OverlaySent = true;
+                        try
+                        {
+                            _onFrame(state.OverlayFrame, state.ActiveClip, state.Track);
+                        }
+                        catch
+                        {
+                            // 调用方异常不中断播放。
+                        }
+
+                        state.Consumed.Reset();
+                        state.Consumed.Wait(300);
+                    }
                 }
             }
 
@@ -219,6 +255,8 @@ internal sealed class VideoProjectPlayer : IDisposable
     {
         state.Source?.Dispose();
         state.Source = null;
+        state.OverlayFrame = null;
+        state.OverlaySent = false;
         state.Consumed.Set();
     }
 
