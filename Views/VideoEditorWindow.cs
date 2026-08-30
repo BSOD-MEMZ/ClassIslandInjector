@@ -1,6 +1,7 @@
 using System.IO;
 using System.Runtime.InteropServices;
 using Avalonia;
+using Avalonia.Animation;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
@@ -253,31 +254,32 @@ internal sealed class VideoEditorWindow : MyWindow
         MinWidth = 36
     };
 
-    // ---- 左侧工具栏（选择/文本/形状/效果）----
-    /// <summary>当前工具：select / text / rect / ellipse。</summary>
+    // ---- 左侧工具栏（Photoshop 式：选中高亮滑块 + 动画，仿底图图层编辑器）----
+    /// <summary>当前工具：select / text / shape / effect。</summary>
     private string _currentTool = "select";
-    private readonly Button _selectToolButton = ToolButton("\uE5BE");
-    private readonly Button _textToolButton = ToolButton("\uF26E");
-    private readonly Button _rectToolButton = ToolButton("\uF030");
-    private readonly Button _ellipseToolButton = ToolButton("\uEC3B");
-    private readonly Button _effectToolButton = ToolButton("\uE84E");
+    private readonly Dictionary<string, Button> _toolButtons = [];
+    private StackPanel _toolPanel = null!;
+    private Grid _toolHighlightHost = null!;
+    private Border _toolHighlight = null!;
+    private bool _toolHighlightPositioned;
+    private readonly Dictionary<string, bool> _toolHovered = [];
+    /// <summary>工具栏图标（FluentSystemIcons filled/regular 成对）。</summary>
+    private static readonly Dictionary<string, (string Filled, string Regular)> ToolGlyphs = new()
+    {
+        ["select"] = ("\uE5BE", "\uE5BF"),
+        ["text"] = ("\uF1BD", "\uF1BE"),
+        ["shape"] = ("\uE774", "\uE775"),
+        ["effect"] = ("\uF42E", "\uF42F")
+    };
 
     // ---- 文本/形状覆盖层属性 ----
     private readonly TextBox _overlayText = new() { MinWidth = 140, Watermark = "文本内容" };
     private readonly TextBox _overlayColor = new() { MinWidth = 100, Watermark = "#AARRGGBB" };
     private readonly ComboBox _overlayShape = new() { MinWidth = 110 };
     private readonly StackPanel _overlayPanel = new() { Spacing = 4, IsVisible = false };
-
-    /// <summary>紧凑图标工具按钮（左侧工具栏用）。</summary>
-    private static Button ToolButton(string glyph) => new()
-    {
-        Content = new IconText { Glyph = glyph, Text = "" },
-        Padding = new Thickness(6, 4),
-        MinWidth = 34,
-        MinHeight = 32,
-        Background = Brushes.Transparent,
-        BorderThickness = new Thickness(0)
-    };
+    // ---- 滤镜片段属性 ----
+    private readonly ComboBox _filterCombo = new() { MinWidth = 110 };
+    private readonly StackPanel _filterPanel = new() { Spacing = 4, IsVisible = false };
 
     // ---- 传输控制 / 播放头 ----
     /// <summary>舞台内底部播放/暂停按钮（纯图标，悬停提示；无文字标签、无停止按钮）。</summary>
@@ -490,8 +492,9 @@ internal sealed class VideoEditorWindow : MyWindow
         RefreshAssetList();
         RefreshTimeline();
         ClearSelection();
-        // 初始化素材库内容状态（标题/可见性，默认素材模式）。
+        // 初始化素材库内容状态（标题/可见性，默认素材模式）与工具栏选中态。
         UpdateLibraryContent();
+        UpdateToolBarSelection();
         Opened += (_, _) => Current = this;
         Closed += (_, _) =>
         {
@@ -879,24 +882,55 @@ internal sealed class VideoEditorWindow : MyWindow
     /// <summary>左侧垂直工具栏：选择 / 文本 / 矩形 / 椭圆 / 效果。</summary>
     private Control BuildToolStrip()
     {
-        _selectToolButton.Click += (_, _) => SetTool("select");
-        _textToolButton.Click += (_, _) => SetTool("text");
-        _rectToolButton.Click += (_, _) => SetTool("rect");
-        _ellipseToolButton.Click += (_, _) => SetTool("ellipse");
-        // 效果按钮 = 选择效果工具（素材库切换为滤镜卡片），不再弹对话框。
-        _effectToolButton.Click += (_, _) => SetTool("effect");
-        ToolTip.SetTip(_selectToolButton, "选择工具（默认）");
-        ToolTip.SetTip(_textToolButton, "文本工具：在舞台点击放置文本覆盖层");
-        ToolTip.SetTip(_rectToolButton, "形状工具：在素材库选择形状，点击舞台放置或拖到时间轴");
-        ToolTip.SetTip(_ellipseToolButton, "形状工具：在素材库选择形状，点击舞台放置或拖到时间轴");
-        ToolTip.SetTip(_effectToolButton, "效果工具：在素材库选择滤镜，拖到时间轴作为片段应用");
-        UpdateToolButtons();
+        var panel = new StackPanel { Spacing = 2 };
+        _toolPanel = panel;
+        panel.Children.Add(ToolButton("select", "\uE5BE", "\uE5BF", "选择工具（默认）：点击选中片段"));
+        panel.Children.Add(ToolButton("text", "\uF1BD", "\uF1BE", "文本工具：在舞台点击放置文本覆盖层"));
+        panel.Children.Add(ToolButton("shape", "\uE774", "\uE775", "形状工具：在素材库选择形状，点击舞台放置或拖到时间轴"));
+        panel.Children.Add(ToolButton("effect", "\uF42E", "\uF42F", "效果工具：在素材库选择滤镜，拖到时间轴作为片段应用"));
+        // 选中高亮滑块（同底图图层编辑器）：独立圆角块，切换工具时平滑滑动到新位置。
+        _toolHighlight = new Border
+        {
+            IsHitTestVisible = false,
+            // 圆角与按钮自带 hover 样式对齐（Fluent ControlCornerRadius = 4）。
+            CornerRadius = new CornerRadius(4),
+            Background = new SolidColorBrush(ThemePalette.AccentColorWithAlpha(190)),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Top,
+            Opacity = 0
+        };
+        // 宿主 Grid：高亮块在前（底层），按钮面板在后（顶层，按钮透明底露出高亮）。
+        var host = new Grid
+        {
+            Margin = new Thickness(0, 0, 4, 0),
+            Children = { _toolHighlight, panel }
+        };
+        _toolHighlightHost = host;
+        // 首次布局完成后定位高亮（此前 Bounds 未测量）。
+        host.SizeChanged += (_, _) =>
+        {
+            if (!_toolHighlightPositioned)
+            {
+                SlideToolHighlight(false);
+                EditorAnimations.FadeIn(_toolHighlight, 0, 1, delay: TimeSpan.FromMilliseconds(30));
+            }
+        };
+        // 入场：按钮逐个弹性进场（错峰）。
+        EditorAnimations.After(TimeSpan.FromMilliseconds(30), () =>
+        {
+            var idx = 0;
+            foreach (var b in panel.Children.OfType<Button>())
+            {
+                EditorAnimations.PopIn(b, -10, 0, 0.9, delay: TimeSpan.FromMilliseconds(idx * 35));
+                idx++;
+            }
+        });
         // 舞台点击：若处于文本/形状工具，在该位置放置覆盖层片段。
         // 挂在 _stageBorder（黑背景可命中）：点舞台空白处时事件源是 _stageBorder，
         // 冒泡路径不经过 _stageHostGrid（它是 _stageBorder 的子级），挂子级会漏掉空白区点击。
         _stageBorder.PointerPressed += (_, e) =>
         {
-            if (_currentTool is not ("text" or "rect" or "ellipse"))
+            if (_currentTool is not ("text" or "shape"))
             {
                 return;
             }
@@ -907,44 +941,133 @@ internal sealed class VideoEditorWindow : MyWindow
                 e.GetPosition(_stageBorder));
             e.Handled = true;
         };
-        return new StackPanel
+        return host;
+    }
+
+    /// <summary>工具栏工具按钮（仿底图图层编辑器：透明底 + 按压反馈 + 选中由高亮滑块表达）。</summary>
+    private Button ToolButton(string tool, string filledGlyph, string regularGlyph, string tip)
+    {
+        var button = new Button
         {
-            Orientation = Orientation.Vertical,
-            Spacing = 4,
-            Margin = new Thickness(0, 0, 4, 0),
-            Children = { _selectToolButton, _textToolButton, _rectToolButton, _ellipseToolButton, _effectToolButton }
+            Content = new IconText { Glyph = filledGlyph, Text = string.Empty },
+            Padding = new Thickness(9, 7),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0)
         };
+        // 选中态过渡：背景 / 前景切换时平滑渐变。
+        button.Transitions = new Transitions
+        {
+            new BrushTransition { Property = Avalonia.Controls.Button.BackgroundProperty, Duration = EditorAnimations.TapDuration },
+            new BrushTransition { Property = Avalonia.Controls.Button.ForegroundProperty, Duration = EditorAnimations.TapDuration }
+        };
+        // 按压缩放反馈（Fluent 风格）。
+        EditorAnimations.AddPressFeedback(button);
+        // 初始不可见，打开窗口时逐个弹性进场。
+        button.Opacity = 0;
+        // 悬停：已选中的工具保持透明（主题色高亮块表达选中），其它工具显示半透明悬停底色。
+        button.PointerEntered += (_, _) =>
+        {
+            _toolHovered[tool] = true;
+            UpdateToolBarSelection();
+        };
+        button.PointerExited += (_, _) =>
+        {
+            _toolHovered[tool] = false;
+            UpdateToolBarSelection();
+        };
+        ToolTip.SetTip(button, tip);
+        button.Click += (_, _) => SetTool(tool);
+        _toolButtons[tool] = button;
+        return button;
     }
 
     private void SetTool(string tool)
     {
         _currentTool = tool;
-        UpdateToolButtons();
+        // 选中态由高亮滑块表达（按钮透明露底）。
+        UpdateToolBarSelection();
+        // 高亮滑块滑动到新工具的位置。
+        SlideToolHighlight(true);
         // 素材库内容随工具切换：形状工具→形状库，效果工具→滤镜库。
         UpdateLibraryContent();
         _statusText.Text = tool switch
         {
             "text" => "文本工具：在舞台点击放置文本覆盖层。",
-            "rect" => "形状工具：在左侧素材库选择形状，点击舞台放置或拖到时间轴。",
-            "ellipse" => "形状工具：在左侧素材库选择形状，点击舞台放置或拖到时间轴。",
+            "shape" => "形状工具：在左侧素材库选择形状，点击舞台放置或拖到时间轴。",
             "effect" => "效果工具：在左侧素材库选择滤镜，拖到时间轴作为片段应用。",
             _ => "选择工具。"
         };
     }
 
-    private void UpdateToolButtons()
+    /// <summary>按当前工具刷新工具栏按钮状态：选中态由高亮滑块表达（按钮透明露底），
+    /// 已选中工具悬停保持主题色（高亮块），其它工具悬停显示半透明底色。</summary>
+    private void UpdateToolBarSelection()
     {
-        foreach (var (btn, tool) in new[]
-                 {
-                     (_selectToolButton, "select"), (_textToolButton, "text"),
-                     (_rectToolButton, "rect"), (_ellipseToolButton, "ellipse"),
-                     (_effectToolButton, "effect")
-                 })
+        if (_toolHighlight != null)
         {
-            btn.Background = _currentTool == tool
-                ? ThemePalette.AccentBrushWithAlpha(80)
-                : Brushes.Transparent;
+            _toolHighlight.Background = new SolidColorBrush(ThemePalette.AccentColorWithAlpha(190));
         }
+
+        foreach (var (tool, button) in _toolButtons)
+        {
+            var active = tool == _currentTool;
+            // 选中态背景交给高亮滑块：按钮本身 = 已选中 ? 透明 : (悬停 ? 半透明 : 透明)。
+            button.Background = active
+                ? Brushes.Transparent
+                : _toolHovered.GetValueOrDefault(tool)
+                    ? ThemePalette.SubtleFill()
+                    : Brushes.Transparent;
+            button.Foreground = active
+                ? new SolidColorBrush(Colors.White)
+                : new SolidColorBrush(ThemePalette.ForegroundColor());
+            // 选中工具显示实心图标，未选中显示空心（regular）图标。
+            if (button.Content is IconText icon && ToolGlyphs.TryGetValue(tool, out var glyphs))
+            {
+                icon.Glyph = active ? glyphs.Filled : glyphs.Regular;
+            }
+        }
+    }
+
+    /// <summary>把选中高亮滑块移动到当前工具的按钮位置：首次直接放置，之后平滑滑动。</summary>
+    private void SlideToolHighlight(bool animate)
+    {
+        if (_toolHighlight == null || !_toolButtons.TryGetValue(_currentTool, out var button))
+        {
+            return;
+        }
+
+        var pos = button.TranslatePoint(new Point(0, 0), _toolHighlightHost);
+        if (pos == null || button.Bounds.Height <= 0)
+        {
+            return; // 尚未布局，稍后由 SizeChanged 补齐。
+        }
+
+        var targetY = pos.Value.Y;
+        if (_toolHighlight.RenderTransform is not TranslateTransform translate)
+        {
+            translate = new TranslateTransform();
+            _toolHighlight.RenderTransform = translate;
+        }
+
+        // 首次测量时把高度对齐到按钮。
+        if (double.IsNaN(_toolHighlight.Height) || _toolHighlight.Height <= 0)
+        {
+            _toolHighlight.Height = Math.Max(20, button.Bounds.Height);
+        }
+
+        if (animate && _toolHighlightPositioned)
+        {
+            // 平滑非线性移动（CubicEaseOut），不弹跳。
+            EditorAnimations.AnimateValue(v => translate.Y = v, translate.Y, targetY,
+                EditorAnimations.InDuration, EditorAnimations.Interaction);
+        }
+        else
+        {
+            translate.Y = targetY;
+        }
+
+        _toolHighlightPositioned = true;
     }
 
     /// <summary>在当前工具/播放头处添加文本或形状覆盖层片段（stagePos 非空 = 舞台点击放置）。</summary>
@@ -977,7 +1100,8 @@ internal sealed class VideoEditorWindow : MyWindow
         _project.Clips.Add(clip);
         _selected = clip;
         _currentTool = "select";
-        UpdateToolButtons();
+        UpdateToolBarSelection();
+        SlideToolHighlight(true);
         CompactTracks();
         RefreshTimeline();
         FillPropertyPanel();
@@ -1066,6 +1190,11 @@ internal sealed class VideoEditorWindow : MyWindow
         _overlayPanel.Children.Add(InspectorRow("内容", _overlayText));
         _overlayPanel.Children.Add(InspectorRow("颜色 #AARRGGBB", _overlayColor));
         _overlayPanel.Children.Add(InspectorRow("形状", _overlayShape));
+        // 滤镜类型编辑（仅 Kind=Filter 时显示）。
+        _filterCombo.ItemsSource = FilterDefs.Select(d => d.Name).ToList();
+        _filterCombo.SelectionChanged += (_, _) => ApplyFilterEdits();
+        _filterPanel.Children.Add(new TextBlock { Text = "滤镜", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 8, 0, 0) });
+        _filterPanel.Children.Add(InspectorRow("类型", _filterCombo));
 
         return new StackPanel
         {
@@ -1085,6 +1214,7 @@ internal sealed class VideoEditorWindow : MyWindow
                 InspectorRow("旋转（度）", _rotationSpin),
                 InspectorRow("不透明度", _opacitySpin),
                 _overlayPanel,
+                _filterPanel,
                 new TextBlock { Text = "边缘裁剪（0~1 归一化）", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 8, 0, 0) },
                 InspectorRow("裁左", _cropLSpin),
                 InspectorRow("裁上", _cropTSpin),
@@ -1092,6 +1222,32 @@ internal sealed class VideoEditorWindow : MyWindow
                 InspectorRow("裁下", _cropBSpin)
             }
         };
+    }
+
+    /// <summary>滤镜类型下拉修改应用到选中滤镜片段（连续修改合并为一步撤销）。</summary>
+    private void ApplyFilterEdits()
+    {
+        if (_updatingUi || _selected is not { Kind: "Filter" } clip)
+        {
+            return;
+        }
+
+        var idx = _filterCombo.SelectedIndex;
+        if (idx < 0 || idx >= FilterDefs.Length)
+        {
+            return;
+        }
+
+        PushUndo(true);
+        clip.Filter = FilterDefs[idx].Key;
+        _clipNameText.Text = $"{ClipDisplayName(clip)}\n轨道 {clip.Track + 1} · 开始 {clip.StartTime:0.#}s · 时长 {clip.Duration:0.#}s\n滤镜 {FilterDefs[idx].Name}";
+        ScheduleSave();
+        _statusText.Text = $"滤镜已改为「{FilterDefs[idx].Name}」。";
+        // 立即刷新当前时刻的舞台预览（滤镜作用于下方画面）。
+        if (!_playing)
+        {
+            ShowFrameAt(_playheadTime);
+        }
     }
 
     /// <summary>覆盖层文本/颜色/形状编辑应用到选中片段（连续输入合并为一步撤销）。</summary>
@@ -1740,7 +1896,7 @@ internal sealed class VideoEditorWindow : MyWindow
     /// <summary>按当前工具更新素材库内容：选择/文本→素材；形状→形状卡片；效果→滤镜卡片。</summary>
     private void UpdateLibraryContent()
     {
-        var isLibraryMode = _currentTool is "rect" or "ellipse" or "effect";
+        var isLibraryMode = _currentTool is "shape" or "effect";
         var isAssetMode = !isLibraryMode;
         _assetList.IsVisible = isAssetMode && !_assetCoverView;
         _assetCoverScroll.IsVisible = isAssetMode && _assetCoverView;
@@ -1749,7 +1905,7 @@ internal sealed class VideoEditorWindow : MyWindow
         _assetViewToggle.IsVisible = isAssetMode;
         _libraryTitle.Text = _currentTool switch
         {
-            "rect" or "ellipse" => "形状库",
+            "shape" => "形状库",
             "effect" => "滤镜库",
             _ => "素材库"
         };
@@ -1763,7 +1919,7 @@ internal sealed class VideoEditorWindow : MyWindow
     private void RefreshLibraryCards()
     {
         _libraryPanel.Children.Clear();
-        if (_currentTool is "rect" or "ellipse")
+        if (_currentTool == "shape")
         {
             foreach (var (key, name) in ShapeDefs)
             {
@@ -1819,7 +1975,7 @@ internal sealed class VideoEditorWindow : MyWindow
         item.PointerPressed += (_, _) =>
         {
             // 形状工具：点击卡片选中（舞台点击即放置该形状）。
-            if (_currentTool is "rect" or "ellipse")
+            if (_currentTool == "shape")
             {
                 _currentShape = payload["shape:".Length..];
                 RefreshLibraryCards();
@@ -2816,8 +2972,8 @@ internal sealed class VideoEditorWindow : MyWindow
                 control.IsEnabled = has;
             }
 
-            // 文本/形状覆盖层编辑区：仅 Kind 非 Video 时显示并填充。
-            var isOverlay = clip is { Kind: not "Video" };
+            // 文本/形状覆盖层编辑区：仅 Text/Shape 显示（滤镜片段不该出现文本/形状设置）。
+            var isOverlay = clip is { Kind: "Text" or "Shape" };
             _overlayPanel.IsVisible = isOverlay;
             if (isOverlay)
             {
@@ -2827,6 +2983,15 @@ internal sealed class VideoEditorWindow : MyWindow
                 _overlayText.IsEnabled = clip.Kind == "Text";
                 _overlayShape.IsEnabled = clip.Kind == "Shape";
                 _overlayColor.IsEnabled = true;
+            }
+
+            // 滤镜编辑区：仅 Kind=Filter 显示。
+            var isFilter = clip is { Kind: "Filter" };
+            _filterPanel.IsVisible = isFilter;
+            if (isFilter)
+            {
+                var fi = Array.FindIndex(FilterDefs, d => d.Key == clip!.Filter);
+                _filterCombo.SelectedIndex = fi < 0 ? 0 : fi;
             }
 
             // 未播放时选中片段：自动显示首帧，调整属性即可实时预览。
@@ -3033,7 +3198,6 @@ internal sealed class VideoEditorWindow : MyWindow
 
     private void StartSeekFrameDecode(double time)
     {
-        var gen = _seekFrameGen;
         _seekFrameBusy = true;
         // 覆盖层帧尺寸（保持输出比例，后台线程不可访问 UI）。
         var overlayAspect = _project.OutputWidth / Math.Max(1.0, _project.OutputHeight);
@@ -3098,11 +3262,9 @@ internal sealed class VideoEditorWindow : MyWindow
             {
                 try
                 {
-                    // 只有最新代次才应用（防旧任务覆盖新 scrub 结果）。
-                    if (gen == _seekFrameGen)
-                    {
-                        ApplySeekFrames(results);
-                    }
+                    // 单 worker 串行解码：结果按请求顺序到达且始终是最新完成的一帧。
+                    // 拖动（scrub）时必须立即应用（哪怕稍旧），不能只等松手才显示。始终应用。
+                    ApplySeekFrames(results);
                 }
                 catch
                 {
