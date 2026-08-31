@@ -33,6 +33,24 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
     /// <summary>源视频帧率（来自 avg_frame_rate；异常时回退 25，供转码保持时长）。</summary>
     public double SourceFps { get; private set; } = 25;
 
+    /// <summary>硬件解码器名（如 "h264_qsv"）；null/空 = 软解。Open 时尝试，失败自动回退软解。</summary>
+    public string? HardwareDecoder { get; set; }
+
+    /// <summary>源视频分辨率（解码前原始尺寸，供媒体信息展示）。</summary>
+    public int SourceWidth { get; private set; }
+
+    /// <summary>源视频原始高度。</summary>
+    public int SourceHeight { get; private set; }
+
+    /// <summary>硬件解码是否生效（Open 后可查）。</summary>
+    public bool HardwareActive { get; private set; }
+
+    private AVBufferRef* _hwDevice;
+    private AVFrame* _hwFrame;
+    private AVPixelFormat _swsInFormat;
+    /// <summary>硬件解码是否激活（Open 内部状态，失败回退软解时清除）。</summary>
+    private bool _hwActive;
+
     /// <summary>输出帧宽（BGRA）。</summary>
     public int OutputWidth => _outW;
 
@@ -73,6 +91,34 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
             }
 
             var name = Marshal.PtrToStringAnsi((IntPtr)codec->name);
+            var softCodec = codec;
+            var hwName = HardwareDecoder;
+            if (!string.IsNullOrWhiteSpace(hwName))
+            {
+                // 硬件解码尝试：包内有同名解码器且流编码类型匹配时用之；hwdevice 创建失败则回退软解。
+                var hwCodec = ffmpeg.avcodec_find_decoder_by_name(hwName);
+                AVBufferRef* dev = null;
+                if (hwCodec != null && hwCodec->id == codec->id &&
+                    ffmpeg.av_hwdevice_ctx_create(&dev, HwDeviceTypeOf(hwName), null, null, 0) == 0 &&
+                    dev != null)
+                {
+                    _hwDevice = dev;
+                    _hwActive = true;
+                    codec = hwCodec;
+                    name = hwName;
+                    Log($"尝试硬件解码器 {hwName}");
+                }
+                else
+                {
+                    if (dev != null)
+                    {
+                        ffmpeg.av_buffer_unref(&dev);
+                    }
+
+                    Log($"硬件解码器 {hwName} 不可用，回退软解");
+                }
+            }
+
             _codecCtx = ffmpeg.avcodec_alloc_context3(codec);
             if (_codecCtx == null)
             {
@@ -88,15 +134,52 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
                 return false;
             }
 
+            if (_hwActive && _hwDevice != null)
+            {
+                // 硬件解码必须把 hwdevice 交给解码器上下文。
+                _codecCtx->hw_device_ctx = ffmpeg.av_buffer_ref(_hwDevice);
+            }
+
             hr = ffmpeg.avcodec_open2(_codecCtx, codec, null);
+            if (hr < 0 && _hwActive)
+            {
+                // 硬件解码器打开失败（驱动/能力不足）：重建上下文回退软解。
+                Log($"avcodec_open2 失败 {hr}（硬件解码器={name}），回退软解");
+                _hwActive = false;
+                var stale = _codecCtx;
+                ffmpeg.avcodec_free_context(&stale);
+                _codecCtx = null;
+                codec = softCodec;
+                name = Marshal.PtrToStringAnsi((IntPtr)codec->name) ?? "h264";
+                _codecCtx = ffmpeg.avcodec_alloc_context3(codec);
+                if (_codecCtx == null)
+                {
+                    Log("回退软解时 avcodec_alloc_context3 失败");
+                    return false;
+                }
+
+                hr = ffmpeg.avcodec_parameters_to_context(_codecCtx, cp);
+                if (hr < 0)
+                {
+                    Log($"回退软解 avcodec_parameters_to_context 失败 {hr}");
+                    return false;
+                }
+
+                hr = ffmpeg.avcodec_open2(_codecCtx, codec, null);
+            }
+
             if (hr < 0)
             {
                 Log($"avcodec_open2 失败 {hr}（解码器={name}）");
                 return false;
             }
 
+            HardwareActive = _hwActive;
+
             var srcW = cp->width;
             var srcH = cp->height;
+            SourceWidth = srcW;
+            SourceHeight = srcH;
             _outW = srcW;
             _outH = srcH;
             if (maxDimension > 0 && Math.Max(srcW, srcH) > maxDimension)
@@ -106,7 +189,9 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
                 _outH = Math.Max(2, (int)(srcH * scale)) & ~1;
             }
 
-            _sws = ffmpeg.sws_getContext(srcW, srcH, (AVPixelFormat)cp->format,
+            // 硬解时输出帧是 GPU 内存（QSV 等），回读后为 NV12；软解时为源像素格式。
+            _swsInFormat = _hwActive ? AVPixelFormat.AV_PIX_FMT_NV12 : (AVPixelFormat)cp->format;
+            _sws = ffmpeg.sws_getContext(srcW, srcH, _swsInFormat,
                 _outW, _outH, AVPixelFormat.AV_PIX_FMT_BGRA, (int)SwsFlags.SWS_BILINEAR, null, null, null);
             if (_sws == null)
             {
@@ -164,11 +249,34 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
 
                 while (ffmpeg.avcodec_receive_frame(_codecCtx, _frame) >= 0)
                 {
+                    AVFrame* src;
+                    if (_hwActive)
+                    {
+                        // GPU 帧回读到系统内存（NV12），后续 sws 与软解同一管线。
+                        if (_hwFrame == null)
+                        {
+                            _hwFrame = ffmpeg.av_frame_alloc();
+                        }
+
+                        if (ffmpeg.av_hwframe_transfer_data(_hwFrame, _frame, 0) < 0)
+                        {
+                            Log("av_hwframe_transfer_data 失败");
+                            ffmpeg.av_packet_unref(_pkt);
+                            return false;
+                        }
+
+                        src = _hwFrame;
+                    }
+                    else
+                    {
+                        src = _frame;
+                    }
+
                     fixed (byte* dst = _bgra)
                     {
                         var dstData = new byte*[] { dst };
                         var dstLinesize = new int[] { _outW * 4 };
-                        ffmpeg.sws_scale(_sws, _frame->data, _frame->linesize, 0, _codecCtx->height, dstData, dstLinesize);
+                        ffmpeg.sws_scale(_sws, src->data, src->linesize, 0, src->height, dstData, dstLinesize);
                     }
 
                     ffmpeg.av_packet_unref(_pkt);
@@ -179,6 +287,14 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
             ffmpeg.av_packet_unref(_pkt);
         }
     }
+
+    /// <summary>硬件解码器名 → hwdevice 类型。</summary>
+    private static AVHWDeviceType HwDeviceTypeOf(string name) => name switch
+    {
+        var n when n.Contains("qsv") => AVHWDeviceType.AV_HWDEVICE_TYPE_QSV,
+        var n when n.Contains("cuvid") || n.Contains("nvdec") => AVHWDeviceType.AV_HWDEVICE_TYPE_CUDA,
+        _ => AVHWDeviceType.AV_HWDEVICE_TYPE_D3D11VA
+    };
 
     /// <summary>循环播放：seek 回开头并刷新解码器缓冲。</summary>
     public bool Restart()
@@ -279,6 +395,22 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
                 ffmpeg.avcodec_free_context(&c);
                 _codecCtx = null;
             }
+
+            if (_hwFrame != null)
+            {
+                var f = _hwFrame;
+                ffmpeg.av_frame_free(&f);
+                _hwFrame = null;
+            }
+
+            if (_hwDevice != null)
+            {
+                var d = _hwDevice;
+                ffmpeg.av_buffer_unref(&d);
+                _hwDevice = null;
+            }
+
+            _hwActive = false;
 
             if (_fmtCtx != null)
             {

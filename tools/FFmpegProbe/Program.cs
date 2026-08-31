@@ -34,6 +34,11 @@ internal static unsafe class Program
                 var enc = ffmpeg.avcodec_find_encoder(id);
                 Console.WriteLine($"编码器 {id}: {(enc == null ? "无" : Marshal.PtrToStringAnsi((IntPtr)enc->name))}");
             }
+
+            if (args.Any(a => a is "--hw" or "hw"))
+            {
+                return ProbeHardware();
+            }
         }
         catch (Exception ex)
         {
@@ -164,5 +169,96 @@ internal static unsafe class Program
             Console.WriteLine($"异常: {ex}");
             return 1;
         }
+    }
+
+    /// <summary>
+    /// 硬件能力探测（--hw）：枚举包内全部硬件编解码器 + 实测 hwdevice 创建 + 硬编解码器试开。
+    /// 用于确认 BtbN 完整包在目标机器（学校核显/独显）上的 qsv/nvenc/amf/mf 可用性。
+    /// </summary>
+    private static unsafe int ProbeHardware()
+    {
+        Console.WriteLine();
+        Console.WriteLine("== 硬件编解码器（包内注册的）==");
+        void* opaque = null;
+        AVCodec* it;
+        while ((it = ffmpeg.av_codec_iterate(&opaque)) != null)
+        {
+            var name = Marshal.PtrToStringAnsi((IntPtr)it->name);
+            if (name == null || !(name.Contains("_qsv") || name.Contains("_nvenc") || name.Contains("_nvdec") ||
+                                  name.Contains("_cuvid") || name.Contains("_amf") || name.Contains("_mf") ||
+                                  name.Contains("_d3d11va") || name.Contains("_dxva2")))
+            {
+                continue;
+            }
+
+            var kind = ffmpeg.av_codec_is_encoder(it) != 0 ? "编" : ffmpeg.av_codec_is_decoder(it) != 0 ? "解" : "?";
+            Console.WriteLine($"  [{kind}] {name} ({(AVCodecID)it->id})");
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("== hwdevice 创建实测 ==");
+        foreach (var type in new[]
+                 {
+                     AVHWDeviceType.AV_HWDEVICE_TYPE_QSV, AVHWDeviceType.AV_HWDEVICE_TYPE_CUDA,
+                     AVHWDeviceType.AV_HWDEVICE_TYPE_D3D11VA, AVHWDeviceType.AV_HWDEVICE_TYPE_DXVA2,
+                     AVHWDeviceType.AV_HWDEVICE_TYPE_OPENCL, AVHWDeviceType.AV_HWDEVICE_TYPE_VULKAN
+                 })
+        {
+            AVBufferRef* dev = null;
+            var err = ffmpeg.av_hwdevice_ctx_create(&dev, type, null, null, 0);
+            if (dev != null)
+            {
+                ffmpeg.av_buffer_unref(&dev);
+            }
+
+            Console.WriteLine($"  {type}: {(err == 0 ? "可用" : $"失败({err})")}");
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("== 硬件编码器试开（能 avcodec_open2 才算真可用）==");
+        foreach (var name in new[] { "h264_qsv", "h264_nvenc", "h264_amf", "h264_mf" })
+        {
+            var codec = ffmpeg.avcodec_find_encoder_by_name(name);
+            if (codec == null)
+            {
+                Console.WriteLine($"  {name}: 包内未注册");
+                continue;
+            }
+
+            var ctx = ffmpeg.avcodec_alloc_context3(codec);
+            if (ctx == null)
+            {
+                Console.WriteLine($"  {name}: 分配失败");
+                continue;
+            }
+
+            ctx->width = 640;
+            ctx->height = 360;
+            ctx->time_base = new AVRational { num = 1, den = 30 };
+            ctx->framerate = new AVRational { num = 30, den = 1 };
+            ctx->pix_fmt = AVPixelFormat.AV_PIX_FMT_NV12;
+            var err = ffmpeg.avcodec_open2(ctx, codec, null);
+            Console.WriteLine($"  {name}: {(err == 0 ? "可打开 ✓（本机可用）" : $"打开失败({err})")}");
+            ffmpeg.avcodec_free_context(&ctx);
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("== 硬件解码器试开（h264 系）==");
+        foreach (var name in new[] { "h264_qsv", "h264_cuvid", "h264_mf" })
+        {
+            var codec = ffmpeg.avcodec_find_decoder_by_name(name);
+            if (codec == null)
+            {
+                Console.WriteLine($"  {name}: 包内未注册");
+                continue;
+            }
+
+            var ctx = ffmpeg.avcodec_alloc_context3(codec);
+            var err = ctx == null ? -1 : ffmpeg.avcodec_open2(ctx, codec, null);
+            Console.WriteLine($"  {name}: {(err == 0 ? "可打开 ✓" : $"打开失败({err})")}");
+            ffmpeg.avcodec_free_context(&ctx);
+        }
+
+        return 0;
     }
 }

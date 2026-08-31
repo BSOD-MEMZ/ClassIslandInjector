@@ -35,13 +35,16 @@ internal sealed class VideoFrameSource : IDisposable
     private double _targetFps = 24;
     private bool _loop = true;
 
+    /// <summary>硬件解码器名（如 "h264_qsv"）；null = 软解。需在 Open 前设置，Open 失败自动回退软解。</summary>
+    public string? HardwareDecoder { get; set; }
+
     /// <summary>
-    /// 打开视频并建立 FFmpeg 解码（输出 BGRA，必要时缩放到 maxDimension 内）。
+    /// 打开视频并建立 FFmpeg 解码（输出 BGRA，必要时缩放到 maxDimension）。
     /// 成功返回 true；任何错误返回 false（调用方降级为无视频）。
     /// </summary>
     public bool Open(string path, int maxDimension)
     {
-        var ff = new FFmpegVideoDecoder();
+        var ff = new FFmpegVideoDecoder { HardwareDecoder = HardwareDecoder };
         if (!ff.Open(path, maxDimension))
         {
             ff.Dispose();
@@ -157,6 +160,9 @@ internal sealed class VideoFrameSource : IDisposable
 
     /// <summary>源视频帧率（来自 avg_frame_rate；未知回退 25）。播放调度按它换算媒体帧时间，防高帧率素材被慢放。</summary>
     public double SourceFps => _ffmpeg?.SourceFps ?? 25;
+
+    /// <summary>源视频原始分辨率（媒体信息展示用）。</summary>
+    public (int Width, int Height) SourceSize => _ffmpeg is { } f ? (f.SourceWidth, f.SourceHeight) : (0, 0);
 
     public void Dispose()
     {

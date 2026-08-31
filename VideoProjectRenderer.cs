@@ -15,6 +15,12 @@ internal sealed class VideoProjectRenderer
     private readonly int _outW;
     private readonly int _outH;
     private readonly int _crf;
+    /// <summary>x264 预设（画质档映射：高=medium / 中=faster / 低=veryfast，越快渲染越快）。</summary>
+    private readonly string _preset;
+    /// <summary>硬件编码器名（"auto" = 自动探测 qsv→nvenc→amf→mf；null = 软编）。</summary>
+    private readonly string? _hwEncoder;
+    /// <summary>硬件解码器名（null = 软解）。</summary>
+    private readonly string? _hwDecoder;
     private readonly int _fps;
     private readonly int _maxDimension;
     private readonly Action<double, string>? _progress;
@@ -39,7 +45,8 @@ internal sealed class VideoProjectRenderer
     }
 
     public VideoProjectRenderer(VideoProject project, string outputPath, int outW, int outH, int crf, int fps,
-        Action<double, string>? progress = null)
+        Action<double, string>? progress = null, string preset = "medium",
+        string? hwEncoder = null, string? hwDecoder = null)
     {
         _project = project;
         _outputPath = outputPath;
@@ -49,6 +56,9 @@ internal sealed class VideoProjectRenderer
         _fps = Math.Max(1, fps);
         _maxDimension = Math.Max(outW, outH);
         _progress = progress;
+        _preset = preset;
+        _hwEncoder = hwEncoder;
+        _hwDecoder = hwDecoder;
     }
 
     public void Render()
@@ -68,7 +78,7 @@ internal sealed class VideoProjectRenderer
             states[t] = new TrackState { Track = t };
         }
 
-        using var encoder = new FFmpegVideoEncoder(_outputPath, _outW, _outH, _crf, _fps);
+        using var encoder = TryCreateEncoder();
         var output = new byte[_outW * _outH * 4];
 
         for (var frame = 0; frame < totalFrames; frame++)
@@ -86,6 +96,11 @@ internal sealed class VideoProjectRenderer
                     if (clip != null)
                     {
                         st.Source = Open(clip);
+                        if (st.Source != null)
+                        {
+                            st.Source.HardwareDecoder = _hwDecoder;
+                        }
+
                         st.SourceFps = st.Source?.SourceFps ?? 0;
                     }
 
@@ -188,6 +203,51 @@ internal sealed class VideoProjectRenderer
         }
 
         encoder.Finish();
+    }
+
+    /// <summary>
+    /// 创建编码器：硬件编码器（qsv→nvenc→amf→mf）优先，打开失败（无对应硬件/驱动）时
+    /// 逐个回退，最后落到软编 libx264。渲染慢的主因是 x264 编码，核显机器硬编可提速数倍。
+    /// </summary>
+    private FFmpegVideoEncoder TryCreateEncoder()
+    {
+        var candidates = new List<string?>();
+        if (string.IsNullOrEmpty(_hwEncoder))
+        {
+            candidates.Add(null); // 未启用硬件加速：直接软编。
+        }
+        else if (_hwEncoder == "auto")
+        {
+            candidates.AddRange(["h264_qsv", "h264_nvenc", "h264_amf", "h264_mf", null]);
+        }
+        else
+        {
+            candidates.AddRange([_hwEncoder, null]); // 指定但失败也回退软编。
+        }
+
+        Exception? last = null;
+        foreach (var candidate in candidates)
+        {
+            try
+            {
+                var encoder = candidate == null
+                    ? new FFmpegVideoEncoder(_outputPath, _outW, _outH, _crf, _fps, _preset)
+                    : new FFmpegVideoEncoder(_outputPath, _outW, _outH, _crf, _fps, _preset, candidate);
+                if (candidate != null)
+                {
+                    _progress?.Invoke(0, $"使用硬件编码器 {candidate}（失败自动回退软件）");
+                }
+
+                return encoder;
+            }
+            catch (Exception ex)
+            {
+                last = ex;
+                _progress?.Invoke(0, $"编码器 {candidate ?? "libx264"} 不可用：{ex.Message}");
+            }
+        }
+
+        throw new InvalidOperationException($"无法创建编码器：{last?.Message}");
     }
 
     /// <summary>当前时刻最上层的滤镜片段（轨道号最大；同轨取起始最晚）。</summary>

@@ -765,6 +765,7 @@ public sealed class InjectorSettings
     private bool _videoProjectEnabled;
     /// <summary>视频工程 JSON 路径（配置目录\video-project.json）。</summary>
     private string _videoProjectPath = string.Empty;
+    private bool _renderHardwareAccelerated = true;
     /// <summary>自定义 FFmpeg 下载源 URL（用户自建镜像，安装器优先使用）。</summary>
     private string _customFfmpegDownloadUrl = string.Empty;
     private bool _wallpaperCheckerFollowTheme = true;
@@ -959,6 +960,8 @@ public sealed class InjectorSettings
     public bool VideoProjectEnabled { get => _videoProjectEnabled; set => Set(ref _videoProjectEnabled, value); }
     /// <summary>视频工程 JSON 路径（配置目录\video-project.json）。</summary>
     public string VideoProjectPath { get => _videoProjectPath; set => Set(ref _videoProjectPath, value?.Trim() ?? ""); }
+    /// <summary>渲染时尝试硬件编码/解码（qsv/nvenc/amf/mf 自动探测，失败自动回退软件；垃圾 CPU 机器大幅提速）。</summary>
+    public bool RenderHardwareAccelerated { get => _renderHardwareAccelerated; set => Set(ref _renderHardwareAccelerated, value); }
     /// <summary>自定义 FFmpeg 下载源 URL（用户自建镜像；留空使用内置源）。</summary>
     public string CustomFfmpegDownloadUrl { get => _customFfmpegDownloadUrl; set => Set(ref _customFfmpegDownloadUrl, value?.Trim() ?? ""); }
     /// <summary>底图编辑器舞台棋盘格是否跟随主题深浅色（关闭时用自定义两色）。</summary>
@@ -1142,6 +1145,7 @@ public sealed class InjectorSettings
         VideoFillLoop = source.VideoFillLoop;
         VideoProjectEnabled = source.VideoProjectEnabled;
         VideoProjectPath = source.VideoProjectPath;
+        RenderHardwareAccelerated = source.RenderHardwareAccelerated;
         CustomFfmpegDownloadUrl = source.CustomFfmpegDownloadUrl;
         SplitBlockBackgrounds = source.SplitBlockBackgrounds.ToDictionary(kv => kv.Key, kv => kv.Value.Clone());
         WallpaperCheckerFollowTheme = source.WallpaperCheckerFollowTheme;

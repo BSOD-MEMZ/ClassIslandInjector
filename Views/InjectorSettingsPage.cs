@@ -992,16 +992,37 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         VisibleWhen(spectrumMirroredItem, _backgroundTextureType, BackgroundTexture.Spectrum);
         VisibleWhen(spectrumAutoWidthItem, _backgroundTextureType, BackgroundTexture.Spectrum);
         // 背景图片：图层编辑器为唯一入口（简单模式已删除），不展开卡片——
-        // 一行 = 「打开底图图层编辑器」按钮 + 底图开关；底图模糊单独一行。
+        // 头部 = 标题/描述（左） + 「打开图层编辑器」按钮 + 底图开关（右）；底图模糊单独一行。
         var openEditorButton = Button("打开底图图层编辑器", OpenWallpaperLayerEditor);
         openEditorButton.Name = "OpenWallpaperEditorButton";
-        var wallpaperHeader = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        openEditorButton.VerticalAlignment = VerticalAlignment.Center;
+        _wallpaperEnabled.VerticalAlignment = VerticalAlignment.Center;
+        _wallpaperEnabled.Margin = new Thickness(12, 0, 0, 0);
+        var wallpaperTitle = new StackPanel
+        {
+            Spacing = 2,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                new TextBlock { Text = "背景图片", FontWeight = FontWeight.SemiBold },
+                new TextBlock
+                {
+                    Text = "打开图层编辑器，用 Photoshop 式图层自由设计主界面底图。",
+                    FontSize = 12,
+                    Opacity = 0.65,
+                    TextWrapping = TextWrapping.Wrap
+                }
+            }
+        };
+        var wallpaperHeader = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto") };
+        wallpaperHeader.Children.Add(wallpaperTitle);
+        Grid.SetColumn(openEditorButton, 1);
         wallpaperHeader.Children.Add(openEditorButton);
-        Grid.SetColumn(_wallpaperEnabled, 1);
+        Grid.SetColumn(_wallpaperEnabled, 2);
         wallpaperHeader.Children.Add(_wallpaperEnabled);
         _wallpaperGroup = new SettingsExpander
         {
-            // 单行卡片（无 Items 即不可展开）：头部即「打开图层编辑器」按钮 + 底图开关。
+            // 单行卡片（无 Items 即不可展开）：头部 = 标题/描述 + 按钮 + 开关。
             IconSource = new FluentIconSource("\uF42D"),
             Header = wallpaperHeader
         };

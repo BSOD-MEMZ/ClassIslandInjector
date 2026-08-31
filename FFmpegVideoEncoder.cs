@@ -18,18 +18,23 @@ internal sealed unsafe class FFmpegVideoEncoder : IDisposable
     private AVPacket* _pkt;
     private readonly int _width;
     private readonly int _height;
+    private readonly string? _hwEncoder;
+    /// <summary>编码器输入像素格式：软编 yuv420p，硬编 nv12。</summary>
+    private AVPixelFormat _swsOutFormat;
     private long _frameIndex;
     private bool _finished;
     private bool _opened;
 
-    public FFmpegVideoEncoder(string outputPath, int width, int height, int crf, int fps)
+    public FFmpegVideoEncoder(string outputPath, int width, int height, int crf, int fps, string preset = "medium",
+        string? hwEncoder = null)
     {
         _width = width;
         _height = height;
-        Open(outputPath, crf, fps);
+        _hwEncoder = hwEncoder;
+        Open(outputPath, crf, fps, preset);
     }
 
-    private void Open(string path, int crf, int fps)
+    private void Open(string path, int crf, int fps, string preset)
     {
         // 打开输出容器（mp4）。局部变量取地址，字段不能取地址。
         AVFormatContext* fmtCtx = null;
@@ -41,11 +46,29 @@ internal sealed unsafe class FFmpegVideoEncoder : IDisposable
 
         _fmtCtx = fmtCtx;
 
-        var codec = ffmpeg.avcodec_find_encoder(AVCodecID.AV_CODEC_ID_H264);
-        if (codec == null)
+        // 编码器：指定硬件编码器（h264_qsv/nvenc/amf/mf）时优先用之（渲染提速），失败抛异常由调用方回退软编。
+        // 注意：本机 MF 解码管线异常，但 h264_mf 编码器走的是系统编码 MFT，不受影响。
+        var hwName = _hwEncoder;
+        AVCodec* codec = null;
+        if (!string.IsNullOrWhiteSpace(hwName))
         {
-            throw new InvalidOperationException("找不到 H.264 编码器（libx264），请检查 FFmpeg 库完整性");
+            codec = ffmpeg.avcodec_find_encoder_by_name(hwName);
+            if (codec == null)
+            {
+                throw new InvalidOperationException($"硬件编码器 {hwName} 在当前 FFmpeg 包中不可用");
+            }
         }
+        else
+        {
+            codec = ffmpeg.avcodec_find_encoder(AVCodecID.AV_CODEC_ID_H264);
+            if (codec == null)
+            {
+                throw new InvalidOperationException("找不到 H.264 编码器（libx264），请检查 FFmpeg 库完整性");
+            }
+        }
+
+        var isHardware = !string.IsNullOrWhiteSpace(hwName);
+        _swsOutFormat = isHardware ? AVPixelFormat.AV_PIX_FMT_NV12 : AVPixelFormat.AV_PIX_FMT_YUV420P;
 
         _codecCtx = ffmpeg.avcodec_alloc_context3(codec);
         if (_codecCtx == null)
@@ -57,28 +80,46 @@ internal sealed unsafe class FFmpegVideoEncoder : IDisposable
         _codecCtx->height = _height;
         _codecCtx->time_base = new AVRational { num = 1, den = fps };
         _codecCtx->framerate = new AVRational { num = fps, den = 1 };
-        _codecCtx->pix_fmt = AVPixelFormat.AV_PIX_FMT_YUV420P;
+        _codecCtx->pix_fmt = _swsOutFormat;
         _codecCtx->gop_size = 12;
         _codecCtx->max_b_frames = 2;
-        // 用 CRF 控制质量（数值越小越清晰、文件越大）。
-        ffmpeg.av_opt_set(_codecCtx->priv_data, "preset", "medium", 0);
-        ffmpeg.av_opt_set_int(_codecCtx->priv_data, "crf", crf, 0);
+        if (isHardware)
+        {
+            // 硬编统一走码率模式（各硬件编码器对 CRF/preset 私有选项支持不一，码率最通用）。
+            // 码率按分辨率/帧率估算（约 0.07 bit/像素/帧），范围 1~20 Mbps。
+            _codecCtx->bit_rate = Math.Clamp((long)(_width * (long)_height * fps * 0.07), 1_000_000, 20_000_000);
+        }
+        else
+        {
+            // 用 CRF 控制质量（数值越小越清晰、文件越大）；preset 控制编码速度
+            // （veryfast 约比 medium 快 3~5 倍，同 CRF 下体积略大，壁纸用途可接受）。
+            ffmpeg.av_opt_set(_codecCtx->priv_data, "preset", preset, 0);
+            ffmpeg.av_opt_set_int(_codecCtx->priv_data, "crf", crf, 0);
+        }
 
         hr = ffmpeg.avcodec_open2(_codecCtx, codec, null);
         if (hr < 0)
         {
+            // 打开失败（如机器无对应硬件）：释放本方法已分配的资源后抛出，由调用方回退软编。
+            var stale = _codecCtx;
+            ffmpeg.avcodec_free_context(&stale);
+            _codecCtx = null;
+            ffmpeg.avformat_free_context(_fmtCtx);
+            _fmtCtx = null;
             throw new InvalidOperationException($"打开编码器失败（{hr}）");
         }
 
         var stream = ffmpeg.avformat_new_stream(_fmtCtx, codec);
         if (stream == null)
         {
+            Dispose();
             throw new InvalidOperationException("创建视频流失败");
         }
 
         hr = ffmpeg.avcodec_parameters_from_context(stream->codecpar, _codecCtx);
         if (hr < 0)
         {
+            Dispose();
             throw new InvalidOperationException($"复制编码参数失败（{hr}）");
         }
 
@@ -87,24 +128,26 @@ internal sealed unsafe class FFmpegVideoEncoder : IDisposable
         hr = ffmpeg.avio_open(&_fmtCtx->pb, path, ffmpeg.AVIO_FLAG_WRITE);
         if (hr < 0)
         {
+            Dispose();
             throw new InvalidOperationException($"无法写入输出文件（{hr}）");
         }
 
         hr = ffmpeg.avformat_write_header(_fmtCtx, null);
         if (hr < 0)
         {
+            Dispose();
             throw new InvalidOperationException($"写入文件头失败（{hr}）");
         }
 
         _sws = ffmpeg.sws_getContext(_width, _height, AVPixelFormat.AV_PIX_FMT_BGRA,
-            _width, _height, AVPixelFormat.AV_PIX_FMT_YUV420P, (int)SwsFlags.SWS_BILINEAR, null, null, null);
+            _width, _height, _swsOutFormat, (int)SwsFlags.SWS_BILINEAR, null, null, null);
         if (_sws == null)
         {
             throw new InvalidOperationException("创建颜色转换器失败");
         }
 
         _frame = ffmpeg.av_frame_alloc();
-        _frame->format = (int)AVPixelFormat.AV_PIX_FMT_YUV420P;
+        _frame->format = (int)_swsOutFormat;
         _frame->width = _width;
         _frame->height = _height;
         ffmpeg.av_frame_get_buffer(_frame, 32);
