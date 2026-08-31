@@ -24,6 +24,7 @@ internal sealed class VideoProjectRenderer
     private readonly int _fps;
     private readonly int _maxDimension;
     private readonly Action<double, string>? _progress;
+    private readonly CancellationToken _token;
 
     private sealed class TrackState
     {
@@ -46,7 +47,7 @@ internal sealed class VideoProjectRenderer
 
     public VideoProjectRenderer(VideoProject project, string outputPath, int outW, int outH, int crf, int fps,
         Action<double, string>? progress = null, string preset = "medium",
-        string? hwEncoder = null, string? hwDecoder = null)
+        string? hwEncoder = null, string? hwDecoder = null, CancellationToken token = default)
     {
         _project = project;
         _outputPath = outputPath;
@@ -59,6 +60,7 @@ internal sealed class VideoProjectRenderer
         _preset = preset;
         _hwEncoder = hwEncoder;
         _hwDecoder = hwDecoder;
+        _token = token;
     }
 
     public void Render()
@@ -83,6 +85,7 @@ internal sealed class VideoProjectRenderer
 
         for (var frame = 0; frame < totalFrames; frame++)
         {
+            _token.ThrowIfCancellationRequested();
             var time = frame / (double)_fps;
 
             // 每轨：确保当前时刻的活跃片段已打开解码器。
@@ -195,7 +198,7 @@ internal sealed class VideoProjectRenderer
             var filter = FindActiveFilter(clips, time);
             if (filter != null && !string.IsNullOrEmpty(filter.Filter))
             {
-                FilterUtils.ApplyInPlace(output, _outW, _outH, filter.Filter);
+                FilterUtils.ApplyInPlace(output, _outW, _outH, filter.Filter, filter.FilterIntensity);
             }
 
             encoder.EncodeFrame(output);

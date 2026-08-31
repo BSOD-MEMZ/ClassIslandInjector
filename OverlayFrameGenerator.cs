@@ -163,6 +163,13 @@ internal static class OverlayFrameGenerator
                 var rect = new Rectangle(0, 0, Math.Max(1, w - 1), Math.Max(1, h - 1));
                 using var path = BuildShapePath(clip.Shape, rect);
                 g.FillPath(brush, path);
+                // 形状描边：宽度相对输出高（0 = 无描边）。
+                if (clip.StrokeWidth > 0)
+                {
+                    var penWidth = (float)Math.Max(1, clip.StrokeWidth * h);
+                    using var pen = new Pen(ParseColor(clip.StrokeColor), penWidth);
+                    g.DrawPath(pen, path);
+                }
             }
         }
 

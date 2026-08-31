@@ -57,10 +57,16 @@ public sealed class VideoClip
     public string Text { get; set; } = "文本";
     /// <summary>文本/形状颜色（#AARRGGBB，支持透明度）。</summary>
     public string Color { get; set; } = "#FFFFFFFF";
+    /// <summary>形状描边颜色（#AARRGGBB；描边宽度 &gt; 0 时生效）。</summary>
+    public string StrokeColor { get; set; } = "#FF000000";
+    /// <summary>形状描边宽度（相对输出高的比例，0 = 无描边）。</summary>
+    public double StrokeWidth { get; set; }
     /// <summary>形状类型（Kind=Shape）：Rect / Ellipse / Triangle / Diamond / Star / Heart / ArrowRight / Pentagon / Ring / Cross。</summary>
     public string Shape { get; set; } = "Rect";
     /// <summary>滤镜类型（Kind=Filter）：Grayscale / Sepia / Invert / Brighten / Darken / Mosaic。</summary>
     public string Filter { get; set; } = "";
+    /// <summary>滤镜强度（0..1，0 = 无效果，1 = 完全应用）。</summary>
+    public double FilterIntensity { get; set; } = 1;
     /// <summary>灰度效果（0=彩色，1=完全灰度）。</summary>
     public double Grayscale { get; set; }
     /// <summary>水平翻转。</summary>
