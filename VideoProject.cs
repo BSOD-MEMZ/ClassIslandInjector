@@ -20,6 +20,24 @@ public sealed class VideoProject
     /// <summary>轨道数（最大轨道号 + 1，至少 1）。</summary>
     public int TrackCount => Clips.Count == 0 ? 1 : Clips.Max(c => c.Track) + 1;
 
+    /// <summary>每轨状态（按下标 = 轨道号；长度不足时按需补默认）。</summary>
+    public List<TrackState> TrackStates { get; set; } = [];
+
+    /// <summary>取轨道状态（只读；不存在返回 null = 默认行为）。播放/渲染用。</summary>
+    public TrackState? GetTrackState(int track) =>
+        track >= 0 && track < TrackStates.Count ? TrackStates[track] : null;
+
+    /// <summary>取轨道状态（按需创建默认，编辑器用）。</summary>
+    public TrackState TrackStateOf(int track)
+    {
+        while (TrackStates.Count <= track)
+        {
+            TrackStates.Add(new TrackState());
+        }
+
+        return TrackStates[track];
+    }
+
     /// <summary>工程总时长（秒）= 所有片段末尾的最大值（多轨取最长）。</summary>
     public double Duration => Clips.Count == 0 ? 0 : Clips.Max(c => c.StartTime + c.Duration);
 
@@ -44,6 +62,17 @@ public sealed class VideoProject
             }
         }
     }
+}
+
+/// <summary>轨道级状态（锁定 / SOLO / 隐藏）。</summary>
+public sealed class TrackState
+{
+    /// <summary>锁定：编辑器禁止修改该轨片段（拖动 / 删除 / 改属性）。</summary>
+    public bool Locked { get; set; }
+    /// <summary>SOLO：有任一轨 SOLO 时仅播放 / 渲染 SOLO 轨（其余静音）。</summary>
+    public bool Solo { get; set; }
+    /// <summary>隐藏：编辑器内该轨元素半透明显示，播放 / 渲染不显示。</summary>
+    public bool Hidden { get; set; }
 }
 
 /// <summary>一个视频/覆盖层片段：素材路径（视频）+ 入出点 + 轨道/起始时间 + 显示变换 + 文本/形状。</summary>

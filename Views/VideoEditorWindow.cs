@@ -39,6 +39,10 @@ internal sealed class VideoEditorWindow : MyWindow
     private readonly VideoProject _project = VideoProjectStore.Load(VideoProjectStore.DefaultPath);
     private readonly List<string> _assets = [];
     private VideoClip? _selected;
+    /// <summary>多选集合（框选/点击多选；_selected 为主选中供检查器用）。</summary>
+    private readonly HashSet<VideoClip> _selectedClips = [];
+    /// <summary>片段块映射（clip → 时间轴块；拖动多选/更新位置用，RefreshTimeline 重建）。</summary>
+    private readonly Dictionary<VideoClip, Border> _blockByClip = [];
     private VideoProjectPlayer? _player;
     private bool _playing;
     private bool _updatingUi;
@@ -56,8 +60,23 @@ internal sealed class VideoEditorWindow : MyWindow
     private bool _seekFrameBusy;
     private double _seekFramePendingTime;
     private bool _seekFrameHasPending;
-    /// <summary>拖动片段块的拖拽状态（块跟手实时移动，释放时落轨；GrabX/Y = 按下点相对块偏移）。</summary>
-    private (VideoClip Clip, double GrabX, double GrabY, double OriginalStartTime)? _moveDrag;
+    /// <summary>拖动片段块组的拖拽状态（多选组跟手实时移动，释放时落轨）。</summary>
+    private (double GrabX, double GrabY, double GrabTime, Dictionary<VideoClip, double> Origins, Dictionary<VideoClip, int> Tracks)? _moveGroup;
+    /// <summary>框选状态：起点（时间轴内容坐标）；null = 未框选。</summary>
+    private Point? _marqueeStart;
+    /// <summary>框选是否已移动超过阈值（区分点击 seek 与画框）。</summary>
+    private bool _marqueeMoved;
+    /// <summary>框选矩形（可见虚线框，_timelineRoot 内）。</summary>
+    private readonly Avalonia.Controls.Shapes.Rectangle _marqueeRect = new()
+    {
+        Stroke = ThemePalette.AccentBrush(),
+        StrokeThickness = 1,
+        StrokeDashArray = [3, 2],
+        Fill = ThemePalette.AccentBrushWithAlpha(35),
+        IsVisible = false,
+        IsHitTestVisible = false,
+        ZIndex = 60
+    };
     /// <summary>时间轴泳道列表（拖拽时高亮目标轨道用，RefreshTimeline 重建）。</summary>
     private readonly List<Border> _lanes = [];
     /// <summary>拖拽插入新轨道时的水平插入指示线（显示在两条轨道之间）。</summary>
@@ -190,10 +209,18 @@ internal sealed class VideoEditorWindow : MyWindow
     private readonly Grid _timeline = new();
     // 头部与泳道行高一致（60）且均无行间距，才能逐行对齐。
     private readonly StackPanel _trackHeaders = new() { Orientation = Orientation.Vertical };
-    /// <summary>时间轴像素/秒（横向缩放，可调 2..60）。</summary>
-    private double _pxPerSecond = 6;
+    /// <summary>时间轴像素/秒（横向缩放，可调 2..200；100% = _basePxPerSecond）。</summary>
+    private double _pxPerSecond = 36;
+    /// <summary>100% 缩放的像素/秒（用户要求 100% = 旧版 600%，即 6×6=36）。</summary>
+    private const double BasePxPerSecond = 36;
     /// <summary>时间轴顶部标尺高度（与轨道头对齐）。</summary>
     private const double RulerHeight = 22;
+    /// <summary>轨道头列宽（与 timelineContent/topBar 的 "92,*" 列定义一致）。</summary>
+    private const double TimelineHeaderWidth = 92;
+    /// <summary>轨道头列与泳道列的水平间距（ColumnSpacing）。</summary>
+    private const double TimelineHeaderSpacing = 8;
+    /// <summary>泳道列左边缘相对时间轴面板的偏移（= 轨道头列宽 + 间距）；播放头竖线/圆头 0 点基准。</summary>
+    private const double LaneColumnOffset = TimelineHeaderWidth + TimelineHeaderSpacing;
     /// <summary>时间轴工具条近似高度（用于分割条拖拽时保证内容可见）。</summary>
     private const double TimelineToolbarHeight = 32;
     /// <summary>轨道泳道高度（可调，40..140；默认 60）。</summary>
@@ -244,12 +271,12 @@ internal sealed class VideoEditorWindow : MyWindow
         MinWidth = 40,
         TextAlignment = TextAlignment.Center
     };
-    /// <summary>时间轴横向缩放滑块（像素/秒 2..60，拖动实时缩放，面板右侧对齐）。</summary>
+    /// <summary>时间轴横向缩放滑块（1%~1000%，100% = BasePxPerSecond 36 px/秒，拖动实时缩放）。</summary>
     private readonly Slider _zoomSlider = new()
     {
-        Minimum = 2,
-        Maximum = 60,
-        Value = 6,
+        Minimum = 0.36,
+        Maximum = 360,
+        Value = 36,
         Width = 150,
         VerticalAlignment = VerticalAlignment.Center
     };
@@ -391,8 +418,10 @@ internal sealed class VideoEditorWindow : MyWindow
     /// <summary>固定标尺宿主（在滚动区上方，不随纵向滚动走）；标尺随内容横向滚动经 _rulerTranslate 同步。</summary>
     private Border _rulerHost = null!;
     private readonly TranslateTransform _rulerTranslate = new();
-    /// <summary>标尺画布（RefreshTimeline 重建标尺内容，宽度 = 时间轴内容宽）。</summary>
-    private readonly Canvas _rulerCanvas = new();
+    /// <summary>标尺画布（RefreshTimeline 重建标尺内容，宽度 = 时间轴内容宽）。
+    /// 必须左对齐：内容宽可能超过视口，若默认 Stretch/居中会被推到负偏移，导致标尺点击的
+    /// GetPosition(_rulerCanvas) 整体偏移（seek「隔一段距离」）。</summary>
+    private readonly Canvas _rulerCanvas = new() { HorizontalAlignment = HorizontalAlignment.Left };
     /// <summary>素材时长缓存（裁剪右边界上限）。</summary>
     private readonly Dictionary<string, double> _assetDurations = [];
     /// <summary>seek 解码持久源缓存（轨 → 片段+源+帧号）；scrub 期间复用，让拖动即时显示帧。</summary>
@@ -525,6 +554,16 @@ internal sealed class VideoEditorWindow : MyWindow
                     TogglePreview();
                     e.Handled = true;
                     break;
+                case Key.Left:
+                    // 逐帧后退（1 帧 = 1/目标帧率）。
+                    SetPlayhead(Math.Max(0, _playheadTime - 1.0 / _targetFps));
+                    e.Handled = true;
+                    break;
+                case Key.Right:
+                    // 逐帧前进。
+                    SetPlayhead(_playheadTime + 1.0 / _targetFps);
+                    e.Handled = true;
+                    break;
                 case Key.A:
                     // 选择工具。
                     SetSplitTool(false);
@@ -631,7 +670,7 @@ internal sealed class VideoEditorWindow : MyWindow
             }
 
             var oldPx = _pxPerSecond;
-            var newPx = Math.Clamp(e.NewValue, 2, 60);
+            var newPx = Math.Clamp(e.NewValue, 0.36, 360);
             if (Math.Abs(newPx - oldPx) < 0.01)
             {
                 return;
@@ -643,7 +682,7 @@ internal sealed class VideoEditorWindow : MyWindow
             RefreshTimeline();
             var newOffset = Math.Max(0, anchorTime * (newPx - oldPx) + offsetX);
             _lanesScroll.Offset = new Vector(newOffset, 0);
-            _zoomText.Text = $"{_pxPerSecond / 6 * 100:0}%";
+            _zoomText.Text = $"{_pxPerSecond / BasePxPerSecond * 100:0}%";
         };
         ToolTip.SetTip(_zoomSlider, "缩放时间轴（也可 Ctrl+滚轮）");
         ToolTip.SetTip(_cutButton, "刀片切割：在播放头位置把所有覆盖该时刻的片段切成两段");
@@ -677,7 +716,6 @@ internal sealed class VideoEditorWindow : MyWindow
                 CommandButton("\uE197", "上移轨道", "把选中片段上移一个轨道", MoveClipUp),
                 CommandButton("\uE0CB", "下移轨道", "把选中片段下移一个轨道", MoveClipDown),
                 new CommandBarSeparator(),
-                CommandButton("\uE7FF", "清空时间轴", "删除时间轴上全部片段", ClearTimeline),
                 CommandButton("\uEEB5", "渲染并应用", "保存工程并应用到主界面", RenderAndApply)
             }
         };
@@ -1041,7 +1079,7 @@ internal sealed class VideoEditorWindow : MyWindow
         _timelineToolCombo.SelectedIndex = 0;
         _timelineToolCombo.SelectionChanged += TimelineToolComboOnSelectionChanged;
         ToolTip.SetTip(_timelineToolCombo, "选择工具（A）：点击选中/拖动移动；分割工具（B）：点击时间轴切分片段");
-        _zoomText.Text = $"{_pxPerSecond / 6 * 100:0}%";
+        _zoomText.Text = $"{_pxPerSecond / BasePxPerSecond * 100:0}%";
         var timelineLeft = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -1278,7 +1316,7 @@ internal sealed class VideoEditorWindow : MyWindow
 
         clip.StartTime = FitToTrack(clip, clip.StartTime, clip.Track);
         _project.Clips.Add(clip);
-        _selected = clip;
+        SelectClip(clip);
         _currentTool = "select";
         CompactTracks();
         RefreshTimeline();
@@ -1525,6 +1563,13 @@ internal sealed class VideoEditorWindow : MyWindow
             return;
         }
 
+        if (_project.GetTrackState(clip.Track) is { Locked: true })
+        {
+            FillPropertyPanel();
+            _statusText.Text = "该轨道已锁定，无法修改属性。";
+            return;
+        }
+
         var idx = _filterCombo.SelectedIndex;
         if (idx < 0 || idx >= FilterDefs.Length)
         {
@@ -1548,6 +1593,13 @@ internal sealed class VideoEditorWindow : MyWindow
     {
         if (_updatingUi || _selected is not { } clip || clip.Kind == "Video")
         {
+            return;
+        }
+
+        if (_project.GetTrackState(clip.Track) is { Locked: true })
+        {
+            FillPropertyPanel();
+            _statusText.Text = "该轨道已锁定，无法修改属性。";
             return;
         }
 
@@ -1657,6 +1709,7 @@ internal sealed class VideoEditorWindow : MyWindow
         if (used.Count == 0)
         {
             _selectedTrack = 0;
+            _project.TrackStates.Clear();
             return;
         }
 
@@ -1670,6 +1723,16 @@ internal sealed class VideoEditorWindow : MyWindow
         {
             clip.Track = map[clip.Track];
         }
+
+        // 轨道状态随轨道号压缩重排（缺失用默认，空轨状态丢弃）。
+        var newStates = new List<TrackState>();
+        for (var i = 0; i < used.Count; i++)
+        {
+            newStates.Add(_project.GetTrackState(used[i]) ?? new TrackState());
+        }
+
+        _project.TrackStates.Clear();
+        _project.TrackStates.AddRange(newStates);
 
         if (_selectedTrack >= _project.TrackCount)
         {
@@ -1686,7 +1749,7 @@ internal sealed class VideoEditorWindow : MyWindow
     private void ZoomTimeline(double factor, double? anchorX = null)
     {
         var oldPx = _pxPerSecond;
-        var newPx = Math.Clamp(oldPx * factor, 2, 60);
+        var newPx = Math.Clamp(oldPx * factor, 0.36, 360);
         if (Math.Abs(newPx - oldPx) < 0.01)
         {
             return;
@@ -1699,7 +1762,7 @@ internal sealed class VideoEditorWindow : MyWindow
         // 锚定：t*newPx - newOffsetX = t*oldPx - oldOffsetX → newOffsetX = t*(newPx-oldPx) + oldOffsetX。
         var newOffset = Math.Max(0, anchorTime * (newPx - oldPx) + offsetX);
         _lanesScroll.Offset = new Vector(newOffset, 0);
-        _zoomText.Text = $"{_pxPerSecond / 6 * 100:0}%";
+        _zoomText.Text = $"{_pxPerSecond / BasePxPerSecond * 100:0}%";
     }
 
     // ============ 撤销/重做 ============
@@ -1709,7 +1772,13 @@ internal sealed class VideoEditorWindow : MyWindow
     {
         OutputWidth = p.OutputWidth,
         OutputHeight = p.OutputHeight,
-        Clips = p.Clips.Select(c => c.Clone()).ToList()
+        Clips = p.Clips.Select(c => c.Clone()).ToList(),
+        TrackStates = p.TrackStates.Select(s => new TrackState
+        {
+            Locked = s.Locked,
+            Solo = s.Solo,
+            Hidden = s.Hidden
+        }).ToList()
     };
 
     /// <summary>
@@ -2168,7 +2237,7 @@ internal sealed class VideoEditorWindow : MyWindow
 
         PushUndo();
         _project.Clips.Add(clip);
-        _selected = clip;
+        SelectClip(clip);
         _selectedTrack = clip.Track;
         CompactTracks();
         RefreshTimeline();
@@ -2239,7 +2308,7 @@ internal sealed class VideoEditorWindow : MyWindow
         };
         PushUndo();
         _project.Clips.Add(clip);
-        _selected = clip;
+        SelectClip(clip);
         RefreshTimeline();
         FillPropertyPanel();
         ScheduleSave();
@@ -2294,7 +2363,7 @@ internal sealed class VideoEditorWindow : MyWindow
 
         PushUndo();
         _project.Clips.Add(clip);
-        _selected = clip;
+        SelectClip(clip);
         _selectedTrack = clip.Track;
         CompactTracks();
         RefreshTimeline();
@@ -2749,14 +2818,6 @@ internal sealed class VideoEditorWindow : MyWindow
         for (var t = trackCount - 1; t >= 0; t--)
         {
             var trackIndex = t;
-            var title = new TextBlock
-            {
-                Text = TrackName(t, trackCount),
-                FontSize = 11,
-                Opacity = 0.9,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
-            };
             var resizeGrip = new Border
             {
                 Height = 6,
@@ -2794,19 +2855,40 @@ internal sealed class VideoEditorWindow : MyWindow
                     e.Handled = true;
                 }
             };
+            var state = _project.TrackStateOf(trackIndex);
+            // 轨道头：直接横向排列 锁定 / SOLO / 隐藏 / 删除 四个按钮（FluentSystemIcons-Resizable 图标）。
+            var btnLock = TrackHeaderButton("\uEAEF", "锁定/解锁该轨道（锁定后该轨片段不可编辑）", state.Locked,
+                () => { state.Locked = !state.Locked; RefreshTimeline(); ScheduleSave(); });
+            var btnSolo = TrackHeaderButton("\uE966", "SOLO：只播放/渲染该轨道（可多轨）", state.Solo,
+                () => { state.Solo = !state.Solo; RefreshTimeline(); ScheduleSave(); });
+            var btnHide = TrackHeaderButton(state.Hidden ? "\uE816" : "\uE812",
+                "隐藏该轨道（编辑半透明，播放/渲染不显示）", state.Hidden,
+                () => { state.Hidden = !state.Hidden; RefreshTimeline(); ScheduleSave(); });
+            var btnDel = TrackHeaderButton("\uE61C", "删除该轨道（该轨全部片段）", false,
+                () => DeleteTrack(trackIndex));
+            var headerButtons = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 1,
+                Margin = new Thickness(2),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Children = { btnLock, btnSolo, btnHide, btnDel }
+            };
             var header = new Border
             {
                 Height = LaneHeightOf(t),
                 CornerRadius = new CornerRadius(4),
                 Background = trackIndex == _selectedTrack
                     ? ThemePalette.AccentBrushWithAlpha(110)
-                    : new SolidColorBrush(TrackHeaderIdleColor()),
+                    : new SolidColorBrush(state.Hidden ? TrackHeaderHiddenColor() : TrackHeaderIdleColor()),
                 Child = new Grid
                 {
                     RowDefinitions = new RowDefinitions("*,Auto"),
-                    Children = { title, resizeGrip }
+                    Children = { headerButtons, resizeGrip }
                 }
             };
+            Grid.SetRow(headerButtons, 0);
             Grid.SetRow(resizeGrip, 1);
             header.PointerPressed += (_, _) =>
             {
@@ -2854,7 +2936,7 @@ internal sealed class VideoEditorWindow : MyWindow
             });
             lane.AddHandler(DragDrop.DragLeaveEvent, (_, _) => ClearDropHighlight());
             lane.AddHandler(DragDrop.DropEvent, (_, e) => HandleTimelineDrop(e));
-            // 点击泳道空白处：把播放头移到该位置（播放中则跳转）；点片段由块自己处理选中。
+            // 点击泳道空白处：把播放头移到该位置（播放中则跳转）；选择模式下按住拖动 = 框选多片段。
             // 分割工具下不移动播放头（分割由时间轴层 PointerPressed 统一处理）。
             lane.PointerPressed += (_, e) =>
             {
@@ -2866,6 +2948,72 @@ internal sealed class VideoEditorWindow : MyWindow
                 if (e.Source == lane || e.Source == canvas)
                 {
                     SetPlayhead(Math.Max(0, e.GetPosition(_timelineRoot).X / _pxPerSecond));
+                    // 记录框选起点并捕获（移动超阈值 = 画框；无移动 = 纯点击 seek）。
+                    _marqueeStart = e.GetPosition(_timelineRoot);
+                    _marqueeMoved = false;
+                    e.Pointer.Capture(lane);
+                }
+            };
+            lane.PointerMoved += (_, e) =>
+            {
+                if (_splitTool || _marqueeStart is not { } start)
+                {
+                    return;
+                }
+
+                var cur = e.GetPosition(_timelineRoot);
+                if (Math.Abs(cur.X - start.X) < 4 && Math.Abs(cur.Y - start.Y) < 4)
+                {
+                    return;
+                }
+
+                _marqueeMoved = true;
+                var x = Math.Min(start.X, cur.X);
+                var y = Math.Min(start.Y, cur.Y);
+                _marqueeRect.IsVisible = true;
+                Canvas.SetLeft(_marqueeRect, x);
+                Canvas.SetTop(_marqueeRect, y);
+                _marqueeRect.Width = Math.Abs(cur.X - start.X);
+                _marqueeRect.Height = Math.Abs(cur.Y - start.Y);
+            };
+            lane.PointerReleased += (_, e) =>
+            {
+                if (_splitTool || _marqueeStart is not { } start)
+                {
+                    return;
+                }
+
+                _marqueeStart = null;
+                var wasMove = _marqueeMoved;
+                _marqueeMoved = false;
+                _marqueeRect.IsVisible = false;
+                e.Pointer.Capture(null);
+                if (wasMove)
+                {
+                    // 完成框选：选中与框相交的片段（保留锁定轨片段为只读选中）。
+                    var cur = e.GetPosition(_timelineRoot);
+                    _selectedClips.Clear();
+                    foreach (var c in MarqueeSelect(start, cur))
+                    {
+                        _selectedClips.Add(c);
+                    }
+
+                    _selected = _selectedClips.FirstOrDefault();
+                    RefreshTimeline(); // 重建块，按 isSelected 高亮（框选视觉反馈）。
+                    FillPropertyPanel();
+                    UpdateStageHandles();
+                    _statusText.Text = _selectedClips.Count == 0
+                        ? "未选中片段。"
+                        : $"已框选 {_selectedClips.Count} 个片段（可拖动移动 / Delete 删除）。";
+                }
+                else
+                {
+                    // 点击空白（未形成框选）：取消选择（仅 seek）。
+                    _selectedClips.Clear();
+                    _selected = null;
+                    UpdateAllBlockSelection();
+                    FillPropertyPanel();
+                    UpdateStageHandles();
                 }
             };
 
@@ -2915,6 +3063,7 @@ internal sealed class VideoEditorWindow : MyWindow
         }
 
         _timelineRoot.Children.Clear();
+        _blockByClip.Clear();
         _timelineRoot.Width = totalWidth;
         _timelineRoot.Height = lanesHeight;
         Canvas.SetTop(_timeline, 0);
@@ -2934,11 +3083,13 @@ internal sealed class VideoEditorWindow : MyWindow
         _rulerCanvas.Children.Add(BuildRuler(totalWidth));
         _insertIndicator.IsVisible = false;
         _timelineRoot.Children.Add(_insertIndicator);
+        _marqueeRect.IsVisible = false;
+        _timelineRoot.Children.Add(_marqueeRect);
         // 播放头竖线/圆头已移到时间轴全高覆盖层（_playheadOverlay），这里只同步位置。
         PositionPlayheadLine();
         _timeText.Text = FormatTime(_playheadTime);
 
-        _zoomText.Text = $"{_pxPerSecond / 6 * 100:0}%";
+        _zoomText.Text = $"{_pxPerSecond / BasePxPerSecond * 100:0}%";
         _updatingZoom = true;
         _zoomSlider.Value = _pxPerSecond;
         _updatingZoom = false;
@@ -3062,8 +3213,10 @@ internal sealed class VideoEditorWindow : MyWindow
     }
 
     /// <summary>
-    /// 定位播放头竖线（在 _playheadOverlay 全高覆盖层内）：X = time*px - 9 - 横向滚动偏移
-    /// （2px 竖线在 18px 热区左缘，中心 = 圆头中心 = time*px - 8 - offsetX），Top=0 贯穿标尺直下泳道。
+    /// 定位播放头竖线（在 _playheadOverlay 全高覆盖层内）。
+    /// 覆盖层左边缘 = 轨道头列左边缘，而泳道/标尺 0 点在 LaneColumnOffset（92+8=100）处，
+    /// 故 X 必须加 LaneColumnOffset 才能与泳道内容、标尺刻度对齐（否则 0 点落在轨道头列上）。
+    /// 2px 竖线在 18px 热区左缘，中心 = left + 1 = LaneColumnOffset + time*px - offsetX。
     /// </summary>
     private void PositionPlayheadLine()
     {
@@ -3072,14 +3225,12 @@ internal sealed class VideoEditorWindow : MyWindow
             return;
         }
 
-        Canvas.SetLeft(_playhead, _playheadTime * _pxPerSecond - 9 - _lanesScroll.Offset.X);
+        Canvas.SetLeft(_playhead, LaneColumnOffset + _playheadTime * _pxPerSecond - 1 - _lanesScroll.Offset.X);
         Canvas.SetTop(_playhead, 0);
     }
 
     /// <summary>定位标尺上的播放头抓取头。</summary>
-    /// 泳道 seek 竖线（2px 强调色，位于 18px 热区左缘）中心在内容坐标 time*px - 8；
-    /// 圆头（14px，居中于 18px 热区）中心 = left + 9，故 left 必须 = time*px - 17 - 横向滚动偏移，
-    /// 才能让圆头与 seek 竖线中心严格重合（旧版 -9 会整体偏右 8px，缩放后"掉头"）。
+    /// 与竖线同基准：圆头中心 = left + 9 = LaneColumnOffset + time*px - offsetX（与泳道/标尺 0 点对齐）。
     /// </summary>
     private void PositionPlayheadHead()
     {
@@ -3088,7 +3239,7 @@ internal sealed class VideoEditorWindow : MyWindow
             return;
         }
 
-        Canvas.SetLeft(_playheadHead, _playheadTime * _pxPerSecond - 17 - _lanesScroll.Offset.X);
+        Canvas.SetLeft(_playheadHead, LaneColumnOffset + _playheadTime * _pxPerSecond - 9 - _lanesScroll.Offset.X);
         Canvas.SetTop(_playheadHead, RulerHeight - 16);
     }
 
@@ -3184,6 +3335,65 @@ internal sealed class VideoEditorWindow : MyWindow
     private static Color TrackHeaderIdleColor() => ThemePalette.IsDarkTheme()
         ? Color.FromArgb(50, 90, 90, 100)
         : Color.FromArgb(60, 180, 180, 185);
+
+    /// <summary>轨道头隐藏态底色（更暗，提示该轨被隐藏）。</summary>
+    private static Color TrackHeaderHiddenColor() => ThemePalette.IsDarkTheme()
+        ? Color.FromArgb(40, 55, 55, 62)
+        : Color.FromArgb(45, 150, 150, 155);
+
+    /// <summary>轨道头上的紧凑图标按钮（FluentSystemIcons-Resizable 图标字体，固定宽 19，横排对齐；active 时强调色高亮）。</summary>
+    private static Button TrackHeaderButton(string glyph, string tooltip, bool active, Action onClick)
+    {
+        var b = new Button
+        {
+            Content = new TextBlock
+            {
+                Text = glyph,
+                FontFamily = AppBase.FluentIconsFontFamily,
+                FontSize = 11,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            },
+            Padding = new Thickness(0),
+            Margin = new Thickness(0),
+            MinWidth = 0,
+            MinHeight = 0,
+            Width = 19,
+            Height = 15,
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center
+        };
+        if (active)
+        {
+            b.Background = ThemePalette.AccentBrushWithAlpha(160);
+            b.Foreground = Brushes.White;
+        }
+
+        ToolTip.SetTip(b, tooltip);
+        b.Click += (_, _) => onClick();
+        return b;
+    }
+
+    /// <summary>删除整个轨道（该轨全部片段），轨道号压缩。锁定轨不可删。</summary>
+    private void DeleteTrack(int track)
+    {
+        if (_project.GetTrackState(track) is { Locked: true })
+        {
+            _statusText.Text = $"轨道 {track + 1} 已锁定，无法删除。";
+            return;
+        }
+
+        PushUndo();
+        var removed = _project.Clips.RemoveAll(c => c.Track == track);
+        _selected = null;
+        CompactTracks();
+        RefreshTimeline();
+        ClearSelection();
+        ScheduleSave();
+        _statusText.Text = removed > 0
+            ? $"已删除轨道 {track + 1}（{removed} 个片段）。"
+            : $"轨道 {track + 1} 已删除（无片段）。";
+    }
 
     /// <summary>把片段放到指定轨道上不与任何同轨片段重叠的最近可用位置（优先向后，其次向前）。</summary>
     private double FitToTrack(VideoClip clip, double desired, int track)
@@ -3416,10 +3626,13 @@ internal sealed class VideoEditorWindow : MyWindow
         StopDragAutoScroll();
     }
 
-    /// <summary>构建一个时间轴片段块（绝对定位到泳道画布；支持点击选中、按住拖拽移动、左右边缘拖拽裁剪入/出点）。</summary>
+    /// <summary>构建一个时间轴片段块（绝对定位到泳道画布；支持点击/框选多选、按住拖拽移动多选组、左右边缘拖拽裁剪入/出点）。</summary>
     private Border BuildClipBlock(VideoClip clip)
     {
-        var isSelected = ReferenceEquals(clip, _selected);
+        var isSelected = _selectedClips.Contains(clip);
+        var trackState = _project.GetTrackState(clip.Track);
+        var isLocked = trackState is { Locked: true };
+        var isHiddenTrack = trackState is { Hidden: true };
         var durationText = new TextBlock
         {
             Text = $"{clip.StartTime:0.#}s · {clip.Duration:0.#}s",
@@ -3435,7 +3648,7 @@ internal sealed class VideoEditorWindow : MyWindow
             {
                 new TextBlock
                 {
-                    Text = ClipDisplayName(clip),
+                    Text = ClipDisplayName(clip) + (isLocked ? " \uE72E" : ""),
                     FontSize = 11,
                     TextTrimming = TextTrimming.CharacterEllipsis,
                     MaxWidth = 150
@@ -3472,15 +3685,14 @@ internal sealed class VideoEditorWindow : MyWindow
                 : new SolidColorBrush(clip.Kind == "Filter" ? FilterBlockColor() : UnselectedBlockColor()),
             BorderBrush = isSelected ? Brushes.White : Brushes.Transparent,
             BorderThickness = new Thickness(1.5),
+            Opacity = isHiddenTrack ? 0.45 : 1,
             Child = new Grid { Children = { content, leftHandle, rightHandle } }
         };
         Canvas.SetLeft(block, clip.StartTime * _pxPerSecond);
         Canvas.SetTop(block, 6);
+        _blockByClip[clip] = block;
 
         // 点击选中 + 按下准备拖拽（指针捕获 + 跟手实时移动，不用 DragDrop，稳定可靠）。
-        // 按下只记录拖动起点并捕获指针，不挪动块；真正开始拖动（PointerMoved）时才浮到根画布——
-        // 原泳道 ClipToBounds 会裁剪跨泳道浮动，因此需要根画布。纯点击不触碰视觉树，
-        // 避免捕获被中途夺走/丢失后块从画布上消失（下次 RefreshTimeline 才恢复）。
         block.PointerPressed += (_, e) =>
         {
             // 分割工具下点击片段 = 分割，不选中/不拖拽（由时间轴层 PointerPressed 统一处理）。
@@ -3489,23 +3701,45 @@ internal sealed class VideoEditorWindow : MyWindow
                 return;
             }
 
+            if (isLocked)
+            {
+                _statusText.Text = "该轨道已锁定，无法编辑。";
+                return;
+            }
+
             // 点击片段也把播放头 seek 到该位置。
             SetPlayhead(Math.Max(0, e.GetPosition(_timelineRoot).X / _pxPerSecond));
+            // 多选：点击已选中的片段保持选择（准备拖动整个组）；否则清空并单选。
+            if (!_selectedClips.Contains(clip))
+            {
+                _selectedClips.Clear();
+                _selectedClips.Add(clip);
+                UpdateAllBlockSelection();
+            }
+
             _selected = clip;
             var grab = e.GetPosition(block);
             _dragOffsetX = grab.X;
             var rootPos = e.GetPosition(_timelineRoot);
-            _moveDrag = (clip, rootPos.X, grab.Y, clip.StartTime);
+            var origins = new Dictionary<VideoClip, double>();
+            var tracks = new Dictionary<VideoClip, int>();
+            foreach (var c in _selectedClips)
+            {
+                origins[c] = c.StartTime;
+                tracks[c] = c.Track;
+            }
+
+            _moveGroup = (rootPos.X, grab.Y, clip.StartTime, origins, tracks);
             _moveUndoPushed = false;
             e.Pointer.Capture(block);
-            ApplyBlockSelected(block, leftHandle, rightHandle, clip);
+            UpdateAllBlockSelection();
             FillPropertyPanel();
             UpdateStageHandles();
         };
-        // 裁剪手柄按下：记录裁剪状态并阻止冒泡（避免触发块选中/拖拽）。
+        // 裁剪手柄按下：记录裁剪状态并阻止冒泡（避免触发块选中/拖拽）。锁定轨禁止裁剪。
         leftHandle.PointerPressed += (_, e) =>
         {
-            if (_splitTool)
+            if (_splitTool || isLocked)
             {
                 return;
             }
@@ -3516,7 +3750,7 @@ internal sealed class VideoEditorWindow : MyWindow
         };
         rightHandle.PointerPressed += (_, e) =>
         {
-            if (_splitTool)
+            if (_splitTool || isLocked)
             {
                 return;
             }
@@ -3525,7 +3759,7 @@ internal sealed class VideoEditorWindow : MyWindow
             _trimUndoPushed = false;
             e.Handled = true;
         };
-        // 块上移动/释放：优先裁剪，其次拖拽移动（块横向跟手 + 纵向跨泳道跟手 + 目标泳道高亮）。
+        // 块上移动/释放：优先裁剪，其次拖拽移动多选组（整组横向/纵向跟手 + 目标泳道高亮）。
         block.PointerMoved += (_, e) =>
         {
             if (_trimState is { } trim && ReferenceEquals(trim.Clip, clip))
@@ -3544,14 +3778,14 @@ internal sealed class VideoEditorWindow : MyWindow
                 return;
             }
 
-            if (_moveDrag is not { } md || !ReferenceEquals(md.Clip, clip))
+            if (_moveGroup is not { } md)
             {
                 return;
             }
 
             if (!e.GetCurrentPoint(block).Properties.IsLeftButtonPressed)
             {
-                _moveDrag = null;
+                _moveGroup = null;
                 ClearDropHighlight();
                 return;
             }
@@ -3564,18 +3798,10 @@ internal sealed class VideoEditorWindow : MyWindow
                 _moveUndoPushed = true;
             }
 
-            // 开始拖动时才把块浮到根画布（跨泳道需要；纯点击不挪动，避免捕获丢失导致片段消失）。
+            // 开始拖动时才把整组块浮到根画布（跨泳道需要；纯点击不挪动，避免捕获丢失导致片段消失）。
             if (block.Parent != _timelineRoot)
             {
-                if (block.Parent is Panel p)
-                {
-                    p.Children.Remove(block);
-                }
-
-                block.ZIndex = 30; // 高于播放头（20），拖动时浮在所有泳道上
-                block.Opacity = 0.8; // 半透明：目标泳道的高亮/落点标签在块下仍可见
-                _timelineRoot.Children.Add(block);
-                // 拖拽启动自动滚动（贴滚动区边缘时滚动，含纵向滚到「新建轨道」区）。
+                FloatSelectedBlocks();
                 UpdateDragAutoScroll(e.GetPosition(_timelineScroll));
             }
             else
@@ -3583,20 +3809,24 @@ internal sealed class VideoEditorWindow : MyWindow
                 UpdateDragAutoScroll(e.GetPosition(_timelineScroll));
             }
 
-            // 横向：时间 = 指针 X - 按下偏移；拖动中实时吸附（片段边缘/播放头 ~8px）且不避让——
-            // 旧版实时 FitToTrack 避让会把块从目标位置弹开，导致「很难把 B 拖到 A 正上方对齐」。
+            // 横向：整组相对按下基准平移（时间增量相同）。
             var desired = Math.Max(0, (rootPos.X - md.GrabX) / _pxPerSecond);
-            clip.StartTime = SnapTime(desired);
-            Canvas.SetLeft(block, clip.StartTime * _pxPerSecond);
-            // 纵向：块顶 = 指针 Y - 按下偏移（跨泳道浮动跟手；泳道区顶 = _timelineRoot 顶，无标尺偏移）。
+            var timeDelta = desired - md.GrabTime;
             var blockTop = Math.Max(0, rootPos.Y - md.GrabY);
-            Canvas.SetTop(block, blockTop);
-            // 落点按指针 Y 判定：贴近轨道边界 = 插入新轨（显示插入指示线），否则落到所在轨道。
+            foreach (var (c, orig) in md.Origins)
+            {
+                c.StartTime = Math.Max(0, SnapTime(orig + timeDelta));
+                if (_blockByClip.TryGetValue(c, out var b))
+                {
+                    Canvas.SetLeft(b, c.StartTime * _pxPerSecond);
+                    Canvas.SetTop(b, blockTop);
+                }
+            }
+
+            // 落点按指针 Y 判定（组拖动不支持插入新轨，只落轨；高亮目标泳道）。
             var trackCount = _project.TrackCount;
-            var (targetTrack, insertPos) = ResolveDropTarget(rootPos.Y, trackCount);
-            var isInsert = insertPos >= 0;
-            var overlap = !isInsert && !FitsOnTrack(targetTrack, clip.StartTime, clip.Duration, clip);
-            UpdateDropHighlight(targetTrack, trackCount, overlap, isInsert ? insertPos : -1);
+            var (targetTrack, _) = ResolveDropTarget(rootPos.Y, trackCount);
+            UpdateDropHighlight(targetTrack, trackCount, false, -1);
         };
         block.PointerReleased += (_, e) =>
         {
@@ -3609,64 +3839,49 @@ internal sealed class VideoEditorWindow : MyWindow
                 return;
             }
 
-            if (_moveDrag is { } md && ReferenceEquals(md.Clip, clip))
+            if (_moveGroup is not { } md)
             {
-                _moveDrag = null;
-                // 记录块是否已浮到根画布（发生过实际拖动）；Capture(null) 会触发 PointerCaptureLost，
-                // 其中可能重建时间轴，因此先记录再解绑。
-                var wasFloating = block.Parent == _timelineRoot;
-                StopDragAutoScroll();
-                e.Pointer.Capture(null);
-                if (wasFloating)
+                return;
+            }
+
+            _moveGroup = null;
+            // 记录块是否已浮到根画布（发生过实际拖动）；Capture(null) 会触发 PointerCaptureLost，
+            // 其中可能重建时间轴，因此先记录再解绑。
+            var wasFloating = block.Parent == _timelineRoot;
+            StopDragAutoScroll();
+            e.Pointer.Capture(null);
+            if (wasFloating)
+            {
+                // 释放：整组吸附 → 按指针 Y 落轨（组内轨道相对偏移保持）。
+                var rootPos = e.GetPosition(_timelineRoot);
+                var trackCount = _project.TrackCount;
+                var (targetTrack, _) = ResolveDropTarget(rootPos.Y, trackCount);
+                var grabTrack = md.Tracks[clip];
+                var trackDelta = Math.Clamp(targetTrack, 0, 32) - grabTrack;
+                foreach (var (c, origTrack) in md.Tracks)
                 {
-                    // 释放：吸附 → 按指针 Y 落轨（插入新轨 / 落到所在轨道，与拖动时显示一致）。
-                    // 同轨不允许堆叠：目标位置被占用时自动挪到最近空位（FitToTrack，排除自身）。
-                    clip.StartTime = SnapTime(clip.StartTime);
-                    var rootPos = e.GetPosition(_timelineRoot);
-                    var trackCount = _project.TrackCount;
-                    var (targetTrack, insertPos) = ResolveDropTarget(rootPos.Y, trackCount);
-                    EditorLog($"释放落轨 y={rootPos.Y:0.#} → track={targetTrack} insert={insertPos} " +
-                              $"StartTime={clip.StartTime:0.##}");
-                    if (insertPos >= 0)
+                    c.Track = Math.Clamp(origTrack + trackDelta, 0, 32);
+                    c.StartTime = SnapTime(c.StartTime);
+                    if (!FitsOnTrack(c.Track, c.StartTime, c.Duration, c))
                     {
-                        // 在两轨之间插入新轨：视觉行在插入点上方（数据轨号 > n-1-insertPos）的轨道下移一格。
-                        var n = trackCount;
-                        foreach (var c in _project.Clips)
-                        {
-                            if (!ReferenceEquals(c, clip) && c.Track > n - 1 - insertPos)
-                            {
-                                c.Track++;
-                            }
-                        }
-
-                        clip.Track = n - insertPos;
+                        c.StartTime = FitToTrack(c, c.StartTime, c.Track);
                     }
-                    else
-                    {
-                        clip.Track = Math.Clamp(targetTrack, 0, 32);
-                    }
-
-                    if (!FitsOnTrack(clip.Track, clip.StartTime, clip.Duration, clip))
-                    {
-                        clip.StartTime = FitToTrack(clip, clip.StartTime, clip.Track);
-                        _statusText.Text = "目标位置与同轨素材重叠，已自动放到最近空位（素材不会堆叠）。";
-                    }
-
-                    EditorLog($"落轨完成 track={clip.Track} StartTime={clip.StartTime:0.##}");
                 }
 
-                ClearDropHighlight();
-                // 空轨自动删除 + 轨道号压缩为连续；随后刷新并保存（同时清掉临时挂到根画布的块）。
-                CompactTracks();
-                RefreshTimeline();
-                FillPropertyPanel();
-                ScheduleSave();
+                EditorLog($"组落轨 y={rootPos.Y:0.#} → track={targetTrack} delta={trackDelta} n={md.Origins.Count}");
             }
+
+            ClearDropHighlight();
+            // 空轨自动删除 + 轨道号压缩为连续；随后刷新并保存（同时清掉临时挂到根画布的块）。
+            CompactTracks();
+            RefreshTimeline();
+            FillPropertyPanel();
+            ScheduleSave();
         };
         block.PointerCaptureLost += (_, _) =>
         {
-            _moveDrag = null;
-            block.Opacity = 1;
+            _moveGroup = null;
+            block.Opacity = _project.GetTrackState(clip.Track) is { Hidden: true } ? 0.45 : 1;
             ClearDropHighlight();
             // 若块仍悬浮在根画布上（拖拽异常中断 / 捕获被夺走），立即重建时间轴把片段恢复回泳道，
             // 避免块从时间轴上消失（只移除不重建会导致下次刷新前一直不可见）。
@@ -3678,10 +3893,49 @@ internal sealed class VideoEditorWindow : MyWindow
         return block;
     }
 
-    /// <summary>直接更新片段块的选中样式（不重建整条时间轴，避免打断拖拽）。</summary>
+    /// <summary>把当前多选集合的所有块浮到根画布（跨泳道拖动用），保持相对布局。</summary>
+    private void FloatSelectedBlocks()
+    {
+        foreach (var (c, b) in _blockByClip)
+        {
+            if (!_selectedClips.Contains(c) || b.Parent == _timelineRoot)
+            {
+                continue;
+            }
+
+            if (b.Parent is Panel p)
+            {
+                p.Children.Remove(b);
+            }
+
+            b.ZIndex = 30; // 高于播放头（20），拖动时浮在所有泳道上
+            b.Opacity = 0.8; // 半透明：目标泳道的高亮/落点标签在块下仍可见
+            _timelineRoot.Children.Add(b);
+        }
+    }
+
+    /// <summary>更新所有片段块的选中样式（不重建整条时间轴，避免打断拖拽/框选）。</summary>
+    private void UpdateAllBlockSelection()
+    {
+        foreach (var (c, block) in _blockByClip)
+        {
+            var selected = _selectedClips.Contains(c);
+            block.Background = selected
+                ? ThemePalette.AccentBrushWithAlpha(170)
+                : new SolidColorBrush(c.Kind == "Filter" ? FilterBlockColor() : UnselectedBlockColor());
+            block.BorderBrush = selected ? Brushes.White : Brushes.Transparent;
+            if (block.Child is Grid g && g.Children.Count >= 3)
+            {
+                g.Children[1].IsVisible = selected; // 左裁剪手柄
+                g.Children[2].IsVisible = selected; // 右裁剪手柄
+            }
+        }
+    }
+
+    /// <summary>直接更新单个片段块的选中样式（不重建整条时间轴，避免打断拖拽）。</summary>
     private void ApplyBlockSelected(Border block, Border leftHandle, Border rightHandle, VideoClip clip)
     {
-        var selected = ReferenceEquals(clip, _selected);
+        var selected = _selectedClips.Contains(clip);
         block.Background = selected
             ? ThemePalette.AccentBrushWithAlpha(170)
             : new SolidColorBrush(clip.Kind == "Filter" ? FilterBlockColor() : UnselectedBlockColor());
@@ -3791,6 +4045,30 @@ internal sealed class VideoEditorWindow : MyWindow
         }
 
         return acc;
+    }
+
+    /// <summary>框选：返回与矩形（时间轴内容坐标）相交的所有片段（含锁定轨，只读选中）。</summary>
+    private List<VideoClip> MarqueeSelect(Point a, Point b)
+    {
+        var x1 = Math.Min(a.X, b.X);
+        var y1 = Math.Min(a.Y, b.Y);
+        var x2 = Math.Max(a.X, b.X);
+        var y2 = Math.Max(a.Y, b.Y);
+        var trackCount = _project.TrackCount;
+        var result = new List<VideoClip>();
+        foreach (var clip in _project.Clips)
+        {
+            var cx = clip.StartTime * _pxPerSecond;
+            var cy = VisualTopOfTrack(clip.Track, trackCount);
+            var cw = Math.Max(6, clip.Duration * _pxPerSecond);
+            var ch = LaneHeightOf(clip.Track);
+            if (cx < x2 && cx + cw > x1 && cy < y2 && cy + ch > y1)
+            {
+                result.Add(clip);
+            }
+        }
+
+        return result;
     }
 
     /// <summary>拖拽调高：写入每轨高度并同步泳道/头部/总高（拖动中不重建时间轴，避免打断捕获）。
@@ -4006,6 +4284,12 @@ internal sealed class VideoEditorWindow : MyWindow
             return;
         }
 
+        if (_project.GetTrackState(_selected.Track) is { Locked: true })
+        {
+            _statusText.Text = "该轨道已锁定，无法移动。";
+            return;
+        }
+
         PushUndo();
         _selected.Track--;
         CompactTracks();
@@ -4020,6 +4304,12 @@ internal sealed class VideoEditorWindow : MyWindow
             return;
         }
 
+        if (_project.GetTrackState(_selected.Track) is { Locked: true })
+        {
+            _statusText.Text = "该轨道已锁定，无法移动。";
+            return;
+        }
+
         PushUndo();
         _selected.Track++;
         CompactTracks();
@@ -4029,31 +4319,41 @@ internal sealed class VideoEditorWindow : MyWindow
 
     private void DeleteSelectedClip()
     {
-        if (_selected == null)
+        if (_selectedClips.Count == 0 && _selected != null)
+        {
+            _selectedClips.Add(_selected);
+        }
+
+        if (_selectedClips.Count == 0)
         {
             return;
         }
 
+        // 锁定轨片段不可删除（其余照删）。
+        var locked = _selectedClips.Count(c => _project.GetTrackState(c.Track) is { Locked: true });
+        var deletable = _selectedClips.Where(c => _project.GetTrackState(c.Track) is not { Locked: true }).ToList();
+        if (deletable.Count == 0)
+        {
+            _statusText.Text = "选中片段所在轨道已锁定，无法删除。";
+            return;
+        }
+
         PushUndo();
-        _project.Clips.Remove(_selected);
+        foreach (var c in deletable)
+        {
+            _project.Clips.Remove(c);
+        }
+
         _selected = null;
+        _selectedClips.Clear();
         // 删片段可能留下空轨：自动删除并压缩轨道号。
         CompactTracks();
         RefreshTimeline();
         ClearSelection();
         ScheduleSave();
-    }
-
-    private void ClearTimeline()
-    {
-        PushUndo();
-        _project.Clips.Clear();
-        _selected = null;
-        CompactTracks();
-        RefreshTimeline();
-        ClearSelection();
-        StopPreview();
-        ScheduleSave();
+        _statusText.Text = locked > 0
+            ? $"已删除 {deletable.Count} 个片段（跳过 {locked} 个锁定轨片段）。"
+            : $"已删除 {deletable.Count} 个片段。";
     }
 
     /// <summary>刀片工具：在播放头位置把所有覆盖该时刻的片段切成两段（保留入出点与变换）。</summary>
@@ -4118,8 +4418,17 @@ internal sealed class VideoEditorWindow : MyWindow
     private void ClearSelection()
     {
         _selected = null;
+        _selectedClips.Clear();
         FillPropertyPanel();
         UpdateStageHandles();
+    }
+
+    /// <summary>设置主选中（单选模式：同步多选集合）。</summary>
+    private void SelectClip(VideoClip clip)
+    {
+        _selected = clip;
+        _selectedClips.Clear();
+        _selectedClips.Add(clip);
     }
 
     // ============ 属性 ============
@@ -4238,6 +4547,13 @@ internal sealed class VideoEditorWindow : MyWindow
     {
         if (_updatingUi || _selected == null)
         {
+            return;
+        }
+
+        if (_project.GetTrackState(_selected.Track) is { Locked: true })
+        {
+            FillPropertyPanel(); // 锁定轨：回读原值，禁止修改。
+            _statusText.Text = "该轨道已锁定，无法修改属性。";
             return;
         }
 
@@ -5905,6 +6221,7 @@ internal sealed class VideoEditorWindow : MyWindow
         if (_selected?.SourcePath == path)
         {
             _selected = null;
+            _selectedClips.Clear();
         }
 
         CompactTracks();

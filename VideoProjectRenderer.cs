@@ -65,7 +65,14 @@ internal sealed class VideoProjectRenderer
 
     public void Render()
     {
-        var clips = _project.Clips.ToList();
+        // 隐藏/SOLO：跳过隐藏轨；有任一 SOLO 时仅 SOLO 轨。
+        var trackCount = _project.Clips.Count == 0 ? 1 : _project.Clips.Max(c => c.Track) + 1;
+        var anySolo = _project.TrackStates.Any(s => s.Solo);
+        var clips = _project.Clips.Where(c =>
+        {
+            var st = _project.GetTrackState(c.Track);
+            return st == null || (!st.Hidden && (!anySolo || st.Solo));
+        }).ToList();
         var duration = _project.Duration;
         if (duration <= 0 || clips.Count == 0)
         {
@@ -73,7 +80,6 @@ internal sealed class VideoProjectRenderer
         }
 
         var totalFrames = Math.Max(1, (int)Math.Ceiling(duration * _fps));
-        var trackCount = _project.TrackCount;
         var states = new TrackState[trackCount];
         for (var t = 0; t < trackCount; t++)
         {
