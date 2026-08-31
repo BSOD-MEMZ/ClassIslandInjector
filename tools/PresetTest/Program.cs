@@ -88,7 +88,6 @@ Check("EmphasisAnimation", EmphasisAnimation.Pulse, current.EmphasisAnimation);
 Check("RippleType", RippleType.Glow, current.RippleType);
 Check("RippleOpacity", 0.6, current.RippleOpacity);
 Check("DynamicBackgroundColorEnabled", true, current.DynamicBackgroundColorEnabled);
-Check("WallpaperSource", WallpaperSource.SmtcAlbum, current.WallpaperSource);
 Check("CountdownArrowCount", 8, current.CountdownArrowCount);
 Check("CountdownScanTailEnabled", false, current.CountdownScanTailEnabled);
 Check("PrepareOnClassStyle", PrepareOnClassStyle.Arrows, current.PrepareOnClassStyle);

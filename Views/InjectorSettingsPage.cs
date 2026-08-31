@@ -93,6 +93,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private SettingsExpander _textureGroup = null!;
     private SettingsExpander _shadowGroup = null!;
     private SettingsExpander _borderGroup = null!;
+    /// <summary>背景图片：图层编辑器为唯一入口（简单模式已删除）。</summary>
     private SettingsExpander _wallpaperGroup = null!;
     // ===== 分体块背景（分体主界面独立配色）=====
     /// <summary>分体块背景独立区域（页面顶部大标题下方，非卡片）。</summary>
@@ -125,18 +126,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly Spin _borderThickness = Spinner(0.25, 20, 0.25);
 
     private readonly ToggleSwitch _wallpaperEnabled = Toggle();
-    /// <summary>背景图片编辑模式：基础模式（简单设置）或专家模式（图层编辑器）。</summary>
-    private readonly ComboBox _wallpaperModeBox = Combo(WallpaperModes);
-    private readonly ComboBox _wallpaperSource = Combo(WallpaperSources);
-    private readonly TextBox _wallpaperPath = new() { MinWidth = 260, IsReadOnly = true };
-    private readonly Slider _wallpaperOpacity = Slider(0, 1, 0.05);
-    private readonly ComboBox _wallpaperDisplayMode = Combo(WallpaperDisplayModes);
-    private readonly Spin _wallpaperScale = Spinner(1, 5, 0.1);
-    private readonly Spin _wallpaperOffsetX = Spinner(-0.5, 0.5, 0.01);
-    private readonly Spin _wallpaperOffsetY = Spinner(-0.5, 0.5, 0.01);
-    private readonly Spin _wallpaperSlideshowInterval = Spinner(2, 3600, 1, "0");
     private readonly Spin _wallpaperBlur = Spinner(0, 60, 1);
-    // 动态视频填充（仅专家模式显示）
+    // 动态视频填充
     private readonly ToggleSwitch _videoFillEnabled = Toggle();
     private readonly TextBox _videoFillPath = new() { MinWidth = 260, IsReadOnly = true };
     private readonly Slider _videoFillOpacity = Slider(0, 1, 0.05);
@@ -147,7 +138,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly ToggleSwitch _videoFillLoop = Toggle();
     /// <summary>「使用编辑工程」开关（视频编辑器导出的多片段工程优先于单文件）。</summary>
     private readonly ToggleSwitch _videoProjectToggle = Toggle();
-    /// <summary>「动态视频填充」组（仅专家模式显示）。</summary>
+    /// <summary>「动态视频填充」组。</summary>
     private SettingsExpander _videoFillGroup = null!;
     /// <summary>FFmpeg 解码库缺失提示（缺失时显示，含下载按钮）。</summary>
     private InfoBar _ffmpegInfoBar = null!;
@@ -160,20 +151,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         Watermark = "https://example.com/ffmpeg-8.1-win64-shared-min.zip"
     };
     private StackPanel _customFfmpegPanel = null!;
-    /// <summary>「打开图层编辑器」入口（仅专家模式显示）。</summary>
-    private SettingsExpanderItem _wallpaperEditorItem = null!;
-    /// <summary>基础模式专属设置项（专家模式时整体隐藏）。</summary>
-    private SettingsExpanderItem _wallpaperSourceItem = null!;
-    private SettingsExpanderItem _wallpaperPathItem = null!;
-    private SettingsExpanderItem _wallpaperOpacityItem = null!;
-    private SettingsExpanderItem _wallpaperDisplayModeItem = null!;
-    private SettingsExpanderItem _wallpaperScaleItem = null!;
-    private SettingsExpanderItem _wallpaperOffsetXItem = null!;
-    private SettingsExpanderItem _wallpaperOffsetYItem = null!;
-    private SettingsExpanderItem _wallpaperBlurItem = null!;
-    private SettingsExpanderItem _wallpaperSlideshowItem = null!;
-    /// <summary>图层式底图状态提示（专家模式时显示图层数）。</summary>
-    private InfoBar? _wallpaperModeInfoBar;
 
     private readonly ComboBox _visibilityAnimation = Combo(VisibilityAnimations);
     private readonly Spin _visibilityDuration = Spinner(0.1, 10, 0.05);
@@ -263,28 +240,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly List<IslandPreviewState> _editorUndo = [];
     private readonly List<IslandPreviewState> _editorRedo = [];
     private bool _editorDirty;
-
-    /// <summary>背景图片编辑模式：基础模式 = 简单单图设置；专家模式 = Photoshop 风格图层编辑器。</summary>
-    private static readonly Choice<bool>[] WallpaperModes =
-    [
-        new(false, "基础模式"),
-        new(true, "专家模式"),
-    ];
-
-    private static readonly Choice<WallpaperSource>[] WallpaperSources =
-    [
-        new(WallpaperSource.LocalImage, "本地图片"),
-        new(WallpaperSource.FolderSlideshow, "文件夹幻灯片"),
-        new(WallpaperSource.SmtcAlbum, "SMTC 专辑封面"),
-    ];
-
-    private static readonly Choice<WallpaperDisplayMode>[] WallpaperDisplayModes =
-    [
-        new(WallpaperDisplayMode.Fill, "填充（裁剪）"),
-        new(WallpaperDisplayMode.Fit, "适应（完整显示）"),
-        new(WallpaperDisplayMode.Stretch, "拉伸（变形）"),
-        new(WallpaperDisplayMode.Tile, "平铺"),
-    ];
 
     private static readonly Choice<VideoFillFit>[] VideoFillFits =
     [
@@ -1036,50 +991,33 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         VisibleWhen(spectrumBarsItem, _backgroundTextureType, BackgroundTexture.Spectrum);
         VisibleWhen(spectrumMirroredItem, _backgroundTextureType, BackgroundTexture.Spectrum);
         VisibleWhen(spectrumAutoWidthItem, _backgroundTextureType, BackgroundTexture.Spectrum);
-        var wallpaperPathItem = Item("图片 / 文件夹", "底图文件或幻灯片文件夹的路径。", WallpaperPathFooter());
-        var wallpaperSlideshowItem = Item("幻灯片间隔", "文件夹幻灯片切换间隔（秒）。", _wallpaperSlideshowInterval);
-        _wallpaperModeInfoBar = new InfoBar
+        // 背景图片：图层编辑器为唯一入口（简单模式已删除），不展开卡片——
+        // 一行 = 「打开底图图层编辑器」按钮 + 底图开关；底图模糊单独一行。
+        var openEditorButton = Button("打开底图图层编辑器", OpenWallpaperLayerEditor);
+        openEditorButton.Name = "OpenWallpaperEditorButton";
+        var wallpaperHeader = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        wallpaperHeader.Children.Add(openEditorButton);
+        Grid.SetColumn(_wallpaperEnabled, 1);
+        wallpaperHeader.Children.Add(_wallpaperEnabled);
+        _wallpaperGroup = new SettingsExpander
         {
-            Severity = InfoBarSeverity.Informational,
-            Title = "已启用专家模式！",
-            Message = string.Empty,
-            IsOpen = false,
-            IsClosable = false,
-            ActionButton = Button("恢复简单模式", DisableWallpaperDesigner)
+            // 单行卡片（无 Items 即不可展开）：头部即「打开图层编辑器」按钮 + 底图开关。
+            IconSource = new FluentIconSource("\uF42D"),
+            Header = wallpaperHeader
         };
-        panel.Children.Add(_wallpaperModeInfoBar);
-        _wallpaperGroup = SwitchableGroup("\uF42D", "背景图片", "为 ClassIsland 主界面添加背景图片", _wallpaperEnabled,
-            Item("编辑模式", "想象一下我们把 Photoshop 搬到 ClassIsland！试试全新专家模式！", _wallpaperModeBox),
-            _wallpaperEditorItem = Item("打开图层编辑器", "给设计大师的超级编辑器", Button("打开编辑器", OpenWallpaperLayerEditor)),
-            _wallpaperSourceItem = Item("图片来源", "选择底图的来源。", _wallpaperSource),
-            _wallpaperPathItem = wallpaperPathItem,
-            _wallpaperOpacityItem = Item("图片不透明度", "底图的整体透明度。", _wallpaperOpacity),
-            _wallpaperDisplayModeItem = Item("显示方式", "图片在主界面内的显示方式。", _wallpaperDisplayMode),
-            _wallpaperScaleItem = Item("缩放", "底图的缩放倍率（1 为按显示方式适应，大于 1 放大裁剪）", _wallpaperScale),
-            _wallpaperOffsetXItem = Item("水平偏移", "底图的水平偏移（相对图片宽度，-0.5 到 0.5）", _wallpaperOffsetX),
-            _wallpaperOffsetYItem = Item("垂直偏移", "底图的垂直偏移（相对图片高度，-0.5 到 0.5）", _wallpaperOffsetY),
-            _wallpaperBlurItem = Item("模糊", "对底图应用高斯模糊（0 为关闭）", _wallpaperBlur),
-            _wallpaperSlideshowItem = wallpaperSlideshowItem);
         _wallpaperGroup.Name = "WallpaperGroup";
-        _wallpaperSource.Name = "WallpaperSource";
-        // 图片来源决定「图片/文件夹」与「幻灯片间隔」行的显隐；编辑模式切换时整体显隐
-        // 由 UpdateWallpaperModeVisibility 统一处理。
-        _wallpaperSource.SelectionChanged += (_, _) => UpdateWallpaperModeVisibility();
-        _wallpaperModeBox.SelectionChanged += (_, _) =>
+        _wallpaperEnabled.PropertyChanged += (_, _) =>
         {
+            // 开关即改即存（无其它简单模式项需要联动）。
             if (!_suppressLivePreview)
             {
-                var designer = Selected(_wallpaperModeBox, false);
-                if (InjectorRuntime.Settings.WallpaperDesignerEnabled != designer)
-                {
-                    // 切换模式立即持久化并应用（触发 Changed → SaveAndApply）。
-                    InjectorRuntime.Settings.WallpaperDesignerEnabled = designer;
-                }
+                InjectorRuntime.SaveAndApply();
             }
-
-            UpdateWallpaperModeVisibility();
         };
         panel.Children.Add(_wallpaperGroup);
+        // 底图模糊：作用于整个底图宿主（图层模式共用）。
+        panel.Children.Add(Group("\uE721", "底图模糊", "对整个底图（含所有图层）应用高斯模糊（0 为关闭）。",
+            Item("模糊半径", "高斯模糊半径（像素，0 为关闭）。", _wallpaperBlur)));
         // 动态视频填充：专家模式专属，紧跟「背景图片」组（视觉上在「打开图层编辑器」按钮下方）。
         // 视频解码完全依赖 FFmpeg 共享库：库缺失时整组禁用（见 RefreshFfmpegAvailability），
         // 并在组下方显示 InfoBar 引导联机下载。
@@ -1135,7 +1073,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         // 每次进入设置页都重新检测 FFmpeg 库（支持手动放置 dll 后重开本页生效）。
         FFmpegRuntime.Refresh();
         RefreshFfmpegAvailability();
-        UpdateWallpaperModeVisibility();
         _smtcDynamicGroup = Group("\uE51E", "动态取色", "从音乐软件或浏览器获取 SMTC 信息，并进行莫奈取色",
             Item("暂停/停止时恢复原色", "媒体暂停或停止播放时，从专辑取色平滑恢复为原始颜色，恢复播放后再跟随专辑。", _revertColorsWhenPaused),
             Item("动态修改主题色", "从当前专辑封面取色并动态修改 ClassIsland 全局主题强调色。", _dynamicThemeColor),
@@ -2627,8 +2564,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                      _backgroundTextureEnabled,
                      _shadow, _shadowColor, _shadowBlur, _shadowOffsetX, _shadowOffsetY, _shadowOpacity,
                      _border, _borderColor, _borderThickness,
-                     _wallpaperEnabled, _wallpaperModeBox, _wallpaperSource, _wallpaperPath, _wallpaperOpacity, _wallpaperDisplayMode,
-                     _wallpaperScale, _wallpaperOffsetX, _wallpaperOffsetY, _wallpaperSlideshowInterval, _wallpaperBlur,
+                     _wallpaperEnabled, _wallpaperBlur,
                      _videoFillEnabled, _videoFillPath, _videoFillOpacity, _videoFillFit, _videoFillBlur, _videoFillMaxDimension, _videoFillFps, _videoFillLoop,
                      _visibilityAnimation, _visibilityAnimationEnabled, _visibilityDuration,
                      _emphasisAnimation, _emphasisAnimationEnabled, _emphasisAmount, _emphasisDuration,
@@ -2981,15 +2917,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _borderColor.Color = ReadColor(settings.BorderColor, Color.FromArgb(0x99, 0xFF, 0xFF, 0xFF));
         _borderThickness.DoubleValue = settings.BorderThickness;
         _wallpaperEnabled.IsChecked = settings.WallpaperEnabled;
-        Select(_wallpaperModeBox, WallpaperModes, settings.WallpaperDesignerEnabled);
-        Select(_wallpaperSource, WallpaperSources, settings.WallpaperSource);
-        _wallpaperPath.Text = settings.WallpaperPath;
-        _wallpaperOpacity.Value = settings.WallpaperOpacity;
-        Select(_wallpaperDisplayMode, WallpaperDisplayModes, settings.WallpaperDisplayMode);
-        _wallpaperScale.DoubleValue = settings.WallpaperScale;
-        _wallpaperOffsetX.DoubleValue = settings.WallpaperOffsetX;
-        _wallpaperOffsetY.DoubleValue = settings.WallpaperOffsetY;
-        _wallpaperSlideshowInterval.DoubleValue = settings.WallpaperSlideshowIntervalSeconds;
         _wallpaperBlur.DoubleValue = settings.WallpaperBlurRadius;
         _videoFillEnabled.IsChecked = settings.VideoFillEnabled;
         _videoFillPath.Text = settings.VideoFillPath;
@@ -3001,7 +2928,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _videoFillLoop.IsChecked = settings.VideoFillLoop;
         _videoProjectToggle.IsChecked = settings.VideoProjectEnabled;
         _customFfmpegUrl.Text = settings.CustomFfmpegDownloadUrl;
-        UpdateWallpaperModeVisibility();
         Select(_visibilityAnimation, VisibilityAnimations, settings.VisibilityAnimation);
         _visibilityAnimationEnabled.IsChecked = settings.VisibilityAnimation != VisibilityAnimation.None;
         _visibilityDuration.DoubleValue = settings.VisibilityDurationSeconds;
@@ -3149,16 +3075,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.BorderColor = _borderColor.Color.ToString();
             settings.BorderThickness = _borderThickness.DoubleValue;
             settings.WallpaperEnabled = _wallpaperEnabled.IsChecked == true;
-            settings.WallpaperDesignerEnabled = Selected(_wallpaperModeBox, settings.WallpaperDesignerEnabled);
-            settings.WallpaperSource = Selected(_wallpaperSource, WallpaperSource.None);
-            settings.WallpaperPath = _wallpaperPath.Text ?? string.Empty;
-            settings.WallpaperOpacity = _wallpaperOpacity.Value;
-            settings.WallpaperDisplayMode = Selected(_wallpaperDisplayMode, WallpaperDisplayMode.Fill);
-            settings.WallpaperScale = _wallpaperScale.DoubleValue;
-            settings.WallpaperOffsetX = _wallpaperOffsetX.DoubleValue;
-            settings.WallpaperOffsetY = _wallpaperOffsetY.DoubleValue;
-            settings.WallpaperSlideshowIntervalSeconds = _wallpaperSlideshowInterval.DoubleValue;
             settings.WallpaperBlurRadius = _wallpaperBlur.DoubleValue;
+            settings.WallpaperDesignerEnabled = true;
             settings.VideoFillEnabled = _videoFillEnabled.IsChecked == true;
             settings.VideoFillPath = _videoFillPath.Text ?? string.Empty;
             settings.VideoFillOpacity = _videoFillOpacity.Value;
@@ -3458,58 +3376,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         Children = { picker, toggle }
     };
 
-    private Control WallpaperPathFooter()
-    {
-        var pickButton = Button("选择…", () => _ = PickWallpaperPathAsync());
-        return new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 4,
-            VerticalAlignment = VerticalAlignment.Center,
-            Children = { _wallpaperPath, pickButton }
-        };
-    }
-
-    private async Task PickWallpaperPathAsync()
-    {
-        var topLevel = TopLevel.GetTopLevel(this);
-        if (topLevel?.StorageProvider is not { } provider)
-        {
-            return;
-        }
-
-        var source = Selected(_wallpaperSource, WallpaperSource.LocalImage);
-        if (source == WallpaperSource.FolderSlideshow)
-        {
-            var folders = await provider.OpenFolderPickerAsync(new FolderPickerOpenOptions
-            {
-                Title = "选择幻灯片文件夹",
-                AllowMultiple = false
-            });
-            if (folders.Count > 0)
-            {
-                _wallpaperPath.Text = folders[0].TryGetLocalPath() ?? string.Empty;
-            }
-
-            return;
-        }
-
-        var files = await provider.OpenFilePickerAsync(new FilePickerOpenOptions
-        {
-            Title = "选择底图图片",
-            AllowMultiple = false,
-            FileTypeFilter =
-            [
-                new FilePickerFileType("图片") { Patterns = ["*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif", "*.webp"] },
-                FilePickerFileTypes.All
-            ]
-        });
-        if (files.Count > 0)
-        {
-            _wallpaperPath.Text = files[0].TryGetLocalPath() ?? string.Empty;
-        }
-    }
-
     /// <summary>按 FFmpeg 解码库可用性刷新视频填充组：缺失时禁用开关与各设置项并显示下载引导。</summary>
     private void RefreshFfmpegAvailability()
     {
@@ -3635,70 +3501,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         var window = new WallpaperLayerEditorWindow();
         window.Closed += (_, _) => Dispatcher.UIThread.Post(LoadFromSettings);
         window.Show();
-    }
-
-    /// <summary>回退到旧版简单模式底图（清空图层并关闭图层式底图）。</summary>
-    private void DisableWallpaperDesigner()
-    {
-        var settings = InjectorRuntime.Settings;
-        settings.BeginUpdate();
-        settings.WallpaperDesignerEnabled = false;
-        settings.WallpaperLayers = [];
-        settings.EndUpdate();
-        InjectorRuntime.SaveAndApply();
-        LoadFromSettings();
-        _status.Text = "已恢复简单模式底图设置。";
-    }
-
-    /// <summary>
-    /// 按编辑模式同步背景图片组各行的显隐：专家模式隐藏全部基础模式设置项，
-    /// 基础模式隐藏专家模式的编辑器进入按钮；同时刷新模式提示 InfoBar。
-    /// </summary>
-    private void UpdateWallpaperModeVisibility()
-    {
-        if (_wallpaperEditorItem == null)
-        {
-            return;
-        }
-
-        var designer = _wallpaperModeBox.SelectedItem is Choice<bool> mode
-            ? mode.Value
-            : InjectorRuntime.Settings.WallpaperDesignerEnabled;
-        _wallpaperEditorItem.IsVisible = designer;
-        _videoFillGroup.IsVisible = designer;
-        if (_ffmpegInfoBar != null)
-        {
-            _ffmpegInfoBar.IsVisible = designer;
-        }
-
-        if (_customFfmpegPanel != null)
-        {
-            _customFfmpegPanel.IsVisible = designer;
-        }
-        _wallpaperSourceItem.IsVisible = !designer;
-        _wallpaperOpacityItem.IsVisible = !designer;
-        _wallpaperDisplayModeItem.IsVisible = !designer;
-        _wallpaperScaleItem.IsVisible = !designer;
-        _wallpaperOffsetXItem.IsVisible = !designer;
-        _wallpaperOffsetYItem.IsVisible = !designer;
-        _wallpaperBlurItem.IsVisible = !designer;
-        var source = Selected(_wallpaperSource, WallpaperSource.None);
-        _wallpaperPathItem.IsVisible = !designer &&
-                                       (source == WallpaperSource.LocalImage || source == WallpaperSource.FolderSlideshow);
-        _wallpaperSlideshowItem.IsVisible = !designer && source == WallpaperSource.FolderSlideshow;
-        RefreshWallpaperModeInfo();
-    }
-
-    /// <summary>刷新「专家模式」状态提示（专家模式时显示 InfoBar，可一键回退基础模式）。</summary>
-    private void RefreshWallpaperModeInfo()
-    {
-        if (_wallpaperModeInfoBar == null)
-        {
-            return;
-        }
-
-        var settings = InjectorRuntime.Settings;
-        _wallpaperModeInfoBar.IsOpen = settings.WallpaperDesignerEnabled;
     }
 
     private static StackPanel Actions(string firstText, Action firstAction, string secondText, Action secondAction) => new()

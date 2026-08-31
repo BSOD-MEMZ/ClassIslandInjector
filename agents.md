@@ -144,6 +144,7 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
 ## 设置持久化
 
 - `InjectorSettings` 用 System.Text.Json 序列化到 `settings.json`（全字段写入）。改动字段默认值时只影响「缺字段」的旧配置与全新安装；已有 JSON 会覆盖新默认。
+- **底图简单模式已整体删除（2026-08-31）**：图层编辑器是唯一入口；`WallpaperSource/WallpaperPath/WallpaperOpacity/WallpaperDisplayMode/WallpaperScale/WallpaperOffsetX/Y/WallpaperSlideshowIntervalSeconds` 等设置属性已从模型删除（`WallpaperSource`/`WallpaperDisplayMode` **枚举保留**——图层功能共用）；`WallpaperDesignerEnabled` 属性保留但恒 true（settings.json 兼容）；`WallpaperBlurRadius` 保留（作用于整个底图宿主，图层共用）。旧简单模式配置在 `InjectorSettingsStore.MigrateLegacySimpleWallpaper` 加载时迁移为一个铺满主界面的图层（幻灯片文件夹不迁移）。设置页背景图片区 = 单行卡片（打开图层编辑器按钮 + 底图开关）+ 底图模糊行。运行时 `MainWindowStyleInjector` 只剩图层渲染路径（`WallpaperHostMode.Simple` 已删）。视频填充组不再依赖专家模式显隐。
 - 设置变更经 `Changed` 事件 → `InjectorRuntime.SaveAndApply()` → 保存 + UI 线程 `Apply()` + 更新 SMTC watcher。
 - 预设（`ApplyPreset`）不修改基础变形：`CaptureProtectedSettings()` / `RestoreProtectedSettings()` 保护 不透明度/缩放/位置/旋转/圆角/固定尺寸/底图/动态取色/轮询等设置。
 

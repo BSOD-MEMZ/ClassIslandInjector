@@ -552,8 +552,7 @@ internal static class InjectorRuntime
         (Settings.CustomBackgroundEnabled && Settings.DynamicBackgroundColorEnabled) ||
         (Settings.BorderEnabled && Settings.DynamicBorderColorEnabled) ||
         (Settings.ShadowEnabled && Settings.DynamicShadowColorEnabled) ||
-        (Settings.WallpaperEnabled && Settings.WallpaperSource == WallpaperSource.SmtcAlbum) ||
-        (Settings.WallpaperEnabled && Settings.WallpaperDesignerEnabled &&
+        (Settings.WallpaperEnabled &&
          Settings.WallpaperLayers.Any(l => l.Visible && l.Source == WallpaperSource.SmtcAlbum)));
 
     /// <summary>

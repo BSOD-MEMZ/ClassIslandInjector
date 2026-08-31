@@ -141,6 +141,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private Border? _wallpaperHost;
     /// <summary>宿主 GridRoot 的 SizeChanged 处理器引用（重建注入器 / 恢复宿主时注销，避免叠加订阅）。</summary>
     private EventHandler<SizeChangedEventArgs>? _islandGridSizeChangedHandler;
+    /// <summary>底图宿主整体高斯模糊（图层模式共用）。</summary>
     private BlurEffect? _wallpaperBlur;
     /// <summary>动态视频填充宿主（插在底图宿主之上、宿主内容之下，专家模式配置）。</summary>
     private Border? _videoFillHost;
@@ -181,26 +182,12 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private readonly List<SpectrumTextureOverlay> _spectrumOverlays = [];
     /// <summary>频谱诊断日志节流时间戳。</summary>
     private DateTime _lastSpectrumLog = DateTime.MinValue;
-    private readonly List<Border> _wallpaperLayers = [];
-    private int _wallpaperFront;
-    private Bitmap? _wallpaperBitmap;
-    private MemoryStream? _wallpaperStream;
-    // 交叉淡化期间持有「旧图」引用：淡入完成前旧图仍被前层 ImageBrush 引用，
-    // 完成后统一 Dispose（非死代码，属延迟释放语义）。
-    private Bitmap? _wallpaperRetiredBitmap;
-    private MemoryStream? _wallpaperRetiredStream;
     // 默认颜色常量：多处在代码里重复的初始色，收敛为常量。
     private static readonly Color DefaultBackgroundColor = Color.FromArgb(0xCC, 0x20, 0x20, 0x20);
     private static readonly Color DefaultBorderColor = Color.FromArgb(0x99, 0xFF, 0xFF, 0xFF);
     private static readonly Color DefaultShadowColor = Color.FromArgb(0x99, 0, 0, 0);
     private static readonly Color DefaultTextureColor = Color.FromArgb(0x2E, 0xFF, 0xFF, 0xFF);
-    private WallpaperSource _wallpaperLoadedSource = WallpaperSource.None;
-    private string _wallpaperLoadedPath = string.Empty;
-    private readonly List<string> _wallpaperSlideshow = [];
-    private int _wallpaperSlideshowIndex;
-    private DateTime _wallpaperTransitionStart = DateTime.MinValue;
-    private bool _wallpaperTransitionActive;
-    /// <summary>底图宿主当前渲染模式（简单模式 = 双缓冲交叉淡化，图层模式 = 锚点画布）。</summary>
+    /// <summary>底图宿主当前渲染模式（图层模式 = 锚点画布）。</summary>
     private WallpaperHostMode _wallpaperHostMode = WallpaperHostMode.None;
     /// <summary>图层式底图的画布（宿主子项，图层图片按锚点相对定位）。</summary>
     private Canvas? _wallpaperCanvas;
@@ -226,8 +213,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
     {
         /// <summary>无宿主。</summary>
         None,
-        /// <summary>旧版简单模式（双缓冲交叉淡化）。</summary>
-        Simple,
         /// <summary>图层式底图（锚点画布）。</summary>
         Layers
     }
@@ -559,11 +544,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
             AdvanceColorTransition();
         }
 
-        if (_wallpaperTransitionActive)
-        {
-            AdvanceWallpaperTransition();
-        }
-
         if (_spectrumActive)
         {
             UpdateSpectrum();
@@ -724,7 +704,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
                                    GetEffectProgress(_emphasisStartedAt, _settings.EmphasisDurationSeconds) < 1 ||
                                    _ripples.Count > 0 || _prepareOnClassOverlays.Count > 0 ||
                                    _prepareWarningOverlay != null ||
-                                   _colorTransitionActive || _wallpaperTransitionActive || _clickBounceActive;
+                                   _colorTransitionActive || _clickBounceActive;
         if (hasContinuousAnimation || hasTransientAnimation)
         {
             _animationTimer.Start();
@@ -927,7 +907,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
             }
         }
 
-        if (_settings.WallpaperEnabled && _settings.WallpaperDesignerEnabled)
+        // 图层式底图分支（简单模式已删除；SMTC 封面由图层 Source=SmtcAlbum 接收）。
+        if (_settings.WallpaperEnabled)
         {
             // 图层模式：把 SMTC 封面推送给所有来源为 SMTC 专辑封面的图层。
             var smtcLayers = _wallpaperLayerViews.Where(v => v.Settings.Source == WallpaperSource.SmtcAlbum).ToArray();
@@ -953,22 +934,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
             // 播放状态变化后重排：应用「暂停/停止时隐藏」的临时隐藏与裁剪形状。
             LayoutWallpaperLayers();
-        }
-        else if (_settings.WallpaperEnabled && _settings.WallpaperSource == WallpaperSource.SmtcAlbum)
-        {
-            if (isPlaying && thumbnailBytes is { Length: > 0 })
-            {
-                LoadWallpaperImage(thumbnailBytes);
-            }
-            else if (!isPlaying && _settings.RevertColorsWhenPaused)
-            {
-                // 暂停/停止且“暂停恢复原色”开启：恢复原始颜色时一并移除底图封面。
-                ClearWallpaperImage();
-            }
-            else if (thumbnailBytes is not { Length: > 0 })
-            {
-                ClearWallpaperImage();
-            }
         }
     }
 
@@ -1736,51 +1701,27 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         var enabled = _settings.Enabled && _settings.WallpaperEnabled;
-        var designerActive = enabled && IsWallpaperDesignerActive();
         if (!enabled)
         {
             RemoveWallpaper();
             return;
         }
 
-        if (designerActive)
-        {
-            EnsureWallpaperHost();
-            if (_wallpaperHost == null)
-            {
-                return;
-            }
-
-            SyncWallpaperLayerViews();
-            PositionWallpaperZOrder();
-            ApplyWallpaperBlur();
-            UpdateWallpaperTimer();
-            ReloadWallpaperLayerImages();
-            LayoutWallpaperLayers();
-            UpdateFullscreenLayers();
-            return;
-        }
-
-        // ---- 旧版简单模式（单图 / 幻灯片 / SMTC 封面，交叉淡化）----
-        DisposeWallpaperLayerViews();
-        DisposeFullscreenHost();
-        if (_settings.WallpaperSource == WallpaperSource.None)
-        {
-            RemoveWallpaper();
-            return;
-        }
-
+        // 图层式底图（唯一模式；简单模式已删除）。
         EnsureWallpaperHost();
+        if (_wallpaperHost == null)
+        {
+            return;
+        }
+
+        SyncWallpaperLayerViews();
         PositionWallpaperZOrder();
         ApplyWallpaperBlur();
         UpdateWallpaperTimer();
-        ReloadWallpaperImageIfNeeded();
-        UpdateWallpaperPresentation();
+        ReloadWallpaperLayerImages();
+        LayoutWallpaperLayers();
+        UpdateFullscreenLayers();
     }
-
-    /// <summary>当前是否运行图层式底图。</summary>
-    private bool IsWallpaperDesignerActive() =>
-        _settings.Enabled && _settings.WallpaperEnabled && _settings.WallpaperDesignerEnabled;
 
     private void EnsureWallpaperHost()
     {
@@ -1790,7 +1731,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
-        var mode = _settings.WallpaperDesignerEnabled ? WallpaperHostMode.Layers : WallpaperHostMode.Simple;
+        const WallpaperHostMode mode = WallpaperHostMode.Layers;
         if (_wallpaperHost != null)
         {
             if (_wallpaperHostMode == mode)
@@ -1798,32 +1739,21 @@ internal sealed class MainWindowStyleInjector : IDisposable
                 return;
             }
 
-            // 模式切换（简单 <-> 图层）：重建宿主子内容并清空旧视图。
-            // 先中止可能进行中的交叉淡化并释放退役位图：否则切到图层模式后
-            // _wallpaperLayers 为空而过渡仍激活，AdvanceWallpaperTransition 每 16ms
-            // 下标越界抛异常，导致全部瞬时动画冻结 + crash.log 刷屏。
-            _wallpaperTransitionActive = false;
-            _wallpaperRetiredBitmap?.Dispose();
-            _wallpaperRetiredBitmap = null;
-            _wallpaperRetiredStream?.Dispose();
-            _wallpaperRetiredStream = null;
-            _wallpaperLayers.Clear();
             DisposeWallpaperLayerViews();
             _wallpaperCanvas = null;
             _wallpaperHostMode = mode;
-            _wallpaperHost.Child = BuildWallpaperHostChild(mode);
+            _wallpaperHost.Child = BuildWallpaperHostChild();
             UpdateWallpaperBounds();
             return;
         }
 
-        _wallpaperLayers.Clear();
         _wallpaperHost = new Border
         {
             IsHitTestVisible = false,
             ClipToBounds = true,
             VerticalAlignment = VerticalAlignment.Stretch,
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            Child = BuildWallpaperHostChild(mode)
+            Child = BuildWallpaperHostChild()
         };
         _wallpaperHost.SizeChanged += (_, _) =>
         {
@@ -1849,25 +1779,17 @@ internal sealed class MainWindowStyleInjector : IDisposable
         UpdateWallpaperBounds();
     }
 
-    /// <summary>按当前模式构建宿主子内容（简单模式为双缓冲交叉淡化层，图层模式为锚点画布）。</summary>
-    private Control BuildWallpaperHostChild(WallpaperHostMode mode)
+    /// <summary>构建宿主子内容（图层模式：锚点定位画布）。</summary>
+    private Control BuildWallpaperHostChild()
     {
-        if (mode == WallpaperHostMode.Layers)
+        _wallpaperCanvas = new Canvas
         {
-            _wallpaperCanvas = new Canvas
-            {
-                IsHitTestVisible = false,
-                ClipToBounds = true,
-                VerticalAlignment = VerticalAlignment.Stretch,
-                HorizontalAlignment = HorizontalAlignment.Stretch
-            };
-            return _wallpaperCanvas;
-        }
-
-        _wallpaperLayers.Clear();
-        _wallpaperLayers.Add(new Border { IsHitTestVisible = false, VerticalAlignment = VerticalAlignment.Stretch, HorizontalAlignment = HorizontalAlignment.Stretch });
-        _wallpaperLayers.Add(new Border { IsHitTestVisible = false, VerticalAlignment = VerticalAlignment.Stretch, HorizontalAlignment = HorizontalAlignment.Stretch });
-        return new Grid { IsHitTestVisible = false, Children = { _wallpaperLayers[0], _wallpaperLayers[1] } };
+            IsHitTestVisible = false,
+            ClipToBounds = true,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            HorizontalAlignment = HorizontalAlignment.Stretch
+        };
+        return _wallpaperCanvas;
     }
 
     /// <summary>
@@ -2064,7 +1986,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private void RemoveWallpaper()
     {
         _wallpaperTimer.Stop();
-        _wallpaperTransitionActive = false;
         if (_wallpaperHost != null && _wallpaperHost.Parent is Panel panel)
         {
             panel.Children.Remove(_wallpaperHost);
@@ -2073,14 +1994,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _wallpaperHost = null;
         _wallpaperHostMode = WallpaperHostMode.None;
         _wallpaperCanvas = null;
-        _wallpaperLayers.Clear();
         DisposeWallpaperLayerViews();
         DisposeFullscreenHost();
-        _wallpaperSlideshow.Clear();
-        _wallpaperSlideshowIndex = 0;
-        _wallpaperLoadedSource = WallpaperSource.None;
-        _wallpaperLoadedPath = string.Empty;
-        DisposeWallpaperBitmap();
     }
 
     // ============ 动态视频填充（FFmpeg，专家模式）============
@@ -3449,18 +3364,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
     }
 
-    private void DisposeWallpaperBitmap()
-    {
-        _wallpaperBitmap?.Dispose();
-        _wallpaperBitmap = null;
-        _wallpaperStream?.Dispose();
-        _wallpaperStream = null;
-        _wallpaperRetiredBitmap?.Dispose();
-        _wallpaperRetiredBitmap = null;
-        _wallpaperRetiredStream?.Dispose();
-        _wallpaperRetiredStream = null;
-    }
-
     private void UpdateWallpaperTimer()
     {
         if (!_settings.Enabled || !_settings.WallpaperEnabled)
@@ -3469,32 +3372,18 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
-        if (_settings.WallpaperDesignerEnabled)
-        {
-            // 图层模式：取所有幻灯片图层间隔的最小值为心跳频率，各图层按自身间隔推进。
-            var intervals = _wallpaperLayerViews
-                .Where(v => v.Settings.Source == WallpaperSource.FolderSlideshow && v.SlideshowFiles.Count > 1)
-                .Select(v => Math.Clamp(v.Settings.SlideshowIntervalSeconds, 2, 3600))
-                .ToArray();
-            if (intervals.Length == 0)
-            {
-                _wallpaperTimer.Stop();
-                return;
-            }
-
-            _wallpaperTimer.Interval = TimeSpan.FromSeconds(intervals.Min());
-            _wallpaperTimer.Start();
-            return;
-        }
-
-        if (_settings.WallpaperSource != WallpaperSource.FolderSlideshow)
+        // 图层模式：取所有幻灯片图层间隔的最小值为心跳频率，各图层按自身间隔推进。
+        var intervals = _wallpaperLayerViews
+            .Where(v => v.Settings.Source == WallpaperSource.FolderSlideshow && v.SlideshowFiles.Count > 1)
+            .Select(v => Math.Clamp(v.Settings.SlideshowIntervalSeconds, 2, 3600))
+            .ToArray();
+        if (intervals.Length == 0)
         {
             _wallpaperTimer.Stop();
             return;
         }
 
-        // SMTC 底图由 SmtcWatcher 事件驱动，无需定时轮询。
-        _wallpaperTimer.Interval = TimeSpan.FromSeconds(Math.Clamp(_settings.WallpaperSlideshowIntervalSeconds, 2, 3600));
+        _wallpaperTimer.Interval = TimeSpan.FromSeconds(intervals.Min());
         _wallpaperTimer.Start();
     }
 
@@ -3505,274 +3394,27 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
-        if (_settings.WallpaperDesignerEnabled)
+        var now = DateTime.UtcNow;
+        foreach (var view in _wallpaperLayerViews)
         {
-            var now = DateTime.UtcNow;
-            foreach (var view in _wallpaperLayerViews)
+            if (view.Settings.Source != WallpaperSource.FolderSlideshow || view.SlideshowFiles.Count <= 1)
             {
-                if (view.Settings.Source != WallpaperSource.FolderSlideshow || view.SlideshowFiles.Count <= 1)
-                {
-                    continue;
-                }
-
-                var interval = Math.Clamp(view.Settings.SlideshowIntervalSeconds, 2, 3600);
-                if (view.NextAdvance == DateTime.MinValue)
-                {
-                    view.NextAdvance = now.AddSeconds(interval);
-                    continue;
-                }
-
-                if (now >= view.NextAdvance)
-                {
-                    view.NextAdvance = now.AddSeconds(interval);
-                    AdvanceLayerSlideshow(view);
-                }
+                continue;
             }
 
-            return;
+            var interval = Math.Clamp(view.Settings.SlideshowIntervalSeconds, 2, 3600);
+            if (view.NextAdvance == DateTime.MinValue)
+            {
+                view.NextAdvance = now.AddSeconds(interval);
+                continue;
+            }
+
+            if (now >= view.NextAdvance)
+            {
+                view.NextAdvance = now.AddSeconds(interval);
+                AdvanceLayerSlideshow(view);
+            }
         }
-
-        if (_settings.WallpaperSource != WallpaperSource.FolderSlideshow)
-        {
-            return;
-        }
-
-        AdvanceSlideshow();
-    }
-
-    private void ReloadWallpaperImageIfNeeded()
-    {
-        if (_wallpaperLoadedSource == _settings.WallpaperSource && _wallpaperLoadedPath == _settings.WallpaperPath)
-        {
-            return;
-        }
-
-        _wallpaperLoadedSource = _settings.WallpaperSource;
-        _wallpaperLoadedPath = _settings.WallpaperPath;
-        switch (_settings.WallpaperSource)
-        {
-            case WallpaperSource.LocalImage:
-                LoadWallpaperImage(_settings.WallpaperPath);
-                break;
-            case WallpaperSource.FolderSlideshow:
-                BuildSlideshowList();
-                if (_wallpaperSlideshow.Count > 0)
-                {
-                    _wallpaperSlideshowIndex = 0;
-                    LoadWallpaperImage(_wallpaperSlideshow[0]);
-                }
-                break;
-            case WallpaperSource.SmtcAlbum:
-                // SMTC 底图由 SmtcWatcher 事件驱动推送，这里只需清空旧图。
-                ClearWallpaperImage();
-                break;
-        }
-    }
-
-    private void BuildSlideshowList()
-    {
-        _wallpaperSlideshow.Clear();
-        var directory = _settings.WallpaperPath;
-        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
-        {
-            return;
-        }
-
-        _wallpaperSlideshow.AddRange(ImageFiles.EnumerateSorted(directory));
-    }
-
-    private void AdvanceSlideshow()
-    {
-        if (_wallpaperSlideshow.Count == 0)
-        {
-            return;
-        }
-
-        _wallpaperSlideshowIndex = (_wallpaperSlideshowIndex + 1) % _wallpaperSlideshow.Count;
-        LoadWallpaperImage(_wallpaperSlideshow[_wallpaperSlideshowIndex]);
-    }
-
-    /// <summary>
-    /// 清空当前底图（如 SMTC 切换到的媒体没有封面时）。
-    /// </summary>
-    private void ClearWallpaperImage()
-    {
-        _wallpaperTransitionActive = false;
-        DisposeWallpaperBitmap();
-        foreach (var layer in _wallpaperLayers)
-        {
-            layer.Background = null;
-            layer.Opacity = 0;
-        }
-    }
-
-    private void LoadWallpaperImage(string path)
-    {
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
-        {
-            DisposeWallpaperBitmap();
-            return;
-        }
-
-        if (TryDecodeBitmap(File.ReadAllBytes(path)) is not { } decoded)
-        {
-            DisposeWallpaperBitmap();
-            return;
-        }
-
-        SetWallpaperImage(decoded.Bitmap, decoded.Stream);
-    }
-
-    private void LoadWallpaperImage(byte[] bytes)
-    {
-        if (TryDecodeBitmap(bytes) is not { } decoded)
-        {
-            DisposeWallpaperBitmap();
-            return;
-        }
-
-        SetWallpaperImage(decoded.Bitmap, decoded.Stream);
-    }
-
-    private void SetWallpaperImage(Bitmap bitmap, MemoryStream stream)
-    {
-        var duration = Math.Max(0, _settings.AlbumColorTransitionSeconds);
-        if (_wallpaperLayers.Count < 2 || duration <= 0)
-        {
-            // 立即切换：旧图不再被任何图层引用，可以安全释放。
-            DisposeWallpaperBitmap();
-            _wallpaperBitmap = bitmap;
-            _wallpaperStream = stream;
-            ApplyWallpaperLayer(_wallpaperFront, bitmap, _settings.WallpaperOpacity);
-            return;
-        }
-
-        // 交叉淡化：旧图保留在前层（不可提前释放），新图放到背面从 0 淡入。
-        var back = 1 - _wallpaperFront;
-        ApplyWallpaperLayer(back, bitmap, 0);
-        if (_wallpaperBitmap != null && _wallpaperBitmap != bitmap)
-        {
-            _wallpaperRetiredBitmap?.Dispose();
-            _wallpaperRetiredStream?.Dispose();
-            _wallpaperRetiredBitmap = _wallpaperBitmap;
-            _wallpaperRetiredStream = _wallpaperStream;
-        }
-
-        _wallpaperBitmap = bitmap;
-        _wallpaperStream = stream;
-        _wallpaperTransitionStart = DateTime.UtcNow;
-        _wallpaperTransitionActive = true;
-        UpdateAnimationTimer();
-    }
-
-    private void ApplyWallpaperLayer(int index, Bitmap bitmap, double opacity)
-    {
-        if (_wallpaperLayers.Count <= index)
-        {
-            return;
-        }
-
-        var layer = _wallpaperLayers[index];
-        layer.Background = BuildWallpaperBrush(bitmap);
-        layer.Opacity = opacity;
-    }
-
-    private void AdvanceWallpaperTransition()
-    {
-        // 防御：图层被清空（模式切换/宿主重建）后过渡状态必须中止，否则下标越界。
-        if (_wallpaperLayers.Count < 2)
-        {
-            _wallpaperTransitionActive = false;
-            return;
-        }
-
-        var duration = Math.Max(0.001, _settings.AlbumColorTransitionSeconds);
-        var progress = Math.Clamp((DateTime.UtcNow - _wallpaperTransitionStart).TotalSeconds / duration, 0, 1);
-        var eased = 1 - Math.Pow(1 - progress, 3);
-        var front = _wallpaperLayers[_wallpaperFront];
-        var back = _wallpaperLayers[1 - _wallpaperFront];
-        front.Opacity = _settings.WallpaperOpacity * (1 - eased);
-        back.Opacity = _settings.WallpaperOpacity * eased;
-        if (progress >= 1)
-        {
-            front.Opacity = 0;
-            back.Opacity = _settings.WallpaperOpacity;
-            front.Background = null;
-            _wallpaperFront = 1 - _wallpaperFront;
-            _wallpaperTransitionActive = false;
-            _wallpaperRetiredBitmap?.Dispose();
-            _wallpaperRetiredBitmap = null;
-            _wallpaperRetiredStream?.Dispose();
-            _wallpaperRetiredStream = null;
-            UpdateAnimationTimer();
-        }
-    }
-
-    private void UpdateWallpaperPresentation()
-    {
-        if (_wallpaperBitmap == null || _wallpaperLayers.Count < 2)
-        {
-            return;
-        }
-
-        var front = _wallpaperLayers[_wallpaperFront];
-        front.Opacity = _settings.WallpaperOpacity;
-        if (front.Background is ImageBrush brush)
-        {
-            brush.Source = _wallpaperBitmap;
-            brush.Stretch = WallpaperStretch;
-            brush.TileMode = _settings.WallpaperDisplayMode == WallpaperDisplayMode.Tile ? TileMode.Tile : TileMode.None;
-            ApplyWallpaperBrushRegion(brush);
-        }
-        else
-        {
-            front.Background = BuildWallpaperBrush(_wallpaperBitmap);
-        }
-    }
-
-    private Stretch WallpaperStretch => _settings.WallpaperDisplayMode switch
-    {
-        WallpaperDisplayMode.Stretch => Stretch.Fill,
-        WallpaperDisplayMode.Fill => Stretch.UniformToFill,
-        WallpaperDisplayMode.Fit => Stretch.Uniform,
-        WallpaperDisplayMode.Tile => Stretch.None,
-        _ => Stretch.UniformToFill
-    };
-
-    private ImageBrush BuildWallpaperBrush(Bitmap bitmap)
-    {
-        var brush = new ImageBrush
-        {
-            Source = bitmap,
-            Stretch = WallpaperStretch,
-            TileMode = _settings.WallpaperDisplayMode == WallpaperDisplayMode.Tile ? TileMode.Tile : TileMode.None,
-            AlignmentX = AlignmentX.Center,
-            AlignmentY = AlignmentY.Center
-        };
-        ApplyWallpaperBrushRegion(brush);
-        return brush;
-    }
-
-    private void ApplyWallpaperBrushRegion(ImageBrush brush)
-    {
-        var scale = Math.Clamp(_settings.WallpaperScale, 1, 5);
-        var ox = Math.Clamp(_settings.WallpaperOffsetX, -0.5, 0.5);
-        var oy = Math.Clamp(_settings.WallpaperOffsetY, -0.5, 0.5);
-        if (_settings.WallpaperDisplayMode == WallpaperDisplayMode.Tile)
-        {
-            brush.SourceRect = RelativeRect.Fill;
-            brush.DestinationRect = new RelativeRect(0, 0, 1.0 / scale, 1.0 / scale, RelativeUnit.Relative);
-            return;
-        }
-
-        var s = 1.0 / scale;
-        var cx = 0.5 + ox * (0.5 - s / 2);
-        var cy = 0.5 + oy * (0.5 - s / 2);
-        brush.DestinationRect = RelativeRect.Fill;
-        brush.SourceRect = new RelativeRect(
-            Math.Clamp(cx - s / 2, 0, 1 - s),
-            Math.Clamp(cy - s / 2, 0, 1 - s),
-            s, s, RelativeUnit.Relative);
     }
 
     // ============ 主界面底图结束 ============

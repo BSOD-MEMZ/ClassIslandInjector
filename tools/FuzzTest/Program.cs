@@ -30,7 +30,6 @@ void RoundTripExtremeValues()
         Opacity = 1e300,          // 远超 clamp 上限
         Rotation = -1e300,        // 远超 clamp 下限
         CornerRadius = -5,        // 低于下限
-        WallpaperScale = 1e9,
         BackgroundTextureSpectrumSensitivity = -100,
         BackgroundTextureSpectrumBars = 99999,
         CountdownArrowCount = -1,

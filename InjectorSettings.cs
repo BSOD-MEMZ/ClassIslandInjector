@@ -748,14 +748,6 @@ public sealed class InjectorSettings
     private double _albumColorPollingIntervalSeconds = 10;
     private double _albumColorTransitionSeconds = 0.6;
     private bool _wallpaperEnabled;
-    private WallpaperSource _wallpaperSource = WallpaperSource.None;
-    private string _wallpaperPath = string.Empty;
-    private double _wallpaperOpacity = 0.6;
-    private WallpaperDisplayMode _wallpaperDisplayMode = WallpaperDisplayMode.Fill;
-    private double _wallpaperScale = 1;
-    private double _wallpaperOffsetX;
-    private double _wallpaperOffsetY;
-    private double _wallpaperSlideshowIntervalSeconds = 30;
     private double _wallpaperBlurRadius;
     private List<WallpaperLayerItem> _wallpaperLayers = [];
     private WallpaperLayerZOrder _wallpaperZOrder = WallpaperLayerZOrder.BehindBackground;
@@ -939,16 +931,9 @@ public sealed class InjectorSettings
     public double AlbumColorPollingIntervalSeconds { get => _albumColorPollingIntervalSeconds; set => Set(ref _albumColorPollingIntervalSeconds, Math.Clamp(value, 0.5, 120)); }
     public double AlbumColorTransitionSeconds { get => _albumColorTransitionSeconds; set => Set(ref _albumColorTransitionSeconds, Math.Clamp(value, 0, 10)); }
     public bool WallpaperEnabled { get => _wallpaperEnabled; set => Set(ref _wallpaperEnabled, value); }
-    public WallpaperSource WallpaperSource { get => _wallpaperSource; set => Set(ref _wallpaperSource, value); }
-    public string WallpaperPath { get => _wallpaperPath; set => Set(ref _wallpaperPath, value?.Trim() ?? ""); }
-    public double WallpaperOpacity { get => _wallpaperOpacity; set => Set(ref _wallpaperOpacity, Math.Clamp(value, 0, 1)); }
-    public WallpaperDisplayMode WallpaperDisplayMode { get => _wallpaperDisplayMode; set => Set(ref _wallpaperDisplayMode, value); }
-    public double WallpaperScale { get => _wallpaperScale; set => Set(ref _wallpaperScale, Math.Clamp(value, 1, 5)); }
-    public double WallpaperOffsetX { get => _wallpaperOffsetX; set => Set(ref _wallpaperOffsetX, Math.Clamp(value, -0.5, 0.5)); }
-    public double WallpaperOffsetY { get => _wallpaperOffsetY; set => Set(ref _wallpaperOffsetY, Math.Clamp(value, -0.5, 0.5)); }
-    public double WallpaperSlideshowIntervalSeconds { get => _wallpaperSlideshowIntervalSeconds; set => Set(ref _wallpaperSlideshowIntervalSeconds, Math.Clamp(value, 2, 3600)); }
+    /// <summary>底图宿主整体高斯模糊（图层模式共用，作用于整个底图宿主）。</summary>
     public double WallpaperBlurRadius { get => _wallpaperBlurRadius; set => Set(ref _wallpaperBlurRadius, Math.Clamp(value, 0, 60)); }
-    /// <summary>图层式底图的图层列表（编辑器写入；非空且启用时优先于旧版简单底图）。</summary>
+    /// <summary>图层式底图的图层列表（编辑器写入）。</summary>
     public List<WallpaperLayerItem> WallpaperLayers { get => _wallpaperLayers; set => Set(ref _wallpaperLayers, value ?? []); }
     /// <summary>底图整体所在层级（相对主界面自身的图层）。</summary>
     public WallpaperLayerZOrder WallpaperZOrder { get => _wallpaperZOrder; set => Set(ref _wallpaperZOrder, value); }
@@ -1143,14 +1128,6 @@ public sealed class InjectorSettings
         MarqueeFrameThickness = source.MarqueeFrameThickness;
         DynamicBackgroundColorEnabled = source.DynamicBackgroundColorEnabled;
         WallpaperEnabled = source.WallpaperEnabled;
-        WallpaperSource = source.WallpaperSource;
-        WallpaperPath = source.WallpaperPath;
-        WallpaperOpacity = source.WallpaperOpacity;
-        WallpaperDisplayMode = source.WallpaperDisplayMode;
-        WallpaperScale = source.WallpaperScale;
-        WallpaperOffsetX = source.WallpaperOffsetX;
-        WallpaperOffsetY = source.WallpaperOffsetY;
-        WallpaperSlideshowIntervalSeconds = source.WallpaperSlideshowIntervalSeconds;
         WallpaperBlurRadius = source.WallpaperBlurRadius;
         WallpaperDesignerEnabled = source.WallpaperDesignerEnabled;
         WallpaperZOrder = source.WallpaperZOrder;
@@ -1257,6 +1234,7 @@ internal static class InjectorSettingsStore
                         loaded.StyleSheetPath = defaultStyleSheet;
                     }
 
+                    MigrateLegacySimpleWallpaper(loaded, settingsPath);
                     return loaded;
                 }
             }
@@ -1279,6 +1257,60 @@ internal static class InjectorSettingsStore
         var settings = new InjectorSettings { StyleSheetPath = defaultStyleSheet };
         Save(configDirectory, settings);
         return settings;
+    }
+
+    /// <summary>
+    /// 旧版「简单模式底图」迁移：简单模式已删除，若旧配置仍是简单模式且配置了
+    /// 本地图片路径，则把它转换为一个「铺满主界面」的图层并强制启用图层式底图。
+    /// 迁移读 settings.json 原始键（简单模式属性已从模型删除）；幻灯片文件夹不迁移
+    /// （改为在图层编辑器里重新添加文件夹幻灯片图层）。
+    /// </summary>
+    private static void MigrateLegacySimpleWallpaper(InjectorSettings settings, string settingsPath)
+    {
+        try
+        {
+            if (settings.WallpaperDesignerEnabled || !File.Exists(settingsPath))
+            {
+                return;
+            }
+
+            using var document = JsonDocument.Parse(File.ReadAllText(settingsPath));
+            if (!document.RootElement.TryGetProperty("WallpaperPath", out var pathElement) ||
+                pathElement.ValueKind != JsonValueKind.String)
+            {
+                return;
+            }
+
+            var legacyPath = pathElement.GetString();
+            if (string.IsNullOrWhiteSpace(legacyPath) || !File.Exists(legacyPath))
+            {
+                return;
+            }
+
+            var opacity = 0.6;
+            if (document.RootElement.TryGetProperty("WallpaperOpacity", out var opacityElement) &&
+                opacityElement.ValueKind == JsonValueKind.Number)
+            {
+                opacity = Math.Clamp(opacityElement.GetDouble(), 0, 1);
+            }
+
+            settings.WallpaperLayers.Add(new WallpaperLayerItem
+            {
+                Name = "底图（简单模式迁移）",
+                Kind = WallpaperLayerKind.Image,
+                Source = WallpaperSource.LocalImage,
+                Path = legacyPath,
+                DisplayMode = WallpaperDisplayMode.Fill,
+                SizeMode = WallpaperLayerSizeMode.FillIsland,
+                Opacity = opacity,
+            });
+            settings.WallpaperDesignerEnabled = true;
+            Save(Path.GetDirectoryName(settingsPath)!, settings);
+        }
+        catch
+        {
+            // 迁移失败不影响默认加载（用户可在图层编辑器重新添加图片）。
+        }
     }
 
     public static void Save(string configDirectory, InjectorSettings settings)

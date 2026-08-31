@@ -73,26 +73,7 @@ internal static class PresetExchange
                 settings.StyleSheetPath = string.Empty;
             }
 
-            // 2. 简单模式底图（本地图片文件 / 幻灯片文件夹）
-            if (settings.WallpaperSource is WallpaperSource.LocalImage or WallpaperSource.FolderSlideshow)
-            {
-                var isFolder = settings.WallpaperSource == WallpaperSource.FolderSlideshow;
-                if (TryMapLocalPath(archive, settings.WallpaperPath, "resources/wallpaper", isFolder, out var wallpaperRel))
-                {
-                    settings.WallpaperPath = wallpaperRel;
-                    copied++;
-                }
-                else
-                {
-                    settings.WallpaperPath = string.Empty;
-                }
-            }
-            else
-            {
-                settings.WallpaperPath = string.Empty;
-            }
-
-            // 3. 图层式底图的本地图片 / 幻灯片文件夹图层
+            // 2. 图层式底图的本地图片 / 幻灯片文件夹图层（简单模式底图已删除）。
             for (var i = 0; i < settings.WallpaperLayers.Count; i++)
             {
                 var layer = settings.WallpaperLayers[i];
@@ -200,7 +181,6 @@ internal static class PresetExchange
             // 重写 resources/ 相对引用为本地绝对路径；其余残留路径（不应出现）清空。
             var settings = preset.Settings;
             settings.StyleSheetPath = ResolveResource(settings.StyleSheetPath, importDir);
-            settings.WallpaperPath = ResolveResource(settings.WallpaperPath, importDir);
             foreach (var layer in settings.WallpaperLayers)
             {
                 layer.Path = ResolveResource(layer.Path, importDir);

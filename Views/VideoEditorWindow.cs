@@ -124,6 +124,25 @@ internal sealed class VideoEditorWindow : MyWindow
     private readonly List<StageTrackLayer> _stageLayers = [];
     /// <summary>舞台八向手柄覆盖层（选中片段时显示，仿底图图层编辑器）。</summary>
     private readonly Canvas _stageHandleOverlay = new() { IsHitTestVisible = true, ZIndex = 40 };
+    /// <summary>磁吸基准线覆盖层（移动/缩放对齐时显示对齐参考线，ZIndex 低于手柄）。</summary>
+    private readonly Canvas _stageGuides = new() { IsHitTestVisible = false, ZIndex = 35, IsVisible = false };
+    private readonly Avalonia.Controls.Shapes.Line _guideV = new()
+    {
+        Stroke = new SolidColorBrush(Color.FromRgb(0xFF, 0x3D, 0xC2)),
+        StrokeThickness = 1,
+        StrokeDashArray = [4, 3]
+    };
+    private readonly Avalonia.Controls.Shapes.Line _guideH = new()
+    {
+        Stroke = new SolidColorBrush(Color.FromRgb(0x00, 0xC8, 0xFF)),
+        StrokeThickness = 1,
+        StrokeDashArray = [4, 3]
+    };
+    /// <summary>磁吸参考点（拖动开始时冻结）：其它片段显示中心 + 舞台边缘/中心。</summary>
+    private readonly List<double> _magnetRefsX = [];
+    private readonly List<double> _magnetRefsY = [];
+    /// <summary>磁吸半径（舞台像素）。</summary>
+    private const double MagnetThreshold = 6;
     private readonly Border[] _handles = new Border[8];
     private Border _handleOutline = null!;
     private int _resizeHandle = -1;
@@ -413,6 +432,9 @@ internal sealed class VideoEditorWindow : MyWindow
         _stageHostGrid.Children.Add(_stageCaption);
         // 八向手柄覆盖层（最上层）；轨道图层插到最底，字幕在图层之上。
         _stageHostGrid.Children.Add(_stageHandleOverlay);
+        _stageGuides.Children.Add(_guideV);
+        _stageGuides.Children.Add(_guideH);
+        _stageHostGrid.Children.Add(_stageGuides);
         BuildStageHandles();
         // 素材选中变化时更新「添加到时间轴」可用性（之前仅刷新列表时更新，导致选中后仍置灰）。
         _assetList.SelectionChanged += (_, _) => UpdateAssetButtons();
@@ -4276,6 +4298,7 @@ internal sealed class VideoEditorWindow : MyWindow
             {
                 _resizeHandle = -1;
                 _resizeClip = null;
+                HideStageGuides();
                 e.Pointer.Capture(null);
                 FillPropertyPanel();
             }
@@ -4334,6 +4357,7 @@ internal sealed class VideoEditorWindow : MyWindow
                 {
                     _resizeHandle = -1;
                     _resizeClip = null;
+                    HideStageGuides();
                     // 恢复默认样式：白底 + 强调色描边。
                     dot.Fill = Brushes.White;
                     dot.Stroke = ThemePalette.AccentBrush();
@@ -4372,6 +4396,7 @@ internal sealed class VideoEditorWindow : MyWindow
         _resizeBaseW = _resizeStartRect.Width / Math.Max(0.01, clip.Scale * clip.ScaleX);
         _resizeBaseH = _resizeStartRect.Height / Math.Max(0.01, clip.Scale * clip.ScaleY);
         _resizeClip = clip;
+        CaptureMagnetRefs();
     }
 
     /// <summary>按选中片段在舞台上的显示矩形（原比例基准 + 缩放/偏移，忽略旋转）摆放八向手柄。</summary>
@@ -4533,8 +4558,146 @@ internal sealed class VideoEditorWindow : MyWindow
             ApplyTransform(_stageLayers[clip.Track], clip);
         }
 
+        // 磁吸：在变换已计算后把被拖点/中心吸附到参考点（吸附距离 ≤6px，对边视觉偏移可忽略）。
+        ApplyMagnet(clip, handle);
         UpdateStageHandles();
         _clipNameText.Text = $"{ClipDisplayName(clip)}\n轨道 {clip.Track + 1} · 开始 {clip.StartTime:0.#}s · 时长 {clip.Duration:0.#}s\n缩放 {clip.Scale:0.##}x · 拉伸 ({clip.ScaleX:0.##}, {clip.ScaleY:0.##}) · 偏移 ({clip.OffsetX:0.##}, {clip.OffsetY:0.##})";
+    }
+
+    // ============ 舞台磁吸 + 基准线 ============
+
+    /// <summary>拖动开始时冻结磁吸参考点：其它片段显示中心 + 舞台边缘/中心。</summary>
+    private void CaptureMagnetRefs()
+    {
+        _magnetRefsX.Clear();
+        _magnetRefsY.Clear();
+        var W = _stageBorder.Bounds.Width;
+        var H = _stageBorder.Bounds.Height;
+        if (W <= 0 || H <= 0)
+        {
+            return;
+        }
+
+        _magnetRefsX.AddRange([0, W / 2.0, W]);
+        _magnetRefsY.AddRange([0, H / 2.0, H]);
+        foreach (var other in _project.Clips)
+        {
+            if (ReferenceEquals(other, _selected) || other.Track >= _stageLayers.Count)
+            {
+                continue;
+            }
+
+            var rect = GetSelectedDisplayRect(other);
+            if (rect.Width <= 0)
+            {
+                continue;
+            }
+
+            _magnetRefsX.Add(rect.Center.X);
+            _magnetRefsY.Add(rect.Center.Y);
+        }
+    }
+
+    /// <summary>找参考点集中最近的值（距离 < 阈值时返回，否则 null）。</summary>
+    private static double? NearestRef(List<double> refs, double value)
+    {
+        double? best = null;
+        var bestDist = MagnetThreshold;
+        foreach (var r in refs)
+        {
+            var d = Math.Abs(r - value);
+            if (d < bestDist)
+            {
+                bestDist = d;
+                best = r;
+            }
+        }
+
+        return best;
+    }
+
+    private void ShowGuideV(double x)
+    {
+        _guideV.StartPoint = new Point(x, 0);
+        _guideV.EndPoint = new Point(x, Math.Max(1, _stageBorder.Bounds.Height));
+        _guideV.IsVisible = true;
+        _stageGuides.IsVisible = true;
+    }
+
+    private void ShowGuideH(double y)
+    {
+        _guideH.StartPoint = new Point(0, y);
+        _guideH.EndPoint = new Point(Math.Max(1, _stageBorder.Bounds.Width), y);
+        _guideH.IsVisible = true;
+        _stageGuides.IsVisible = true;
+    }
+
+    private void HideStageGuides()
+    {
+        _stageGuides.IsVisible = false;
+        _guideV.IsVisible = false;
+        _guideH.IsVisible = false;
+    }
+
+    /// <summary>
+    /// 舞台磁吸：移动（handle=8）吸中心到其它片段中心/舞台中心与边缘；缩放吸被拖角/边到参考点。
+    /// 吸附通过微调偏移实现（≤6px，锚点视觉偏移可忽略），吸附时显示对应基准线。
+    /// 返回是否发生了吸附。</summary>
+    private bool ApplyMagnet(VideoClip clip, int handle)
+    {
+        HideStageGuides();
+        var W = _stageBorder.Bounds.Width;
+        var H = _stageBorder.Bounds.Height;
+        if (W <= 0 || H <= 0 || handle < 0)
+        {
+            return false;
+        }
+
+        var rect = GetSelectedDisplayRect(clip);
+        if (rect.Width <= 0)
+        {
+            return false;
+        }
+
+        var snapped = false;
+        Point snapPoint;
+        if (handle == 8)
+        {
+            snapPoint = rect.Center;
+        }
+        else
+        {
+            // 被拖角/边中点（与 UpdateStageHandles 的 pts 一致）。
+            snapPoint = handle switch
+            {
+                0 => new Point(rect.Left, rect.Top),
+                1 => new Point(rect.Center.X, rect.Top),
+                2 => new Point(rect.Right, rect.Top),
+                3 => new Point(rect.Right, rect.Center.Y),
+                4 => new Point(rect.Right, rect.Bottom),
+                5 => new Point(rect.Center.X, rect.Bottom),
+                6 => new Point(rect.Left, rect.Bottom),
+                _ => new Point(rect.Left, rect.Center.Y)
+            };
+        }
+
+        var snapX = NearestRef(_magnetRefsX, snapPoint.X);
+        var snapY = NearestRef(_magnetRefsY, snapPoint.Y);
+        if (snapX != null)
+        {
+            clip.OffsetX += (snapX.Value - snapPoint.X) / W;
+            ShowGuideV(snapX.Value);
+            snapped = true;
+        }
+
+        if (snapY != null)
+        {
+            clip.OffsetY += (snapY.Value - snapPoint.Y) / H;
+            ShowGuideH(snapY.Value);
+            snapped = true;
+        }
+
+        return snapped;
     }
 
     /// <summary>手柄的固定锚点（对角 / 对边中点）。</summary>
