@@ -274,7 +274,7 @@ internal sealed class VideoEditorWindow : MyWindow
     private readonly ComboBox _overlayShape = new() { MinWidth = 110 };
     private readonly EditorSpin _strokeWidthSpin = new(0, 0.2, 0.005, "0.###");
     private readonly TextBox _strokeColorBox = new() { MinWidth = 100, Watermark = "#AARRGGBB" };
-    private readonly StackPanel _overlayPanel = new() { Spacing = 4, IsVisible = false };
+    private readonly StackPanel _overlayPanel = new() { Spacing = 4 };
     /// <summary>覆盖层编辑区的行（内容/颜色/形状/描边），按片段类型显隐（图片只留通用变换）。</summary>
     private Control? _overlayTextRow;
     private Control? _overlayColorRow;
@@ -284,7 +284,7 @@ internal sealed class VideoEditorWindow : MyWindow
     // ---- 滤镜片段属性 ----
     private readonly ComboBox _filterCombo = new() { MinWidth = 110 };
     private readonly EditorSpin _filterIntensitySpin = new(0, 1, 0.01, "0.##");
-    private readonly StackPanel _filterPanel = new() { Spacing = 4, IsVisible = false };
+    private readonly StackPanel _filterPanel = new() { Spacing = 4 };
     /// <summary>检查器分段条（变换/覆盖层/滤镜；ClassIsland 原生 TabStrip + compact 类，规则集同款）。</summary>
     private TabStrip _inspectorSegmented = null!;
     private ContentControl _inspectorContent = null!;
@@ -376,12 +376,16 @@ internal sealed class VideoEditorWindow : MyWindow
             Background = ThemePalette.AccentBrush()
         }
     };
-    /// <summary>标尺上的播放头抓取头（倒三角，点击/拖动 seek；X 与泳道内播放头竖线同步）。</summary>
+    /// <summary>标尺上的播放头抓取头（舞台八向手柄同款白圆点，点击/拖动 seek；X 与播放头竖线同步）。</summary>
     private Border _playheadHead = null!;
+    /// <summary>播放头覆盖层（贯穿标尺 + 泳道全高的 Canvas，含竖线与圆头）。背景 null 不拦截空白点击。</summary>
+    private Canvas _playheadOverlay = null!;
     /// <summary>时间轴根画布（泳道网格 + 播放头覆盖层）。左对齐保证时间轴 0 点在视口最左。</summary>
     private readonly Canvas _timelineRoot = new() { HorizontalAlignment = HorizontalAlignment.Left };
     /// <summary>外层纵向滚动容器（内容 = 左轨道头 + 右内层横向泳道，两者一起纵向滚动保证逐行对齐）。</summary>
     private ScrollViewer _timelineScroll = null!;
+    /// <summary>时间轴滚动内容（列 0 轨道头 + 列 1 泳道；TEMPDBG 持有引用诊断用）。</summary>
+    private Grid _timelineContent = null!;
     /// <summary>内层仅横向滚动的泳道容器（横向滚动 + 标尺平移同步）。</summary>
     private ScrollViewer _lanesScroll = null!;
     /// <summary>固定标尺宿主（在滚动区上方，不随纵向滚动走）；标尺随内容横向滚动经 _rulerTranslate 同步。</summary>
@@ -874,6 +878,7 @@ internal sealed class VideoEditorWindow : MyWindow
         {
             _rulerTranslate.X = -_lanesScroll.Offset.X;
             PositionPlayheadHead();
+            PositionPlayheadLine();
         };
         // 拖拽自动滚动：指针贴近视口边缘时持续滚动（横向滚内层、纵向滚外层）。
         _dragScrollTimer.Tick += (_, _) =>
@@ -940,11 +945,12 @@ internal sealed class VideoEditorWindow : MyWindow
         };
         Grid.SetColumn(_rulerHost, 1);
         // 播放头抓取头：固定覆盖层（永不重建，缩放/滚动不脱节），舞台八向手柄同款白圆点。
+        // 圆头本体移到时间轴全高覆盖层（_playheadOverlay，见 timelineRight 构建处），与竖线同层，
+        // 保证竖线贯穿标尺后圆头直接盖在竖线上；headHost 只保留标尺空白点击 seek（透明背景拦截）。
         _playheadHead = BuildPlayheadHead();
-        var headHost = new Canvas { ZIndex = 40 };
+        var headHost = new Canvas { ZIndex = 40, Background = Brushes.Transparent };
         Grid.SetColumn(headHost, 1);
         topBar.Children.Add(headHost);
-        headHost.Children.Add(_playheadHead);
         // 点击标尺区 = seek；分割工具下 = 在该处分割（headHost 覆盖标尺，逻辑移到这里）。
         headHost.PointerPressed += (_, e) =>
         {
@@ -966,6 +972,7 @@ internal sealed class VideoEditorWindow : MyWindow
             ColumnSpacing = 8,
             Children = { _trackHeaders, _lanesScroll }
         };
+        _timelineContent = timelineContent;
         Grid.SetColumn(_trackHeaders, 0);
         Grid.SetColumn(_lanesScroll, 1);
         _timelineScroll.Content = timelineContent;
@@ -980,7 +987,21 @@ internal sealed class VideoEditorWindow : MyWindow
         Grid.SetRowSpan(splitOverlay, 2);
         timelineRight.Children.Add(splitOverlay);
         splitOverlay.Children.Add(_splitCursorLine);
-        timelineRight.SizeChanged += (_, e) => _splitCursorLine.Height = Math.Max(0, e.NewSize.Height);
+        // 播放头竖线 + 圆头：覆盖整个时间轴面板（标尺 + 泳道全高，RowSpan=2）。
+        // 竖线贯穿标尺直下泳道，圆头盖在竖线顶部（同层后添加 → 圆头在上）；背景 null 不拦截
+        // 空白点击，仅竖线 18px 热区与圆头拦截（拖动 scrub），标尺空白点击穿透到 headHost 做 seek。
+        _playheadOverlay = new Canvas { ZIndex = 30, IsHitTestVisible = true };
+        Grid.SetRowSpan(_playheadOverlay, 2);
+        timelineRight.Children.Add(_playheadOverlay);
+        _playheadOverlay.Children.Add(_playhead);
+        _playheadOverlay.Children.Add(_playheadHead);
+        PositionPlayheadLine();
+        timelineRight.SizeChanged += (_, e) =>
+        {
+            _splitCursorLine.Height = Math.Max(0, e.NewSize.Height);
+            // 竖线高度跟随整个时间轴面板（拖动分割条改变面板高度时保持贯穿）。
+            _playhead.Height = Math.Max(0, e.NewSize.Height);
+        };
         _splitCursorLine.Height = 0;
         timelineScroll.PointerMoved += (_, e) =>
         {
@@ -1471,12 +1492,21 @@ internal sealed class VideoEditorWindow : MyWindow
         };
     }
 
-    /// <summary>切换检查器页面（TabStrip 驱动，同步选中项）。</summary>
+    /// <summary>
+    /// 切换检查器页面（TabStrip 驱动，同步选中项）。
+    /// 同时把各面板 IsVisible 设为只有当前页可见（_overlayPanel/_filterPanel 曾初始隐藏且从未
+    /// 置可见，导致覆盖层/滤镜页选中后内容空白）。
+    /// </summary>
     private void SelectInspectorPage(string key)
     {
         if (!_inspectorPages.TryGetValue(key, out var page))
         {
             return;
+        }
+
+        foreach (var (k, p) in _inspectorPages)
+        {
+            p.IsVisible = k == key;
         }
 
         _inspectorContent.Content = page;
@@ -2889,6 +2919,14 @@ internal sealed class VideoEditorWindow : MyWindow
         _timelineRoot.Height = lanesHeight;
         Canvas.SetTop(_timeline, 0);
         _timelineRoot.Children.Add(_timeline);
+        // 轨道头/泳道容器高度严格一致 + 顶部对齐：同一滚动容器内两列高度锁定为 lanesHeight，
+        // 防止 ScrollViewer 拉伸差异导致轨道头与泳道逐行错位（拖动分割条/调轨高后仍对齐）。
+        if (_timelineContent != null)
+        {
+            _timelineContent.Height = lanesHeight;
+        }
+        _trackHeaders.VerticalAlignment = VerticalAlignment.Top;
+        _lanesScroll.VerticalAlignment = VerticalAlignment.Top;
         // 标尺重建进固定宿主（宽度 = 内容宽；横向随滚动平移，纵向不动）。
         _rulerCanvas.Children.Clear();
         _rulerCanvas.Width = totalWidth;
@@ -2896,9 +2934,8 @@ internal sealed class VideoEditorWindow : MyWindow
         _rulerCanvas.Children.Add(BuildRuler(totalWidth));
         _insertIndicator.IsVisible = false;
         _timelineRoot.Children.Add(_insertIndicator);
-        _timelineRoot.Children.Add(_playhead);
-        _playhead.Height = lanesHeight;
-        Canvas.SetLeft(_playhead, _playheadTime * _pxPerSecond - 9); // 18px 热区以视觉线居中
+        // 播放头竖线/圆头已移到时间轴全高覆盖层（_playheadOverlay），这里只同步位置。
+        PositionPlayheadLine();
         _timeText.Text = FormatTime(_playheadTime);
 
         _zoomText.Text = $"{_pxPerSecond / 6 * 100:0}%";
@@ -3025,7 +3062,21 @@ internal sealed class VideoEditorWindow : MyWindow
     }
 
     /// <summary>
-    /// 定位标尺上的播放头抓取头。
+    /// 定位播放头竖线（在 _playheadOverlay 全高覆盖层内）：X = time*px - 9 - 横向滚动偏移
+    /// （2px 竖线在 18px 热区左缘，中心 = 圆头中心 = time*px - 8 - offsetX），Top=0 贯穿标尺直下泳道。
+    /// </summary>
+    private void PositionPlayheadLine()
+    {
+        if (_playhead == null)
+        {
+            return;
+        }
+
+        Canvas.SetLeft(_playhead, _playheadTime * _pxPerSecond - 9 - _lanesScroll.Offset.X);
+        Canvas.SetTop(_playhead, 0);
+    }
+
+    /// <summary>定位标尺上的播放头抓取头。</summary>
     /// 泳道 seek 竖线（2px 强调色，位于 18px 热区左缘）中心在内容坐标 time*px - 8；
     /// 圆头（14px，居中于 18px 热区）中心 = left + 9，故 left 必须 = time*px - 17 - 横向滚动偏移，
     /// 才能让圆头与 seek 竖线中心严格重合（旧版 -9 会整体偏右 8px，缩放后"掉头"）。
@@ -3078,7 +3129,7 @@ internal sealed class VideoEditorWindow : MyWindow
     private void SetPlayhead(double time)
     {
         _playheadTime = Math.Max(0, time);
-        Canvas.SetLeft(_playhead, _playheadTime * _pxPerSecond - 9); // 18px 热区以视觉线居中
+        PositionPlayheadLine();
         PositionPlayheadHead();
         _timeText.Text = FormatTime(_playheadTime);
         if (_playing && _player != null)
@@ -3100,7 +3151,7 @@ internal sealed class VideoEditorWindow : MyWindow
         }
 
         _playheadTime = _player.CurrentTime;
-        Canvas.SetLeft(_playhead, _playheadTime * _pxPerSecond - 9); // 18px 热区以视觉线居中
+        PositionPlayheadLine();
         PositionPlayheadHead();
         _timeText.Text = FormatTime(_playheadTime);
     }
@@ -3770,7 +3821,11 @@ internal sealed class VideoEditorWindow : MyWindow
         }
 
         _timelineRoot.Height = lanesHeight;
-        _playhead.Height = lanesHeight;
+        // 滚动容器高度同步（轨道头/泳道两列锁定同一高度，保证逐行对齐）。
+        if (_timelineContent != null)
+        {
+            _timelineContent.Height = lanesHeight;
+        }
     }
 
     /// <summary>时间轴泳道放置处理：素材/形状 → 新增片段；clip:n → 移动既有片段；贴近轨道边界 → 插入新轨。</summary>
@@ -4648,7 +4703,7 @@ internal sealed class VideoEditorWindow : MyWindow
         }
 
         _playheadTime = 0;
-        Canvas.SetLeft(_playhead, -9); // 18px 热区以视觉线居中
+        PositionPlayheadLine();
         _timeText.Text = FormatTime(0);
         _player = new VideoProjectPlayer(_project, PreviewMaxDimension, _targetFps, OnPreviewFrame);
         _player.Start();
