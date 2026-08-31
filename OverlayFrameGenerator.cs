@@ -148,14 +148,29 @@ internal static class OverlayFrameGenerator
             if (clip.Kind == "Text")
             {
                 var fontSize = Math.Max(8f, h * 0.32f);
-                using var font = new Font("Microsoft YaHei", fontSize, FontStyle.Bold, GraphicsUnit.Pixel);
+                var rect = new RectangleF(0, 0, w, h);
                 using var brush = new SolidBrush(color);
                 using var format = new StringFormat
                 {
                     Alignment = StringAlignment.Center,
                     LineAlignment = StringAlignment.Center
                 };
-                g.DrawString(clip.Text, font, brush, new RectangleF(0, 0, w, h), format);
+                // 文字描边：先用描边色沿文字轮廓描一圈，再填充本体（宽度相对输出高，0 = 无描边）。
+                if (clip.StrokeWidth > 0)
+                {
+                    var penWidth = (float)Math.Max(1, clip.StrokeWidth * h);
+                    using var path = new GraphicsPath();
+                    path.AddString(clip.Text, new FontFamily("Microsoft YaHei"),
+                        (int)FontStyle.Bold, fontSize, rect, format);
+                    using var pen = new Pen(ParseColor(clip.StrokeColor), penWidth) { LineJoin = LineJoin.Round };
+                    g.DrawPath(pen, path);
+                    g.FillPath(brush, path);
+                }
+                else
+                {
+                    using var font = new Font("Microsoft YaHei", fontSize, FontStyle.Bold, GraphicsUnit.Pixel);
+                    g.DrawString(clip.Text, font, brush, rect, format);
+                }
             }
             else
             {

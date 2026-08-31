@@ -37,7 +37,7 @@ internal sealed class VideoProjectPlayer : IDisposable
     /// <summary>覆盖层帧生成尺寸（按输出比例，最长边 = _maxDimension）。</summary>
     private readonly int _overlayW;
     private readonly int _overlayH;
-    /// <summary>轨道是否启用（跳过隐藏轨；有 SOLO 时仅 SOLO 轨）。</summary>
+    /// <summary>轨道是否启用（跳过隐藏轨）。</summary>
     private readonly bool[] _trackEnabled;
 
     private readonly object _sync = new();
@@ -82,19 +82,18 @@ internal sealed class VideoProjectPlayer : IDisposable
     public VideoProjectPlayer(VideoProject project, int maxDimension, int targetFps,
         Action<VideoFrame, VideoClip, int> onFrame)
     {
-        // 轨道启用：跳过隐藏轨；有任一 SOLO 时仅 SOLO 轨。
+        // 轨道启用：跳过隐藏轨。
         var trackCount = project.Clips.Count == 0 ? 1 : project.Clips.Max(c => c.Track) + 1;
         _trackEnabled = new bool[trackCount];
-        var anySolo = project.TrackStates.Any(s => s.Solo);
         for (var t = 0; t < trackCount; t++)
         {
             var st = project.GetTrackState(t);
-            _trackEnabled[t] = st == null || (!st.Hidden && (!anySolo || st.Solo));
+            _trackEnabled[t] = st == null || !st.Hidden;
         }
 
         // 浅拷贝片段列表：播放器只枚举自己的列表（编辑器增删/拖拽不破坏播放），
         // 但片段对象与工程共享引用，属性编辑（入出点/变换）可实时反映到预览。
-        // 隐藏/SOLO 轨的片段直接排除（播放时不显示）。
+        // 隐藏轨的片段直接排除（播放时不显示）。
         _clips = project.Clips.Where(c => c.Track < _trackEnabled.Length && _trackEnabled[c.Track]).ToList();
         _duration = project.Duration;
         _maxDimension = maxDimension;

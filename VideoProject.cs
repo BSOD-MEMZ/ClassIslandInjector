@@ -64,13 +64,11 @@ public sealed class VideoProject
     }
 }
 
-/// <summary>轨道级状态（锁定 / SOLO / 隐藏）。</summary>
+/// <summary>轨道级状态（锁定 / 隐藏）。</summary>
 public sealed class TrackState
 {
     /// <summary>锁定：编辑器禁止修改该轨片段（拖动 / 删除 / 改属性）。</summary>
     public bool Locked { get; set; }
-    /// <summary>SOLO：有任一轨 SOLO 时仅播放 / 渲染 SOLO 轨（其余静音）。</summary>
-    public bool Solo { get; set; }
     /// <summary>隐藏：编辑器内该轨元素半透明显示，播放 / 渲染不显示。</summary>
     public bool Hidden { get; set; }
 }
