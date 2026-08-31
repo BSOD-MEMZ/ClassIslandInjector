@@ -3521,11 +3521,21 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         var available = FFmpegRuntime.IsAvailable;
         _ffmpegInfoBar.IsOpen = !available;
         _ffmpegInfoBar.Severity = available ? InfoBarSeverity.Success : InfoBarSeverity.Warning;
-        _ffmpegInfoBar.Title = available ? "FFmpeg 解码库已就绪" : "缺少 FFmpeg 解码库";
-        _ffmpegStatusText.Text = available
-            ? string.Empty
-            : $"视频背景依赖 FFmpeg {FFmpegRuntime.FfmpegVersion} 共享库。点击「下载 FFmpeg 解码库」自动获取安装，" +
-              $"或手动将（{string.Join("、", FFmpegRuntime.MissingLibraries)}）放入：\n{FFmpegRuntime.LibraryDirectory}";
+        _ffmpegInfoBar.Title = available ? "FFmpeg 库已就绪" : "缺少 FFmpeg 库";
+        if (available)
+        {
+            // 已就绪：轻量加载后区分精简解码包与完整包（剪辑渲染需要完整包）。
+            var encoder = FFmpegRuntime.EnsureLoaded() && FFmpegRuntime.EncoderAvailable;
+            _ffmpegStatusText.Text = encoder
+                ? "完整包（解码 + 编码）：动态壁纸与视频剪辑渲染均可用。"
+                : "精简解码包：动态壁纸可用；视频剪辑渲染需要完整包（可在安装器中升级）。";
+        }
+        else
+        {
+            _ffmpegStatusText.Text = $"视频背景依赖 FFmpeg {FFmpegRuntime.FfmpegVersion} 共享库。点击「下载 FFmpeg 解码库」自动获取安装，" +
+                                     $"或手动将（{string.Join("、", FFmpegRuntime.MissingLibraries)}）放入：\n{FFmpegRuntime.LibraryDirectory}";
+        }
+
         _videoFillEnabled.IsEnabled = available;
         var enabled = available && _videoFillEnabled.IsChecked == true;
         foreach (var item in _videoFillGroup.Items)

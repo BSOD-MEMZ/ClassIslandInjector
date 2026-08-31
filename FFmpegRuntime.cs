@@ -1,7 +1,21 @@
 using System.Diagnostics;
 using System.IO.Compression;
+using System.Runtime.CompilerServices;
 
 namespace ClassIslandInjector;
+
+/// <summary>
+/// FFmpeg 安装包类型：动态壁纸（解码）与视频剪辑渲染（解码+编码）对编码器的要求不同，
+/// 提供两档包体按需安装，最大化下载利用率。
+/// </summary>
+public enum FfmpegPackageKind
+{
+    /// <summary>精简解码包（约 7MB）：仅解码，满足动态壁纸、视频预览播放。无任何编码器。</summary>
+    Minimal,
+
+    /// <summary>完整包（约 50MB）：解码 + H.264/HEVC/AAC 编码，渲染剪辑、素材压缩转码必需。</summary>
+    Full,
+}
 
 /// <summary>
 /// FFmpeg 解码库运行时管理：检测插件所需的 FFmpeg 共享库（avcodec-63.dll 等，
@@ -16,6 +30,11 @@ namespace ClassIslandInjector;
 ///  - 文件缺失时「绝不调用任何 FFmpeg 函数」（否则失败委托会被缓存为占位，
 ///    之后即使装好库也要重启才能恢复）；
 ///  - 文件齐全后再设置 RootPath 并做一次轻量验证（<see cref="EnsureLoaded"/>）。
+///
+/// 包拆分（A∪B=C）：文件层面精简包与完整包是同一组 DLL（avcodec 同时含解码与
+/// 编码，拆分只能靠构建裁剪），因此区分两档构建：精简包仅含解码器（动态壁纸够用），
+/// 完整包额外含 libx264 等编码器（视频编辑器渲染/压缩转码必需）。运行中通过
+/// <see cref="EncoderAvailable"/> 探测实际能力，剪辑功能缺失编码器时引导升级完整包。
 /// </summary>
 public static class FFmpegRuntime
 {
@@ -25,11 +44,20 @@ public static class FFmpegRuntime
     /// <summary>FFmpeg 共享库目录（配置目录\ffmpeg）。</summary>
     public static string LibraryDirectory { get; private set; } = string.Empty;
 
-    /// <summary>内置默认下载源（用户自建精简镜像，xxtsoft.top）。优先级最高，失败再回退其它源。</summary>
-    public const string DefaultSourceUrl = "https://xxtsoft.top/support/injector/ffmpeg-8.1-win64-shared-min.zip";
+    /// <summary>内置默认下载源（精简解码包，用户自建镜像）。仅解码，动态壁纸够用。</summary>
+    public const string DefaultSourceUrl = "https://xxtsoft.top/support/injector/ffmpeg-8.1-win64-shared-min-decode.zip";
+
+    /// <summary>内置默认下载源（完整包，用户自建镜像）。解码 + 编码（libx264），剪辑渲染必需。</summary>
+    public const string FullSourceUrl = "https://xxtsoft.top/support/injector/ffmpeg-8.1-win64-shared-full.zip";
 
     /// <summary>是否已安装全部所需解码库。</summary>
     public static bool IsAvailable { get; private set; }
+
+    /// <summary>
+    /// 当前已加载的库是否带 H.264 编码器（完整包为 true，精简包为 false）。
+    /// 仅在 <see cref="EnsureLoaded"/> 成功后探测一次；未加载时恒为 false。
+    /// </summary>
+    public static bool EncoderAvailable { get; private set; }
 
     /// <summary>缺失的库文件名列表（IsAvailable 为 false 时用于提示）。</summary>
     public static IReadOnlyList<string> MissingLibraries { get; private set; } = [];
@@ -90,6 +118,7 @@ public static class FFmpegRuntime
         if (!IsAvailable)
         {
             _loaded = false;
+            EncoderAvailable = false;
         }
     }
 
@@ -119,6 +148,7 @@ public static class FFmpegRuntime
             _ = FFmpeg.AutoGen.ffmpeg.swscale_version();
             _loaded = true;
             LastError = null;
+            ProbeEncoder();
             return true;
         }
         catch (Exception ex)
@@ -126,16 +156,42 @@ public static class FFmpegRuntime
             LastError = ex.Message;
             IsAvailable = false;
             _loaded = false;
+            EncoderAvailable = false;
             return false;
         }
     }
 
     /// <summary>
-    /// 联机下载并安装 FFmpeg 共享库到配置目录。依次尝试多个源（GitHub 官方
-    /// release → ghps.cc 代理 → gyan.dev），解压后把所需 dll 复制到库目录并重新检测。
-    /// 全部失败时给出手动放置指引。
+    /// 探测已加载的 avcodec 是否带 H.264 编码器（区分精简解码包与完整包）。
+    /// 必须在 EnsureLoaded 成功（库已可加载）之后调用：无编码器时返回 null，安全不抛。
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static unsafe void ProbeEncoder()
+    {
+        try
+        {
+            var codec = FFmpeg.AutoGen.ffmpeg.avcodec_find_encoder(
+                FFmpeg.AutoGen.AVCodecID.AV_CODEC_ID_H264);
+            EncoderAvailable = codec != null;
+        }
+        catch
+        {
+            EncoderAvailable = false;
+        }
+    }
+
+    /// <summary>
+    /// 联机下载并安装 FFmpeg 共享库到配置目录（<paramref name="kind"/> 决定包体档位）。
+    /// 依次尝试多个源（用户自定义 → xxtsoft 自建镜像 → GitHub BtbN → ghps 代理 → gyan），
+    /// 解压后把所需 dll 复制到库目录并重新检测。全部失败时给出手动放置指引。
     /// </summary>
     public static async Task<(bool Success, string Message)> InstallAsync(
+        IProgress<FfmpegInstallProgress>? progress = null, CancellationToken cancellationToken = default)
+        => await InstallAsync(FfmpegPackageKind.Minimal, progress, cancellationToken);
+
+    /// <summary>按包档位安装（精简包 = 仅解码；完整包 = 解码+编码）。供安装器窗口按用户选择调用。</summary>
+    public static async Task<(bool Success, string Message)> InstallAsync(
+        FfmpegPackageKind kind,
         IProgress<FfmpegInstallProgress>? progress = null, CancellationToken cancellationToken = default)
     {
         try
@@ -143,16 +199,21 @@ public static class FFmpegRuntime
             Directory.CreateDirectory(LibraryDirectory);
             var githubUrls = BuildGithubCandidates().ToList();
             var sources = new List<string>();
-            // 用户设置的自定义源最优先；随后是内置默认源（xxtsoft.top 精简镜像）；
-            // 都失败再回退 GitHub / 代理 / gyan。
+            // 用户设置的自定义源最优先；随后是内置默认源（xxtsoft 自建镜像，按档位取 URL，
+            // 精简档回退旧命名 min.zip 兼容早期镜像）；都失败再回退 GitHub / 代理 / gyan。
             var customUrl = InjectorRuntime.Settings.CustomFfmpegDownloadUrl;
-            if (!string.IsNullOrWhiteSpace(customUrl) &&
-                !customUrl.Equals(DefaultSourceUrl, StringComparison.OrdinalIgnoreCase))
+            if (!string.IsNullOrWhiteSpace(customUrl))
             {
                 sources.Add(customUrl);
             }
 
-            sources.Add(DefaultSourceUrl);
+            sources.Add(kind == FfmpegPackageKind.Full ? FullSourceUrl : DefaultSourceUrl);
+            if (kind == FfmpegPackageKind.Minimal)
+            {
+                // 旧镜像文件名兼容（重命名为 min-decode.zip 前的地址）。
+                sources.Add("https://xxtsoft.top/support/injector/ffmpeg-8.1-win64-shared-min.zip");
+            }
+
             foreach (var githubUrl in githubUrls)
             {
                 sources.Add(githubUrl);
@@ -160,12 +221,14 @@ public static class FFmpegRuntime
             }
             sources.Add("https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip");
 
+            var packageTitle = kind == FfmpegPackageKind.Full ? "完整包（解码+编码）" : "精简解码包";
+
             using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
             foreach (var url in sources)
             {
                 var sourceHost = new Uri(url).Host;
                 Report(progress, "正在连接下载源…", indeterminate: true,
-                    log: $"→ 尝试从 {sourceHost} 获取 FFmpeg {FfmpegVersion} 共享库");
+                    log: $"→ 尝试从 {sourceHost} 获取 FFmpeg {FfmpegVersion} {packageTitle}");
                 var tempZip = Path.Combine(Path.GetTempPath(), $"classisland-injector-ffmpeg-{Guid.NewGuid():N}.zip");
                 try
                 {
@@ -217,14 +280,14 @@ public static class FFmpegRuntime
                     }
 
                     Report(progress, "正在解压 FFmpeg 解码库…", indeterminate: true, log: "→ 下载完成，正在解压…");
-                    var installed = ExtractRequiredLibraries(tempZip);
+                    var installed = ExtractRequiredLibraries(tempZip, kind == FfmpegPackageKind.Full);
                     if (installed != null)
                     {
                         Refresh();
                         if (IsAvailable)
                         {
-                            Report(progress, "安装完成", indeterminate: true, log: $"✓ 已安装 {installed.Count} 个解码库");
-                            return (true, $"FFmpeg 解码库安装完成（{installed.Count} 个文件）。");
+                            Report(progress, "安装完成", indeterminate: true, log: $"✓ 已安装 {packageTitle}（{installed.Count} 个文件）");
+                            return (true, $"FFmpeg {packageTitle} 安装完成（{installed.Count} 个文件）。");
                         }
                     }
                     else
@@ -296,8 +359,12 @@ public static class FFmpegRuntime
                      $"ffmpeg-n{major}.0-latest-win64-gpl-shared-{major}.0.zip";
     }
 
-    /// <summary>从 zip 中提取所需 dll 到库目录；缺少任一所需文件返回 null。</summary>
-    private static List<string>? ExtractRequiredLibraries(string zipPath)
+    /// <summary>
+    /// 从 zip 中提取所需 dll 到库目录；缺少任一所需文件返回 null。
+    /// <paramref name="includeEncoders"/>（完整包）时额外提取 libx264*.dll 等
+    /// 外置编码器依赖（部分构建把 x264 链接为独立 dll；BtbN 为静态链接，无此文件也无害）。
+    /// </summary>
+    private static List<string>? ExtractRequiredLibraries(string zipPath, bool includeEncoders = false)
     {
         var required = RequiredFileNames;
         var installed = new List<string>();
@@ -313,15 +380,18 @@ public static class FFmpegRuntime
                 }
 
                 var match = required.FirstOrDefault(r => r.Equals(fileName, StringComparison.OrdinalIgnoreCase));
-                if (match == null)
+                var isEncoderExtra = includeEncoders &&
+                                     fileName.StartsWith("libx264", StringComparison.OrdinalIgnoreCase);
+                if (match == null && !isEncoderExtra)
                 {
                     continue;
                 }
 
-                entry.ExtractToFile(Path.Combine(LibraryDirectory, match), overwrite: true);
-                if (!installed.Contains(match))
+                entry.ExtractToFile(Path.Combine(LibraryDirectory, match ?? fileName), overwrite: true);
+                var target = match ?? fileName;
+                if (!installed.Contains(target))
                 {
-                    installed.Add(match);
+                    installed.Add(target);
                 }
             }
         }

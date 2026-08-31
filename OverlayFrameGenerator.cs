@@ -41,10 +41,53 @@ internal static class OverlayFrameGenerator
         }
     }
 
-    /// <summary>生成覆盖层帧（BGRA + 预乘 alpha）。非 Text/Shape 类型返回 null。</summary>
+    /// <summary>图片覆盖层位图缓存（System.Drawing 解码一次复用；后台线程访问，全局锁保护）。</summary>
+    private static readonly Dictionary<string, Bitmap> ImageCache = new();
+    private static readonly object ImageCacheLock = new();
+
+    /// <summary>取图片覆盖层的解码位图（缓存上限 12，超出清空重建——覆盖层图片数量有限）。</summary>
+    private static Bitmap? GetCachedImage(string path)
+    {
+        lock (ImageCacheLock)
+        {
+            if (ImageCache.TryGetValue(path, out var cached))
+            {
+                return cached;
+            }
+
+            try
+            {
+                if (!File.Exists(path))
+                {
+                    return null;
+                }
+
+                // File.ReadAllBytes 避免 Bitmap 锁定源文件（文件可能被外部替换/删除）。
+                var bmp = new Bitmap(new MemoryStream(File.ReadAllBytes(path)));
+                if (ImageCache.Count >= 12)
+                {
+                    foreach (var old in ImageCache.Values)
+                    {
+                        old.Dispose();
+                    }
+
+                    ImageCache.Clear();
+                }
+
+                ImageCache[path] = bmp;
+                return bmp;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+    }
+
+    /// <summary>生成覆盖层帧（BGRA + 预乘 alpha）。Text/Shape/Image 返回帧，其它返回 null。</summary>
     public static VideoFrame? Render(VideoClip clip, int w, int h)
     {
-        if (clip.Kind != "Text" && clip.Kind != "Shape")
+        if (clip.Kind is not ("Text" or "Shape" or "Image"))
         {
             return null;
         }
@@ -54,8 +97,49 @@ internal static class OverlayFrameGenerator
             return null;
         }
 
-        using var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
-        using (var g = Graphics.FromImage(bmp))
+        // 图片覆盖层：图片按原比例居中绘制到整帧（周围透明），与视频素材「原比例居中」
+        // 的变换基准一致；图片比例与舞台相同时自然铺满（底图图层编辑器导入即此场景）。
+        if (clip.Kind == "Image")
+        {
+            var image = GetCachedImage(clip.SourcePath);
+            if (image == null)
+            {
+                return null;
+            }
+
+            var imgPixels = new byte[w * h * 4];
+            using (var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb))
+            {
+                using (var g = Graphics.FromImage(bmp))
+                {
+                    g.Clear(Color.Transparent);
+                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    var scale = Math.Min(w / (double)image.Width, h / (double)image.Height);
+                    var dw = Math.Max(1, (int)Math.Round(image.Width * scale));
+                    var dh = Math.Max(1, (int)Math.Round(image.Height * scale));
+                    g.DrawImage(image, new Rectangle((w - dw) / 2, (h - dh) / 2, dw, dh));
+                }
+
+                var imgData = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+                try
+                {
+                    for (var y = 0; y < h; y++)
+                    {
+                        Marshal.Copy(IntPtr.Add(imgData.Scan0, y * imgData.Stride), imgPixels, y * w * 4, w * 4);
+                    }
+                }
+                finally
+                {
+                    bmp.UnlockBits(imgData);
+                }
+            }
+
+            Premultiply(imgPixels);
+            return new VideoFrame(imgPixels, w, h);
+        }
+
+        using var frame = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(frame))
         {
             g.Clear(Color.Transparent);
             g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -83,7 +167,7 @@ internal static class OverlayFrameGenerator
         }
 
         var pixels = new byte[w * h * 4];
-        var data = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        var data = frame.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
         try
         {
             // Format32bppArgb 内存布局即 B,G,R,A（小端 ARGB），与 BGRA 一致。
@@ -94,10 +178,16 @@ internal static class OverlayFrameGenerator
         }
         finally
         {
-            bmp.UnlockBits(data);
+            frame.UnlockBits(data);
         }
 
-        // 预乘 alpha（Avalonia 位图为 Premul；渲染器按预乘 over 合成）。
+        Premultiply(pixels);
+        return new VideoFrame(pixels, w, h);
+    }
+
+    /// <summary>预乘 alpha（Avalonia 位图为 Premul；渲染器按预乘 over 合成）。</summary>
+    private static void Premultiply(byte[] pixels)
+    {
         for (var i = 0; i + 3 < pixels.Length; i += 4)
         {
             var a = pixels[i + 3];
@@ -119,8 +209,6 @@ internal static class OverlayFrameGenerator
                 pixels[i + 2] = (byte)(pixels[i + 2] * a / 255);
             }
         }
-
-        return new VideoFrame(pixels, w, h);
     }
 
     /// <summary>构建形状路径（矩形/椭圆/三角形/菱形/五角星/心形/箭头/五边形/圆环/十字）。</summary>

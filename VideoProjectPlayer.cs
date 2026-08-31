@@ -6,16 +6,29 @@ namespace ClassIslandInjector;
 /// <summary>
 /// 多轨视频工程播放器：以统一时钟（targetFps）驱动，每个轨道独立解码，
 /// 同一时刻所有轨道上处于活跃区间的片段同时播放，由调用方叠放合成
-/// （轨道号越大越靠上层）。片段在 [StartTime, StartTime+Duration) 区间内活跃，
-/// 打开素材并跳到入点后逐帧拉取；播完整条时间轴后回到开头循环。
-/// 帧回调在播放器线程触发，调用方负责把像素复制到自己的缓冲；播放器在收到
-/// <see cref="MarkTrackConsumed"/> 之前不会覆写该轨道的帧缓冲（防 UI 异步复制竞态），
-/// 并应把 UI 更新 Post 到 UI 线程。
-/// 所有解码器的开关都在播放器线程串行执行，避免多线程释放/重建解码器的竞态
-/// （取代旧版"解码线程回调里 Post 切换"的方案，从根上消除级联重开问题）。
+/// （轨道号越大越靠上层）。片段在 [StartTime, StartTime+Duration) 区间内活跃。
+///
+/// 调度模型（2026-08-31 定稿，修复慢放/卡死）：
+///  - 墙钟时钟：<c>time = clockBase + (Stopwatch elapsed)</c>，与每拍耗时完全解耦——
+///    解码/快进再慢也只影响画面更新率，播放头永远按真实时间走（旧版按拍耗时累加，
+///    大跳 seek 后形成"拍越耗时→时钟越跳→落后越多"的正反馈卡死）。
+///  - 帧号消费：每拍计算目标帧号 <c>targetN = mediaTime × fps</c>，与该轨已消费帧号
+///    <see cref="TrackState.LastFrameIndex"/> 的差 = 本拍应消费的帧数：前面的帧顺序
+///    解码丢弃、最后一帧发给 UI。60fps 素材在 24fps 拍下每拍消费 2~3 帧，速度精确
+///    （旧版每拍固定消费 1 帧 = 高帧率素材被慢放 2.5 倍）。
+///  - 落后超过 48 帧（约 2s@24fps）：一次 SeekTo 跳过（顺序解码追不上时的兜底）。
+///  - UI 未消费上帧（<see cref="MarkTrackConsumed"/> 未回）本拍不发帧，队列永不积压。
+///
+/// 帧回调在播放器线程触发，调用方负责把像素复制到自己的缓冲并把 UI 更新 Post 到 UI 线程。
+/// 所有解码器的开关都在播放器线程串行执行，避免多线程释放/重建解码器的竞态。
 /// </summary>
 internal sealed class VideoProjectPlayer : IDisposable
 {
+    /// <summary>诊断日志路径（由 InjectorRuntime 设置，置空关闭日志）。</summary>
+    public static string? LogPath { get; set; }
+
+    private static void Log(string message) => DiagnosticLog.Write(LogPath, $"[player] {message}");
+
     private readonly List<VideoClip> _clips;
     private readonly double _duration;
     private readonly int _maxDimension;
@@ -29,11 +42,17 @@ internal sealed class VideoProjectPlayer : IDisposable
     private Thread? _worker;
     private volatile bool _running;
     private volatile bool _disposed;
-    // 时间字段仅由播放线程写；UI 读取走 lock（C# 不允许 volatile double，用锁保证可见性）。
-    private double _time;
+    // 墙钟：time = clockBase + (Stopwatch.GetTimestamp() - clockStart) / Frequency。
+    // clockBase/clockStart 仅在 worker 线程（seek 处理/循环复位）与 Start/Resume 时写；UI 读走 lock。
+    private double _clockBase;
+    private long _clockStart;
+    /// <summary>暂停/停止时冻结的时间（CurrentTime 在非运行态返回它）。</summary>
+    private double _frozen;
     private volatile bool _seekRequested;
     private double _seekTo;
     private TrackState[] _tracks = [];
+    /// <summary>统计日志节流时间戳。</summary>
+    private long _lastStatsTimestamp;
 
     private sealed class TrackState
     {
@@ -44,8 +63,18 @@ internal sealed class VideoProjectPlayer : IDisposable
         public VideoFrame? OverlayFrame;
         /// <summary>本段覆盖层帧是否已发送给 UI。</summary>
         public bool OverlaySent;
-        /// <summary>UI 消费完本轨道上一帧后 Set，播放器据此才拉下一帧（防缓冲覆写）。</summary>
+        /// <summary>UI 消费完本轨道上一帧后 Set，播放器据此才拉下一帧（防 UI 异步复制竞态）。</summary>
         public readonly ManualResetEventSlim Consumed = new(true);
+        /// <summary>该轨已消费到的媒体帧号（相对片段开头，按源帧率换算）；-1 = 尚未消费。</summary>
+        public long LastFrameIndex = -1;
+        /// <summary>该轨源的帧率（打开时记录；&lt;=0 用 25 兜底）。</summary>
+        public double SourceFps;
+        /// <summary>该轨源已到 EOF（后续拍不再拉帧，也不触发追帧 seek）。</summary>
+        public bool Eof;
+        // ---- 统计（日志用） ----
+        public long ShownFrames;
+        public long SkippedFrames;
+        public long SeekCount;
     }
 
     public VideoProjectPlayer(VideoProject project, int maxDimension, int targetFps,
@@ -78,9 +107,17 @@ internal sealed class VideoProjectPlayer : IDisposable
             _tracks[i] = new TrackState { Track = i };
         }
 
+        lock (_sync)
+        {
+            _clockBase = 0;
+            _clockStart = Stopwatch.GetTimestamp();
+            _frozen = 0;
+        }
+
         _running = true;
         _worker = new Thread(Loop) { IsBackground = true, Name = "VideoProject" };
         _worker.Start();
+        Log($"播放开始 时长={_duration:0.##}s 轨道={trackCount} 目标帧率={_targetFps}");
     }
 
     /// <summary>请求播放线程尽快退出（资源由 Dispose 释放）。</summary>
@@ -93,7 +130,10 @@ internal sealed class VideoProjectPlayer : IDisposable
         {
             lock (_sync)
             {
-                return _time;
+                // 运行中按墙钟实时计算；暂停/停止返回冻结值（墙钟不再流动）。
+                return _running
+                    ? _clockBase + (Stopwatch.GetTimestamp() - _clockStart) / (double)Stopwatch.Frequency
+                    : _frozen;
             }
         }
     }
@@ -101,11 +141,21 @@ internal sealed class VideoProjectPlayer : IDisposable
     /// <summary>暂停播放（线程退出、时间冻结在当前位置），可 <see cref="Resume"/> 恢复。</summary>
     public void Pause()
     {
+        lock (_sync)
+        {
+            if (_running)
+            {
+                _frozen = _clockBase + (Stopwatch.GetTimestamp() - _clockStart) / (double)Stopwatch.Frequency;
+            }
+        }
+
         _running = false;
         foreach (var state in _tracks)
         {
             state.Consumed.Set(); // 解除可能的帧消费等待
         }
+
+        LogStats(force: true);
     }
 
     /// <summary>从当前位置恢复播放（须先 <see cref="Pause"/>；时间不会自动复位）。</summary>
@@ -114,6 +164,12 @@ internal sealed class VideoProjectPlayer : IDisposable
         if (_running || _disposed || _duration <= 0)
         {
             return;
+        }
+
+        lock (_sync)
+        {
+            _clockBase = _frozen;
+            _clockStart = Stopwatch.GetTimestamp();
         }
 
         _running = true;
@@ -140,7 +196,7 @@ internal sealed class VideoProjectPlayer : IDisposable
         }
     }
 
-    /// <summary>主循环：统一时钟驱动各轨道同步拉帧。</summary>
+    /// <summary>主循环：墙钟驱动各轨道同步消费帧。</summary>
     private void Loop()
     {
         var intervalMs = (long)(1000.0 / _targetFps);
@@ -149,88 +205,62 @@ internal sealed class VideoProjectPlayer : IDisposable
         {
             sw.Restart();
             var restartTracks = false;
+            double time;
             lock (_sync)
             {
                 if (_seekRequested)
                 {
-                    // 跳转：复位时钟，下一拍按新时间重新打开各轨解码器。
+                    // 跳转：时钟基准移到目标时间，下一拍按新时间重新打开各轨解码器。
                     _seekRequested = false;
-                    _time = _seekTo;
+                    _clockBase = Math.Max(0, _seekTo);
+                    _clockStart = Stopwatch.GetTimestamp();
+                    _frozen = _clockBase;
                     restartTracks = true;
                 }
-                else if (_time >= _duration)
+                else
                 {
-                    // 播完整个时间轴：复位时钟，下一拍重新打开。
-                    _time = 0;
-                    restartTracks = true;
+                    var now = _clockBase + (Stopwatch.GetTimestamp() - _clockStart) / (double)Stopwatch.Frequency;
+                    if (now >= _duration)
+                    {
+                        // 播完整个时间轴：复位时钟，下一拍重新打开。
+                        _clockBase = 0;
+                        _clockStart = Stopwatch.GetTimestamp();
+                        restartTracks = true;
+                    }
                 }
+
+                time = _clockBase + (Stopwatch.GetTimestamp() - _clockStart) / (double)Stopwatch.Frequency;
             }
 
             if (restartTracks)
             {
                 foreach (var state in _tracks)
                 {
+                    var targetClip = FindActiveClip(state.Track, time);
+                    if (ReferenceEquals(targetClip, state.ActiveClip) &&
+                        targetClip is { Kind: "Video" } && state.Source != null)
+                    {
+                        // 同片段跳转：复用已打开的解码器直接 seek（avformat_open_input +
+                        // find_stream_info 对长视频要几百毫秒，重开是大跳卡顿的主因）。
+                        var mediaTime = targetClip.InPoint + Math.Max(0, time - targetClip.StartTime);
+                        state.Source.SeekTo(mediaTime);
+                        var fps = state.SourceFps > 0 ? state.SourceFps : 25;
+                        state.LastFrameIndex = (long)(mediaTime * fps);
+                        state.Eof = false;
+                        state.Consumed.Set();
+                        continue;
+                    }
+
                     CloseTrack(state);
                 }
             }
 
-            var time = _time;
             foreach (var state in _tracks)
             {
-                var clip = FindActiveClip(state.Track, time);
-                if (!ReferenceEquals(clip, state.ActiveClip))
-                {
-                    CloseTrack(state);
-                    if (clip != null && clip.Kind == "Video")
-                    {
-                        state.Source = OpenSource(clip);
-                    }
-
-                    state.ActiveClip = clip;
-                }
-
-                if (state.ActiveClip == null)
-                {
-                    continue;
-                }
-
-                if (state.ActiveClip.Kind == "Video" && state.Source != null &&
-                    state.Source.TryReadFrame(out var frame) && frame != null)
-                {
-                    try
-                    {
-                        _onFrame(frame, state.ActiveClip, state.Track);
-                    }
-                    catch
-                    {
-                        // 调用方异常不中断播放。
-                    }
-
-                    // 等 UI 消费完本轨道上一帧再覆写缓冲（超时继续，可接受丢帧）。
-                    state.Consumed.Reset();
-                    state.Consumed.Wait(300);
-                }
-                else if (state.ActiveClip.Kind != "Video" && !state.OverlaySent)
-                {
-                    // 文本/形状覆盖层：生成一次静态帧并发送（静态内容无需每拍重发）。
-                    state.OverlayFrame ??= OverlayFrameGenerator.Render(state.ActiveClip, _overlayW, _overlayH);
-                    if (state.OverlayFrame != null)
-                    {
-                        state.OverlaySent = true;
-                        try
-                        {
-                            _onFrame(state.OverlayFrame, state.ActiveClip, state.Track);
-                        }
-                        catch
-                        {
-                            // 调用方异常不中断播放。
-                        }
-
-                        state.Consumed.Reset();
-                        state.Consumed.Wait(300);
-                    }
-                }
+                PumpTrack(state, time);
             }
+
+            LogStats();
 
             if (intervalMs > 0)
             {
@@ -240,12 +270,124 @@ internal sealed class VideoProjectPlayer : IDisposable
                     Thread.Sleep((int)wait);
                 }
             }
+            // 拍超耗时（解码慢）不补偿到时钟：墙钟永远按真实时间走，画面靠丢帧追赶。
+        }
+    }
 
-            // 时钟按整个循环拍的真实耗时推进（含睡眠）：解码/消费慢时播放变慢，但播放头与画面帧
-            // 严格同步（原先每拍固定 +1/帧长，帧率不足时播放头会超前于画面，看起来"走到几秒才有画面"）。
-            lock (_sync)
+    /// <summary>单轨调度：按墙钟对应的目标帧号消费帧（前面丢弃、最后一帧显示）。</summary>
+    private void PumpTrack(TrackState state, double time)
+    {
+        var clip = FindActiveClip(state.Track, time);
+        if (!ReferenceEquals(clip, state.ActiveClip))
+        {
+            CloseTrack(state);
+            if (clip != null && clip.Kind == "Video")
             {
-                _time += sw.ElapsedMilliseconds / 1000.0;
+                // 打开素材时直接定位到当前时刻对应的媒体时间（拖播放头/中途切入的片段不再从入点重播）。
+                var seedMediaTime = clip.InPoint + Math.Max(0, time - clip.StartTime);
+                state.Source = OpenSource(clip, seedMediaTime);
+                state.SourceFps = state.Source?.SourceFps ?? 0;
+                state.LastFrameIndex = (long)(seedMediaTime * (state.SourceFps > 0 ? state.SourceFps : 25));
+            }
+
+            state.ActiveClip = clip;
+        }
+
+        if (state.ActiveClip == null)
+        {
+            return;
+        }
+
+        if (state.ActiveClip.Kind == "Video" && state.Source != null)
+        {
+            if (state.Eof || !state.Consumed.IsSet)
+            {
+                // EOF 或 UI 尚未消化上一帧：本拍不发（丢帧，时钟不慢放、队列不积压）。
+                return;
+            }
+
+            var mediaTime = state.ActiveClip.InPoint + Math.Max(0, time - state.ActiveClip.StartTime);
+            var fps = state.SourceFps > 0 ? state.SourceFps : 25.0;
+            var targetN = (long)(mediaTime * fps);
+            var behind = targetN - state.LastFrameIndex;
+            if (behind <= 0)
+            {
+                return; // 还没到下一帧时间（低帧率素材隔拍显示，防快放）。
+            }
+
+            if (behind > 48)
+            {
+                // 落后约 2s 以上（大跳/解码长期跟不上）：一次 seek 跳过，避免顺序解码永远追不上。
+                if (state.Source.SeekTo(mediaTime))
+                {
+                    state.LastFrameIndex = targetN;
+                    state.SeekCount++;
+                    Log($"轨{state.Track} 落后{behind}帧 → seek 到 {mediaTime:0.##}s");
+                    return;
+                }
+
+                behind = 48; // seek 失败退化为顺序快进。
+            }
+
+            // 顺序消费 behind 帧：前 behind-1 帧丢弃（每帧几毫秒），最后一帧发给 UI。
+            var skip = (int)Math.Min(behind - 1, 32);
+            for (var i = 0; i < skip; i++)
+            {
+                state.SkippedFrames++;
+                if (!state.Source.TryReadFrame(out _))
+                {
+                    state.Eof = true;
+                    break;
+                }
+            }
+
+            if (state.Eof)
+            {
+                state.LastFrameIndex = targetN;
+                return;
+            }
+
+            if (state.Source.TryReadFrame(out var frame) && frame != null)
+            {
+                // LastFrameIndex 反映实际消费量（落后多时 targetN 一次追不完，下拍继续）。
+                state.LastFrameIndex = Math.Min(state.LastFrameIndex + skip + 1, targetN);
+                state.ShownFrames++;
+                try
+                {
+                    _onFrame(frame, state.ActiveClip, state.Track);
+                }
+                catch
+                {
+                    // 调用方异常不中断播放。
+                }
+
+                state.Consumed.Reset();
+                state.Consumed.Wait(150);
+            }
+            else
+            {
+                state.Eof = true; // EOF：画面停在最后一帧。
+                state.LastFrameIndex = targetN;
+            }
+        }
+        else if (state.ActiveClip.Kind != "Video" && !state.OverlaySent)
+        {
+            // 文本/形状/图片覆盖层：生成一次静态帧并发送（静态内容无需每拍重发）。
+            state.OverlayFrame ??= OverlayFrameGenerator.Render(state.ActiveClip, _overlayW, _overlayH);
+            if (state.OverlayFrame != null)
+            {
+                state.OverlaySent = true;
+                try
+                {
+                    _onFrame(state.OverlayFrame, state.ActiveClip, state.Track);
+                }
+                catch
+                {
+                    // 调用方异常不中断播放。
+                }
+
+                state.Consumed.Reset();
+                state.Consumed.Wait(300);
             }
         }
     }
@@ -257,11 +399,32 @@ internal sealed class VideoProjectPlayer : IDisposable
         state.Source = null;
         state.OverlayFrame = null;
         state.OverlaySent = false;
+        state.LastFrameIndex = -1;
+        state.Eof = false;
         state.Consumed.Set();
     }
 
-    /// <summary>打开素材并跳到入点；失败返回 null（该轨道本周期静默无画面）。</summary>
-    private VideoFrameSource? OpenSource(VideoClip clip)
+    /// <summary>每 2 秒输出一次各轨调度统计（显示/丢弃/seek 帧数），用于诊断慢放与卡顿。</summary>
+    private void LogStats(bool force = false)
+    {
+        var now = Stopwatch.GetTimestamp();
+        if (!force && (now - _lastStatsTimestamp) / (double)Stopwatch.Frequency < 2.0)
+        {
+            return;
+        }
+
+        _lastStatsTimestamp = now;
+        var parts = _tracks.Select(t =>
+            $"轨{t.Track}={t.ActiveClip?.Kind ?? "-"} 显{t.ShownFrames} 丢{t.SkippedFrames} seek{t.SeekCount}" +
+            (t.Eof ? "[EOF]" : ""));
+        Log($"t={CurrentTime:0.##}s | {string.Join(" | ", parts)}");
+    }
+
+    /// <summary>
+    /// 打开素材并定位到媒体时间（<paramref name="mediaTime"/> 与入点取大者）；
+    /// 失败返回 null（该轨道本周期静默无画面）。
+    /// </summary>
+    private VideoFrameSource? OpenSource(VideoClip clip, double mediaTime)
     {
         try
         {
@@ -272,9 +435,10 @@ internal sealed class VideoProjectPlayer : IDisposable
                 return null;
             }
 
-            if (clip.InPoint > 0)
+            var seekTo = Math.Max(clip.InPoint, mediaTime);
+            if (seekTo > 0.01)
             {
-                source.SeekTo(clip.InPoint);
+                source.SeekTo(seekTo);
             }
 
             return source;

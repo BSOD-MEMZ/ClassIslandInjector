@@ -473,6 +473,9 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         var addImageButton = CommandButton("\uE9B4", "添加图片图层", "选择一张图片作为新的底图图层", AddImageLayer);
         // 供教程 TargetSelector 定位（#EditorAddImage）。
         addImageButton.Name = "EditorAddImage";
+        var exportVideoButton = CommandButton("\uF3E1", "导入视频编辑器",
+            "把当前画布内容合成一张图片，导入视频编辑器作为底层片段（按视频舞台画幅排布）",
+            ImportToVideoEditor);
         var saveButton = CommandButton("\uEEB5", "保存并应用", "保存图层并应用到主界面", Save);
         // 供教程 TargetSelector 定位（#EditorSave）。
         saveButton.Name = "EditorSave";
@@ -494,6 +497,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 new CommandBarSeparator(),
                 CommandButton("\uE62F", "重置主界面尺寸", "把主界面预览尺寸恢复为 ClassIsland 实际尺寸", ResetIslandSize),
                 CommandButton("\uE92A", "棋盘格配色", "设置画布背景棋盘格：跟随主题自动按深浅色选择，或自定义两种颜色", OpenCheckerboardSettings),
+                exportVideoButton,
                 new CommandBarSeparator(),
                 _hslFilterButton,
                 _brightnessFilterButton,
@@ -1075,6 +1079,37 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     {
         _canvas.ActiveColor = color;
         InjectorRuntime.Settings.EditorPickedColor = color.ToString();
+    }
+
+    /// <summary>
+    /// 把当前画布内容导入视频编辑器：合成主界面区域的 PNG 快照（图层相对位置
+    /// 按视频舞台画幅等比排布——底图与视频工程的画幅都是主界面比例），
+    /// 作为图片覆盖层加入时间轴底层（时长跟随工程）。
+    /// </summary>
+    private void ImportToVideoEditor()
+    {
+        // 快照目录放配置目录（部署/清理不影响源文件）。
+        var dir = Path.Combine(InjectorRuntime.ConfigDirectory, "video-import");
+        var path = Path.Combine(dir, $"wallpaper-{DateTime.Now:yyyyMMdd-HHmmss}.png");
+        var exported = _canvas.ExportIslandSnapshot(path);
+        if (exported == null)
+        {
+            ShowReminder("导出画布快照失败，请重试");
+            return;
+        }
+
+        if (VideoEditorWindow.Current is { } existing)
+        {
+            existing.Activate();
+            existing.ImportImageAsClip(exported);
+            _statusText.Text = "已导入到视频编辑器。";
+            return;
+        }
+
+        var window = new VideoEditorWindow();
+        window.Show();
+        window.ImportImageAsClip(exported);
+        _statusText.Text = "已打开视频编辑器并导入画布快照。";
     }
 
     /// <summary>

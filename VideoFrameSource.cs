@@ -155,6 +155,9 @@ internal sealed class VideoFrameSource : IDisposable
     /// <summary>视频总时长（秒；0 表示未知）。</summary>
     public double Duration => _ffmpeg?.Duration ?? 0;
 
+    /// <summary>源视频帧率（来自 avg_frame_rate；未知回退 25）。播放调度按它换算媒体帧时间，防高帧率素材被慢放。</summary>
+    public double SourceFps => _ffmpeg?.SourceFps ?? 25;
+
     public void Dispose()
     {
         _running = false;

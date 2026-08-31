@@ -29,32 +29,44 @@ internal sealed class FfmpegInstallWindow : MyWindow
     private readonly TextBlock _logText = new() { FontFamily = MonoFont, FontSize = 11, Opacity = 0.7, TextWrapping = TextWrapping.Wrap };
     private readonly ScrollViewer _logScroller = new() { MaxHeight = 120, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
     private readonly Button _actionButton = new() { Content = "取消" };
+    private readonly StackPanel _choicePanel;
     private readonly CancellationTokenSource _cts = new();
     private readonly Progress<FfmpegInstallProgress> _progress;
+    private readonly FfmpegPackageKind? _fixedKind;
 
     /// <summary>当前打开的安装器窗口（单实例；已存在时聚焦而非重复打开）。</summary>
     public static FfmpegInstallWindow? Current { get; private set; }
 
-    public FfmpegInstallWindow()
+    /// <summary>
+    /// 打开安装器。<paramref name="kind"/> 为 null 时先让用户选择包档位（精简 / 完整），
+    /// 指定档位（如剪辑渲染升级完整包）则直接开始安装。
+    /// </summary>
+    public FfmpegInstallWindow(FfmpegPackageKind? kind = null)
     {
-        Title = "FFmpeg 解码库安装器";
+        _fixedKind = kind;
+        Title = "FFmpeg 库安装器";
         Width = 480;
-        Height = 420;
+        Height = 470;
         CanResize = false;   // 禁止拖拽边缘调整大小
         CanMaximize = false; // 禁止最大化
         // 与 Min/Max 相等：彻底锁死尺寸。
         MinWidth = 480;
         MaxWidth = 480;
-        MinHeight = 400;
-        MaxHeight = 400;
+        MinHeight = 450;
+        MaxHeight = 450;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         // Progress<T> 捕获创建时的同步上下文（UI 线程），回调自动 marshal 回 UI 线程。
         _progress = new Progress<FfmpegInstallProgress>(ApplyProgress);
+        _choicePanel = BuildChoicePanel();
         Content = BuildContent();
         Opened += (_, _) =>
         {
             Current = this;
-            _ = RunInstallAsync();
+            // 未指定档位时先展示选择界面，由用户点「开始安装」触发。
+            if (_fixedKind is { } fixedKind)
+            {
+                StartInstall(fixedKind);
+            }
         };
         _actionButton.Click += (_, _) => Close();
         Closed += (_, _) =>
@@ -68,12 +80,77 @@ internal sealed class FfmpegInstallWindow : MyWindow
         };
     }
 
+    /// <summary>包档位选择区（精简 = 动态壁纸够用；完整 = 剪辑渲染必需）。</summary>
+    private StackPanel BuildChoicePanel()
+    {
+        var minimal = new RadioButton
+        {
+            GroupName = "pkg",
+            IsChecked = true,
+            Content = new StackPanel
+            {
+                Children =
+                {
+                    new TextBlock { Text = "精简解码包（约 7 MB）", FontWeight = FontWeight.SemiBold },
+                    new TextBlock
+                    {
+                        Text = "仅解码：动态壁纸、视频预览播放。体积小，推荐只做动态壁纸时选择。",
+                        FontSize = 11, Opacity = 0.65, TextWrapping = TextWrapping.Wrap
+                    }
+                }
+            }
+        };
+        var full = new RadioButton
+        {
+            GroupName = "pkg",
+            Content = new StackPanel
+            {
+                Children =
+                {
+                    new TextBlock { Text = "完整包（约 50 MB）", FontWeight = FontWeight.SemiBold },
+                    new TextBlock
+                    {
+                        Text = "解码 + H.264/HEVC 编码：渲染视频剪辑、素材压缩转码必需（含精简包全部能力）。",
+                        FontSize = 11, Opacity = 0.65, TextWrapping = TextWrapping.Wrap
+                    }
+                }
+            }
+        };
+        var start = new Button
+        {
+            Content = "开始安装",
+            MinWidth = 96,
+            HorizontalAlignment = HorizontalAlignment.Right
+        };
+        start.Click += (_, _) => StartInstall(full.IsChecked == true ? FfmpegPackageKind.Full : FfmpegPackageKind.Minimal);
+        return new StackPanel
+        {
+            Spacing = 8,
+            Children = { minimal, full, start }
+        };
+    }
+
+    /// <summary>开始安装指定档位（隐藏选择区，启动下载任务）。</summary>
+    private void StartInstall(FfmpegPackageKind kind)
+    {
+        if (_installStarted)
+        {
+            return;
+        }
+
+        _installStarted = true;
+        _choicePanel.IsVisible = false;
+        _ = RunInstallAsync(kind);
+    }
+
+    private bool _installStarted;
+
     /// <summary>启动安装任务（窗口打开后触发）。完成后更新 UI 为结果状态。</summary>
-    private async Task RunInstallAsync()
+    private async Task RunInstallAsync(FfmpegPackageKind kind)
     {
         try
         {
-            var (success, message) = await FFmpegRuntime.InstallAsync(_progress, _cts.Token);
+            var (success, message) = await FFmpegRuntime.InstallAsync(kind, _progress, _cts.Token);
             _progressBar.IsIndeterminate = false;
             _progressBar.Value = success ? 100 : 0;
             _stageText.Text = success ? "安装完成" : "安装失败";
@@ -129,11 +206,11 @@ internal sealed class FfmpegInstallWindow : MyWindow
             Spacing = 2,
             Children =
             {
-                new TextBlock { Text = "正在安装：ffmpeg", FontSize = 18, FontWeight = FontWeight.SemiBold },
+                new TextBlock { Text = "FFmpeg 库安装", FontSize = 18, FontWeight = FontWeight.SemiBold },
                 new TextBlock
                 {
                     Text = "版本 " + FFmpegRuntime.FfmpegVersion +
-                           " · FFmpeg 共享解码库（avcodec / avformat / avutil / swscale / swresample）",
+                           " · FFmpeg 共享库（avcodec / avformat / avutil / swscale / swresample）",
                     FontSize = 12,
                     Opacity = 0.6,
                     TextWrapping = TextWrapping.Wrap
@@ -160,6 +237,7 @@ internal sealed class FfmpegInstallWindow : MyWindow
             Children =
             {
                 header,
+                _choicePanel,
                 _progressBar,
                 _stageText,
                 statsRow,

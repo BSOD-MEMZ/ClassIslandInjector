@@ -1819,6 +1819,71 @@ internal sealed class WallpaperLayerCanvas : UserControl
     public void ApplyCheckerboardColors() => _stage.Background = BuildCheckerBrush();
 
     /// <summary>
+    /// 把当前画布「主界面区域」的内容合成导出为 PNG 快照（所见即所得：图层 z 序、
+    /// 变换/裁剪/滤镜/投影、SMTC 封面与画布图层全部包含）。
+    /// 做法是临时隐藏画布装饰（岛屿提示、选区、手柄、浮动条等）与棋盘格背景，
+    /// 用平移变换把主界面区域对齐到渲染目标原点，RenderTargetBitmap 渲染后保存。
+    /// 返回文件路径；失败返回 null（调用方提示）。必须在 UI 线程调用。
+    /// </summary>
+    public string? ExportIslandSnapshot(string filePath)
+    {
+        // 记录需要临时隐藏的装饰控件（恢复时用原值，避免误显示本来就隐藏的控件）。
+        var hidden = new List<(Visual Visual, bool WasVisible)>();
+        void Hide(Visual visual) => hidden.Add((visual, visual.IsVisible));
+        var bg = _stage.Background;
+        try
+        {
+            _stage.Background = null; // 去棋盘格（导出透明底）。
+            Hide(_island);            // 主界面预览提示（含标题/副标题）。
+            Hide(_islandOutline);
+            Hide(_selectionOverlay);
+            Hide(_guideOverlay);
+            Hide(_selOverlay);
+            Hide(_marqueeRect);
+            Hide(_rotationHandle);
+            Hide(_floatToolbar);
+            Hide(_brushCursor);
+            foreach (var handle in _resizeHandles)
+            {
+                Hide(handle);
+            }
+
+            foreach (var handle in _islandHandles)
+            {
+                Hide(handle);
+            }
+
+            // 像素缩放跟随屏幕渲染缩放（与画布显示清晰度一致）。
+            var scale = Math.Max(TopLevel.GetTopLevel(this)?.RenderScaling ?? 1.0, 1.0);
+            // 平移画布，让主界面区域（原点 = CanvasMargin 边距内）对齐渲染目标原点。
+            _stage.RenderTransform = new TranslateTransform(-CanvasMargin, -CanvasMargin);
+            using var rtb = new RenderTargetBitmap(
+                new PixelSize(
+                    Math.Max(1, (int)Math.Ceiling(_islandWidth * scale)),
+                    Math.Max(1, (int)Math.Ceiling(_islandHeight * scale))),
+                new Vector(96 * scale, 96 * scale));
+            rtb.Render(_stage);
+            Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
+            using var stream = File.Create(filePath);
+            rtb.Save(stream);
+            return filePath;
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            _stage.RenderTransform = null;
+            _stage.Background = bg;
+            foreach (var (visual, wasVisible) in hidden)
+            {
+                visual.IsVisible = wasVisible;
+            }
+        }
+    }
+
+    /// <summary>
     /// 拖拽手柄：外层为 24px 的透明命中区（触摸屏手指也能轻松点到），内层才是可见圆点。
     /// 可见圆点尺寸由 size 决定；命中区统一放大，避免 9px 圆点在触摸屏上几乎无法抓取。
     /// </summary>

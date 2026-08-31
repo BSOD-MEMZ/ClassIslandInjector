@@ -30,6 +30,9 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
     /// <summary>视频总时长（秒，来自容器 duration；0 表示未知）。</summary>
     public double Duration { get; private set; }
 
+    /// <summary>源视频帧率（来自 avg_frame_rate；异常时回退 25，供转码保持时长）。</summary>
+    public double SourceFps { get; private set; } = 25;
+
     /// <summary>输出帧宽（BGRA）。</summary>
     public int OutputWidth => _outW;
 
@@ -115,6 +118,11 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
             _frame = ffmpeg.av_frame_alloc();
             _bgra = new byte[_outW * _outH * 4];
             Duration = _fmtCtx->duration > 0 ? _fmtCtx->duration / 1000000.0 : 0;
+            // 源帧率：转码压缩时按它编码，保证时长一致。
+            var fr = _fmtCtx->streams[_streamIndex]->avg_frame_rate;
+            SourceFps = fr.num > 0 && fr.den > 0
+                ? Math.Clamp((double)fr.num / fr.den, 1.0, 120.0)
+                : 25;
             Log($"已打开 {path}: {srcW}x{srcH} → {_outW}x{_outH}（解码器={name}）");
             return true;
         }

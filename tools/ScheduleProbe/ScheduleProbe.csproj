@@ -1,19 +1,24 @@
 <Project Sdk="Microsoft.NET.Sdk">
+
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <!-- FFmpeg 指针操作需要 unsafe -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
-    <AssemblyName>FFmpegProbe</AssemblyName>
-    <RootNamespace>FFmpegProbe</RootNamespace>
+    <AssemblyName>ScheduleProbe</AssemblyName>
+    <RootNamespace>ScheduleProbe</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- 与主项目保持一致（avcodec-62 = FFmpeg 8.1） -->
     <PackageReference Include="FFmpeg.AutoGen" Version="8.1.0" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- 链接主项目的解码器源码（DiagnosticLog 由本项目 shim 提供，避免 Avalonia 依赖） -->
+    <Compile Include="..\..\FFmpegVideoDecoder.cs" Link="FFmpegVideoDecoder.cs" />
+  </ItemGroup>
+
 </Project>

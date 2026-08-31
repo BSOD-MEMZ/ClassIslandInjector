@@ -30,6 +30,12 @@ internal sealed class VideoProjectRenderer
         public byte[]? LastBuffer;
         public int LastWidth;
         public int LastHeight;
+        /// <summary>该轨已消费到的媒体帧号（相对片段开头，按源帧率换算）；-1 = 尚未消费。每输出帧按帧号差消费多帧，速度与时间轴一致（旧版每输出帧只拉 1 帧 = 高帧率源被慢放）。</summary>
+        public long LastFrameIndex = -1;
+        /// <summary>该轨源的帧率（打开时记录）。</summary>
+        public double SourceFps;
+        /// <summary>该轨源已到 EOF（冻结最后画面）。</summary>
+        public bool Eof;
     }
 
     public VideoProjectRenderer(VideoProject project, string outputPath, int outW, int outH, int crf, int fps,
@@ -80,6 +86,7 @@ internal sealed class VideoProjectRenderer
                     if (clip != null)
                     {
                         st.Source = Open(clip);
+                        st.SourceFps = st.Source?.SourceFps ?? 0;
                     }
 
                     st.ActiveClip = clip;
@@ -103,16 +110,32 @@ internal sealed class VideoProjectRenderer
                         continue;
                     }
 
-                    if (st.Source.TryReadFrame(out var fr) && fr != null)
+                    // 帧号消费：每输出帧消费 targetN-LastFrameIndex 帧（前面丢弃、最后一帧保留），
+                    // 60fps 源在 24fps 输出下每帧消费 2~3 帧，速度与时间轴一致（旧版每输出帧只拉 1 帧 = 慢放）。
+                    var mediaTime = st.ActiveClip.InPoint + Math.Max(0, time - st.ActiveClip.StartTime);
+                    var fps = st.SourceFps > 0 ? st.SourceFps : 25.0;
+                    var targetN = (long)(mediaTime * fps);
+                    var behind = targetN - st.LastFrameIndex;
+                    if (!st.Eof && behind > 0)
                     {
-                        if (st.LastBuffer == null || st.LastBuffer.Length != fr.Pixels.Length)
+                        for (var i = 0; i < behind; i++)
                         {
-                            st.LastBuffer = new byte[fr.Pixels.Length];
-                        }
+                            if (!st.Source.TryReadFrame(out var fr) || fr == null)
+                            {
+                                st.Eof = true; // EOF：后续输出帧冻结最后画面。
+                                break;
+                            }
 
-                        Buffer.BlockCopy(fr.Pixels, 0, st.LastBuffer, 0, fr.Pixels.Length);
-                        st.LastWidth = fr.Width;
-                        st.LastHeight = fr.Height;
+                            st.LastFrameIndex++;
+                            if (st.LastBuffer == null || st.LastBuffer.Length != fr.Pixels.Length)
+                            {
+                                st.LastBuffer = new byte[fr.Pixels.Length];
+                            }
+
+                            Buffer.BlockCopy(fr.Pixels, 0, st.LastBuffer, 0, fr.Pixels.Length);
+                            st.LastWidth = fr.Width;
+                            st.LastHeight = fr.Height;
+                        }
                     }
                 }
                 else
@@ -248,6 +271,8 @@ internal sealed class VideoProjectRenderer
         state.Source?.Dispose();
         state.Source = null;
         state.OverlayBuffer = null;
+        state.LastFrameIndex = -1;
+        state.Eof = false;
     }
 
     /// <summary>把一轨画面按变换逐像素合成到输出画布（BGRA，alpha 混合）。</summary>

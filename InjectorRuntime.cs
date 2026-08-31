@@ -35,6 +35,7 @@ internal static class InjectorRuntime
         SmtcAlbumColorPicker.SetLogPath(Path.Combine(configDirectory, "album-color.log"));
         VideoFrameSource.LogPath = Path.Combine(configDirectory, "video-fill.log");
         FFmpegVideoDecoder.LogPath = Path.Combine(configDirectory, "video-fill.log");
+        VideoProjectPlayer.LogPath = Path.Combine(configDirectory, "video-player.log");
         // FFmpeg 原生库部署在配置目录的 ffmpeg 子目录（用户数据目录，部署脚本不会清空），
         // 由 FFmpegRuntime 负责检测可用性、设置 RootPath 与联机下载。
         FFmpegRuntime.Initialize(Path.Combine(configDirectory, "ffmpeg"));

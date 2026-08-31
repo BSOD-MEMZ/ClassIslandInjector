@@ -29,7 +29,8 @@ internal sealed class VideoEditorWindow : MyWindow
 {
     public static VideoEditorWindow? Current { get; private set; }
 
-    private const int PreviewMaxDimension = 1280;
+    /// <summary>预览解码降采样上限（舞台显示尺寸远小于此；1280 时 UI 写帧吃力会导致预览丢帧卡顿）。</summary>
+    private const int PreviewMaxDimension = 800;
     private readonly int _targetFps = 24;
 
     private readonly VideoProject _project = VideoProjectStore.Load(VideoProjectStore.DefaultPath);
@@ -172,7 +173,7 @@ internal sealed class VideoEditorWindow : MyWindow
     /// <summary>轨道泳道高度（可调，40..140；默认 60）。</summary>
     private double _laneHeight = 60;
     /// <summary>末轨下方「新建轨道」拖放区高度。</summary>
-    private const double NewTrackZoneHeight = 28;
+    private const double NewTrackZoneHeight = 36;
     private readonly TextBlock _clipCountText = new() { FontSize = 12, Opacity = 0.75, VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock _statusText = new() { TextWrapping = TextWrapping.NoWrap, TextTrimming = TextTrimming.CharacterEllipsis, Opacity = 0.8, FontSize = 12, MaxWidth = 380, VerticalAlignment = VerticalAlignment.Center };
     /// <summary>时间轴工具条上的输出尺寸文本（画幅按钮可改）。</summary>
@@ -277,6 +278,10 @@ internal sealed class VideoEditorWindow : MyWindow
     private readonly TextBox _overlayColor = new() { MinWidth = 100, Watermark = "#AARRGGBB" };
     private readonly ComboBox _overlayShape = new() { MinWidth = 110 };
     private readonly StackPanel _overlayPanel = new() { Spacing = 4, IsVisible = false };
+    /// <summary>覆盖层编辑区的三行（内容/颜色/形状），按片段类型显隐（图片只留通用变换）。</summary>
+    private Control? _overlayTextRow;
+    private Control? _overlayColorRow;
+    private Control? _overlayShapeRow;
     // ---- 滤镜片段属性 ----
     private readonly ComboBox _filterCombo = new() { MinWidth = 110 };
     private readonly StackPanel _filterPanel = new() { Spacing = 4, IsVisible = false };
@@ -320,6 +325,14 @@ internal sealed class VideoEditorWindow : MyWindow
     };
     /// <summary>拖动片段块时按下点相对块左边缘的偏移（Drop 时减去，块跟手才能头贴尾拼接）。</summary>
     private double _dragOffsetX;
+    /// <summary>拖拽中最后指针位置（相对时间轴滚动视口），驱动边缘自动滚动。</summary>
+    private Point _lastDragPointer;
+    /// <summary>拖拽自动滚动探测委托（非空 = 计时器运行中）。</summary>
+    private Func<(double Dx, double Dy)>? _dragScrollProbe;
+    /// <summary>拖拽自动滚动计时器：指针贴近视口边缘时持续滚动时间轴（横向到末尾、纵向到新建轨道区）。</summary>
+    private readonly DispatcherTimer _dragScrollTimer = new() { Interval = TimeSpan.FromMilliseconds(16) };
+    /// <summary>拖拽落点提示标签（accent 底白字「轨道 N / 新建轨道」，跟随目标泳道移动，不被拖拽块遮挡）。</summary>
+    private Border? _dropTrackBadge;
     private readonly TextBlock _timeText = new()
     {
         FontFamily = new FontFamily("Consolas, monospace"),
@@ -347,10 +360,24 @@ internal sealed class VideoEditorWindow : MyWindow
     private readonly Canvas _timelineRoot = new() { HorizontalAlignment = HorizontalAlignment.Left };
     /// <summary>时间轴横向滚动容器（刷新时重置偏移，避免拖拽引起的滚动导致泳道/轨道头错位）。</summary>
     private ScrollViewer _timelineScroll = null!;
+    /// <summary>固定标尺宿主（在滚动区上方，不随纵向滚动走）；标尺随内容横向滚动经 _rulerTranslate 同步。</summary>
+    private Border _rulerHost = null!;
+    private readonly TranslateTransform _rulerTranslate = new();
+    /// <summary>标尺画布（RefreshTimeline 重建标尺内容，宽度 = 时间轴内容宽）。</summary>
+    private readonly Canvas _rulerCanvas = new();
     /// <summary>素材时长缓存（裁剪右边界上限）。</summary>
     private readonly Dictionary<string, double> _assetDurations = [];
-    /// <summary>seek 解码持久源缓存（轨 → (片段, 源)）；scrub 期间复用，让拖动即时显示帧。</summary>
-    private readonly Dictionary<int, (VideoClip Clip, VideoFrameSource Source)> _seekSources = [];
+    /// <summary>seek 解码持久源缓存（轨 → 片段+源+帧号）；scrub 期间复用，让拖动即时显示帧。</summary>
+    private readonly Dictionary<int, SeekSourceState> _seekSources = [];
+
+    /// <summary>scrub 解码源状态：同片段复用解码器并跟踪已读帧号，微移用顺序读帧代替反复 seek。</summary>
+    private sealed class SeekSourceState
+    {
+        public required VideoClip Clip { get; init; }
+        public required VideoFrameSource Source { get; init; }
+        /// <summary>当前已读帧号（相对片段入点，按源帧率换算）；-1 = 未定位。</summary>
+        public long LastFrameIndex = -1;
+    }
 
     /// <summary>舞台多轨预览图层：一轨一个 Image + 复用位图。</summary>
     private sealed class StageTrackLayer
@@ -359,6 +386,11 @@ internal sealed class VideoEditorWindow : MyWindow
         public required Image Image { get; init; }
         /// <summary>字段（非属性）：需以 ref 传给位图写入助手。</summary>
         public WriteableBitmap? Bitmap;
+        /// <summary>上次应用的变换签名（ApplyTransform 每帧调用，未变化时跳过重建 TransformGroup）。</summary>
+        public (double W, double H, double SX, double SY, double Rot, double OX, double OY) LastTransformA;
+        public (double OP, double CL, double CT, double CR, double CB) LastTransformB;
+        /// <summary>是否已有签名（首个入参默认全 0 会误判命中）。</summary>
+        public bool HasTransform;
     }
 
     public VideoEditorWindow()
@@ -619,35 +651,37 @@ internal sealed class VideoEditorWindow : MyWindow
         Grid.SetRow(_libraryScroll, 1);
         Grid.SetRow(assetHint, 2);
 
-        // 舞台（中，固定宽高比）+ 底部传输控制条（播放/暂停/停止/时间码）
+        // 舞台（中，固定宽高比）：播放内容 + 底部传输条（播放/暂停 + 时间码）在**同一个容器**内，
+        // 容器下半段是操作条（不再悬在容器外面）。
         _stageBorder.HorizontalAlignment = HorizontalAlignment.Center;
         _stageBorder.VerticalAlignment = VerticalAlignment.Center;
-        var stageHost = new Border
-        {
-            ClipToBounds = true,
-            Background = ThemePalette.MicaPanelBackground(),
-            Child = _stageBorder
-        };
-        stageHost.SizeChanged += (_, e) => LayoutStage(e.NewSize.Width, e.NewSize.Height);
-
         _playButton.Click += (_, _) => TogglePreview();
         ToolTip.SetTip(_playButton, "播放 / 暂停（空格）");
-        // 舞台下侧紧凑传输条（不遮视频画面）：播放/暂停（纯图标）+ 时间码，无文字标签、无停止按钮。
         var transportBar = new StackPanel
         {
             Orientation = Orientation.Horizontal,
             Spacing = 8,
-            Margin = new Thickness(0, 6, 0, 0),
             HorizontalAlignment = HorizontalAlignment.Center,
-            Children = { _playButton, _timeText }
+            Margin = new Thickness(0, 0, 0, 8)
         };
-        var stageColumn = new Grid
+        transportBar.Children.Add(_playButton);
+        transportBar.Children.Add(_timeText);
+        var stageInner = new Grid
         {
             RowDefinitions = new RowDefinitions("*,Auto"),
-            Children = { stageHost, transportBar }
+            Children = { _stageBorder, transportBar }
         };
-        Grid.SetRow(stageHost, 0);
         Grid.SetRow(transportBar, 1);
+        var stageHost = new Border
+        {
+            ClipToBounds = true,
+            Background = ThemePalette.MicaPanelBackground(),
+            Padding = new Thickness(0),
+            Child = stageInner
+        };
+        stageHost.SizeChanged += (_, e) => LayoutStage(e.NewSize.Width, e.NewSize.Height);
+        // 整个容器（舞台 + 传输条）占中列；传输条在容器内底部。
+        var stageColumn = stageHost;
 
         // 属性（右）
         var rightPanel = new Border
@@ -661,12 +695,52 @@ internal sealed class VideoEditorWindow : MyWindow
             }
         };
 
-        // 时间轴（底部，多轨：左轨道头 + 右泳道 + 播放头）
+        // 时间轴（底部，多轨：左轨道头 + 右标尺/泳道 + 播放头）。
+        // 纵向允许滚动：轨道多 / 轨道高调大时，「新建轨道」拖放区会被面板高度裁掉，
+        // 之前纵向滚动禁用导致无法把素材拖到新轨道（体验差）。
+        // 标尺固定在滚动区上方（不随纵向滚动走），横向随内容滚动同步（_rulerTranslate）。
+        _rulerHost = new Border
+        {
+            ClipToBounds = true,
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            BorderBrush = ThemePalette.AccentBrushWithAlpha(50),
+            Child = _rulerCanvas
+        };
+        _rulerCanvas.RenderTransform = _rulerTranslate;
         _timelineScroll = new ScrollViewer
         {
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             Content = _timelineRoot
+        };
+        // 泳道纵向滚动时轨道头同步平移；横向滚动时标尺同步平移（固定标尺跟随内容）。
+        var trackHeaderTranslate = new TranslateTransform();
+        _trackHeaders.RenderTransform = trackHeaderTranslate;
+        _timelineScroll.ScrollChanged += (_, _) =>
+        {
+            trackHeaderTranslate.Y = -_timelineScroll.Offset.Y;
+            _rulerTranslate.X = -_timelineScroll.Offset.X;
+        };
+        // 拖拽自动滚动：指针贴近视口边缘时持续滚动（贴边越近越快）。
+        _dragScrollTimer.Tick += (_, _) =>
+        {
+            if (_dragScrollProbe is not { } probe)
+            {
+                _dragScrollTimer.Stop();
+                return;
+            }
+
+            var (dx, dy) = probe();
+            if (dx == 0 && dy == 0)
+            {
+                return;
+            }
+
+            var maxX = Math.Max(0, _timelineScroll.Extent.Width - _timelineScroll.Viewport.Width);
+            var maxY = Math.Max(0, _timelineScroll.Extent.Height - _timelineScroll.Viewport.Height);
+            _timelineScroll.Offset = new Vector(
+                Math.Clamp(_timelineScroll.Offset.X + dx, 0, maxX),
+                Math.Clamp(_timelineScroll.Offset.Y + dy, 0, maxY));
         };
         var timelineScroll = _timelineScroll;
         // 时间轴滚轮：Ctrl+滚轮缩放（锚定鼠标下的时间），普通滚轮横向滚动（纵向滚动已禁用）。
@@ -697,14 +771,22 @@ internal sealed class VideoEditorWindow : MyWindow
             _resizeTimer.Stop();
             _resizeTimer.Start();
         };
+        // 右列：标尺行（固定，不随纵向滚动）+ 泳道滚动区。
+        var timelineRight = new Grid
+        {
+            RowDefinitions = new RowDefinitions("Auto,*"),
+            Children = { _rulerHost, timelineScroll }
+        };
+        Grid.SetRow(_rulerHost, 0);
+        Grid.SetRow(timelineScroll, 1);
         var timelineArea = new Grid
         {
             ColumnDefinitions = new ColumnDefinitions("92,*"),
             ColumnSpacing = 8,
-            Children = { _trackHeaders, timelineScroll }
+            Children = { _trackHeaders, timelineRight }
         };
         Grid.SetColumn(_trackHeaders, 0);
-        Grid.SetColumn(timelineScroll, 1);
+        Grid.SetColumn(timelineRight, 1);
         // 时间轴上方工具条：缩放 / 刀片切割 / 删除片段 / 自定义画幅 / 输出比例 / 片段统计 / 状态。
         // 全部挤在一行：操作按钮只留图标（悬停有说明），文本不换行不高占。
         _zoomText.Text = $"{_pxPerSecond / 6 * 100:0}%";
@@ -892,8 +974,8 @@ internal sealed class VideoEditorWindow : MyWindow
         _toolHighlight = new Border
         {
             IsHitTestVisible = false,
-            // 圆角与按钮自带 hover 样式对齐（Fluent ControlCornerRadius = 4）。
-            CornerRadius = new CornerRadius(4),
+            // 圆角与按钮一致（40×40 圆角 8 的正方形按钮）。
+            CornerRadius = new CornerRadius(8),
             Background = new SolidColorBrush(ThemePalette.AccentColorWithAlpha(190)),
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Top,
@@ -944,14 +1026,19 @@ internal sealed class VideoEditorWindow : MyWindow
         return host;
     }
 
-    /// <summary>工具栏工具按钮（仿底图图层编辑器：透明底 + 按压反馈 + 选中由高亮滑块表达）。</summary>
+    /// <summary>工具栏工具按钮（仿底图图层编辑器：40×40 圆角正方形，透明底 + 选中由高亮滑块表达）。</summary>
     private Button ToolButton(string tool, string filledGlyph, string regularGlyph, string tip)
     {
         var button = new Button
         {
             Content = new IconText { Glyph = filledGlyph, Text = string.Empty },
-            Padding = new Thickness(9, 7),
-            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Width = 40,
+            Height = 40,
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
+            Padding = new Thickness(0),
+            CornerRadius = new CornerRadius(8),
+            HorizontalAlignment = HorizontalAlignment.Center,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0)
         };
@@ -1186,10 +1273,13 @@ internal sealed class VideoEditorWindow : MyWindow
             }
         };
         _overlayShape.SelectionChanged += (_, _) => ApplyOverlayEdits();
-        _overlayPanel.Children.Add(new TextBlock { Text = "文本/形状", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 8, 0, 0) });
-        _overlayPanel.Children.Add(InspectorRow("内容", _overlayText));
-        _overlayPanel.Children.Add(InspectorRow("颜色 #AARRGGBB", _overlayColor));
-        _overlayPanel.Children.Add(InspectorRow("形状", _overlayShape));
+        _overlayPanel.Children.Add(new TextBlock { Text = "覆盖层", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 8, 0, 0) });
+        _overlayTextRow = InspectorRow("内容", _overlayText);
+        _overlayColorRow = InspectorRow("颜色 #AARRGGBB", _overlayColor);
+        _overlayShapeRow = InspectorRow("形状", _overlayShape);
+        _overlayPanel.Children.Add(_overlayTextRow);
+        _overlayPanel.Children.Add(_overlayColorRow);
+        _overlayPanel.Children.Add(_overlayShapeRow);
         // 滤镜类型编辑（仅 Kind=Filter 时显示）。
         _filterCombo.ItemsSource = FilterDefs.Select(d => d.Name).ToList();
         _filterCombo.SelectionChanged += (_, _) => ApplyFilterEdits();
@@ -1305,8 +1395,13 @@ internal sealed class VideoEditorWindow : MyWindow
     }
 
     /// <summary>按输出比例缩放舞台，居中于可用空间。</summary>
+    /// <summary>舞台容器底部传输条（播放/暂停 + 时间码）占位高度，画幅按剩余高度适配。</summary>
+    private const double StageTransportHeight = 40;
+
     private void LayoutStage(double availableW, double availableH)
     {
+        // 容器底部是传输条（播放按钮 + 时间码），画幅只用剩余高度。
+        availableH -= StageTransportHeight;
         if (availableW <= 0 || availableH <= 0)
         {
             return;
@@ -1333,6 +1428,10 @@ internal sealed class VideoEditorWindow : MyWindow
         _saveTimer.Stop();
         _saveTimer.Start();
     }
+
+    /// <summary>编辑器诊断日志（配置目录 video-editor.log）：导入/弹窗等关键路径打点，便于定位 UI 卡顿。</summary>
+    private static void EditorLog(string message) =>
+        DiagnosticLog.Write(Path.Combine(InjectorRuntime.ConfigDirectory, "video-editor.log"), $"[editor] {message}");
 
     /// <summary>把当前工程写入配置目录（供重开编辑器时恢复）。</summary>
     private void SaveProject()
@@ -1528,27 +1627,274 @@ internal sealed class VideoEditorWindow : MyWindow
 
         var files = await provider.OpenFilePickerAsync(new FilePickerOpenOptions
         {
-            Title = "添加视频素材",
+            Title = "添加素材（视频 / 图片）",
             AllowMultiple = true,
             FileTypeFilter =
             [
-                new FilePickerFileType("视频") { Patterns = ["*.mp4", "*.wmv", "*.avi", "*.mkv", "*.mov", "*.webm", "*.m4v"] },
+                new FilePickerFileType("视频 / 图片")
+                {
+                    Patterns = ["*.mp4", "*.wmv", "*.avi", "*.mkv", "*.mov", "*.webm", "*.m4v",
+                                "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif", "*.webp"]
+                },
                 FilePickerFileTypes.All
             ]
         });
+        EditorLog($"选择器返回 {files.Count} 个文件");
+        // 预览播放会持续占用 UI 线程写帧；先停掉再弹询问对话框，避免对话框延迟出现/动画卡顿。
+        if (_playing)
+        {
+            StopPreview();
+        }
+
+        var added = new List<string>();
         foreach (var file in files)
         {
             var path = file.TryGetLocalPath();
             if (!string.IsNullOrEmpty(path) && !_assets.Contains(path))
             {
-                _assets.Add(path);
+                added.Add(path);
             }
         }
 
+        // 视频素材先询问是否压缩转码（需要完整 FFmpeg 包），图片直接加入。
+        EditorLog($"开始导入 {added.Count} 个新素材（即将弹压缩询问）");
+        await ImportAssetsAsync(added);
         RefreshAssetList();
         if (_assets.Count > 0 && _assetList.SelectedIndex < 0)
         {
             _assetList.SelectedIndex = 0;
+        }
+    }
+
+    /// <summary>把新素材加入素材库：图片直接加入（Kind=Image 覆盖层）；视频逐个询问压缩后加入。</summary>
+    private async Task ImportAssetsAsync(List<string> paths)
+    {
+        foreach (var path in paths)
+        {
+            if (VideoTranscoder.IsImageFile(path))
+            {
+                _assets.Add(path);
+            }
+        }
+
+        var videos = paths.Where(p => !VideoTranscoder.IsImageFile(p) && !p.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase)).ToList();
+        if (videos.Count == 0)
+        {
+            return;
+        }
+
+        var compress = await AskCompressImportAsync(videos);
+        if (compress == null)
+        {
+            return; // 取消导入
+        }
+
+        foreach (var video in videos)
+        {
+            if (compress != true)
+            {
+                _assets.Add(video);
+                continue;
+            }
+
+            // 压缩失败（取消/编码失败）回退导入原文件。
+            var compressed = await CompressAssetAsync(video);
+            _assets.Add(compressed ?? video);
+        }
+    }
+
+    /// <summary>
+    /// 询问「压缩后导入 / 直接导入 / 取消」。多选时选择应用到全部。
+    /// 精简包（无编码器）时引导升级完整包；升级完成自动回到本询问。
+    /// 返回 true=压缩，false=直接导入，null=取消。
+    /// </summary>
+    private async Task<bool?> AskCompressImportAsync(List<string> videos)
+    {
+        var label = videos.Count == 1
+            ? $"「{Path.GetFileName(videos[0])}」"
+            : $"已选择 {videos.Count} 个视频素材";
+        var dialog = new ContentDialog
+        {
+            Title = "压缩后导入？",
+            Content = new StackPanel
+            {
+                Spacing = 8,
+                Children =
+                {
+                    new TextBlock { Text = label, FontWeight = FontWeight.SemiBold },
+                    new TextBlock
+                    {
+                        Text = "压缩会把素材转为 720p H.264（约数秒到一分钟），\n" +
+                               "减小体积、剪辑与渲染更流畅；原始文件不会被修改。",
+                        TextWrapping = TextWrapping.Wrap,
+                        Opacity = 0.75
+                    }
+                }
+            },
+            PrimaryButtonText = "压缩后导入",
+            SecondaryButtonText = "直接导入",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary
+        };
+        var result = await ShowDialogAsync(dialog);
+        if (result == ContentDialogResult.Primary && !FFmpegRuntime.EncoderAvailable)
+        {
+            // 选择了压缩但当前是精简包：引导升级完整包，升级完成后重新询问。
+            var upgraded = await EnsureFullPackageAsync("压缩素材需要完整 FFmpeg 包（当前为精简解码包，仅支持解码）。");
+            if (!upgraded)
+            {
+                return null;
+            }
+
+            return await AskCompressImportAsync(videos);
+        }
+
+        return result switch
+        {
+            ContentDialogResult.Primary => true,
+            ContentDialogResult.Secondary => false,
+            _ => null
+        };
+    }
+
+    /// <summary>
+    /// 确保已安装带编码器的完整 FFmpeg 包：缺失时弹询问并打开安装器（单实例），
+    /// 等安装窗口关闭后返回是否已具备编码能力。注意：若本进程已加载过精简包的
+    /// 解码库（Windows 同名 dll 不会重复加载），新库要重启宿主才能生效，此时提示并返回 false。
+    /// </summary>
+    private async Task<bool> EnsureFullPackageAsync(string reason)
+    {
+        if (FFmpegRuntime.IsAvailable && FFmpegRuntime.EnsureLoaded() && FFmpegRuntime.EncoderAvailable)
+        {
+            return true;
+        }
+
+        var dialog = new ContentDialog
+        {
+            Title = "需要完整 FFmpeg 包",
+            Content = new TextBlock
+            {
+                Text = reason + "\n完整包约 50 MB，安装后渲染剪辑 / 压缩转码均可使用。",
+                TextWrapping = TextWrapping.Wrap
+            },
+            PrimaryButtonText = "升级完整包",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary
+        };
+        if (await ShowDialogAsync(dialog) != ContentDialogResult.Primary)
+        {
+            return false;
+        }
+
+        // 打开（或聚焦已打开的）安装器并等待其关闭。
+        FfmpegInstallWindow window;
+        if (FfmpegInstallWindow.Current is { } existing)
+        {
+            existing.Activate();
+            window = existing;
+        }
+        else
+        {
+            window = new FfmpegInstallWindow(FfmpegPackageKind.Full);
+            window.Show();
+        }
+
+        var closed = new TaskCompletionSource();
+        window.Closed += (_, _) => closed.TrySetResult();
+        await closed.Task;
+        FFmpegRuntime.Refresh();
+
+        if (FFmpegRuntime.EnsureLoaded() && FFmpegRuntime.EncoderAvailable)
+        {
+            return true;
+        }
+
+        // 完整包装好了但本进程已加载过精简库：需要重启宿主后新库才生效。
+        if (FFmpegRuntime.IsAvailable)
+        {
+            await ShowDialogAsync(new ContentDialog
+            {
+                Title = "完整包已安装",
+                Content = new TextBlock
+                {
+                    Text = "当前进程已加载精简包的解码库，重启 ClassIsland 后完整包（编码能力）生效。",
+                    TextWrapping = TextWrapping.Wrap
+                },
+                PrimaryButtonText = "知道了"
+            });
+        }
+
+        return false;
+    }
+
+    /// <summary>压缩单个素材（后台转码 + 进度对话框，可取消）。成功返回输出路径，取消/失败返回 null。</summary>
+    private async Task<string?> CompressAssetAsync(string source)
+    {
+        try
+        {
+            var cacheDir = Path.Combine(InjectorRuntime.ConfigDirectory, "video-cache");
+            var output = VideoTranscoder.BuildOutputPath(source, cacheDir, 720, new FileInfo(source).Length);
+            if (File.Exists(output))
+            {
+                return output; // 已有同源压缩结果，直接复用。
+            }
+
+            var status = new TextBlock { Text = "准备中…" };
+            var bar = new ProgressBar { Minimum = 0, Maximum = 1, MinHeight = 4 };
+            var dialog = new ContentDialog
+            {
+                Title = "正在压缩素材",
+                Content = new StackPanel
+                {
+                    Spacing = 8,
+                    Children =
+                    {
+                        new TextBlock { Text = Path.GetFileName(source), Opacity = 0.75 },
+                        bar,
+                        status
+                    }
+                },
+                PrimaryButtonText = "取消"
+            };
+            using var cts = new CancellationTokenSource();
+            var dialogTask = ShowDialogAsync(dialog);
+            // 用户点「取消」按钮会关闭对话框并返回 Primary → 触发取消令牌（半成品自动清理）。
+            _ = dialogTask.ContinueWith(t =>
+            {
+                if (t.Result == ContentDialogResult.Primary)
+                {
+                    cts.Cancel();
+                }
+            }, TaskScheduler.FromCurrentSynchronizationContext());
+
+            var ok = await Task.Run(() => VideoTranscoder.Compress(source, output, 720, 27,
+                p => Dispatcher.UIThread.Post(() =>
+                {
+                    bar.Value = p;
+                    status.Text = $"已处理 {p:P0}";
+                }), cts.Token));
+            try
+            {
+                if (dialog.IsVisible)
+                {
+                    dialog.Hide();
+                }
+            }
+            catch
+            {
+                // 对话框已被用户关闭。
+            }
+
+            if (ok)
+            {
+                _statusText.Text = $"已压缩：{Path.GetFileName(output)}";
+            }
+
+            return ok ? output : null;
+        }
+        catch
+        {
+            return null;
         }
     }
 
@@ -1557,7 +1903,7 @@ internal sealed class VideoEditorWindow : MyWindow
         // 工程里引用过的文件自动进素材库（避免重开编辑器后素材库为空：只要片段引用了就出现在库里）。
         foreach (var clip in _project.Clips)
         {
-            if (clip.Kind == "Video" && !string.IsNullOrWhiteSpace(clip.SourcePath) &&
+            if (clip.Kind is "Video" or "Image" && !string.IsNullOrWhiteSpace(clip.SourcePath) &&
                 File.Exists(clip.SourcePath) && !_assets.Contains(clip.SourcePath))
             {
                 _assets.Add(clip.SourcePath);
@@ -1670,14 +2016,17 @@ internal sealed class VideoEditorWindow : MyWindow
         }
 
         var path = _assets[_assetList.SelectedIndex];
-        var duration = GetAssetDuration(path);
+        // 图片素材：固定 5 秒的图片覆盖层片段（Kind=Image）；视频：按素材时长建片段。
+        var isImage = VideoTranscoder.IsImageFile(path);
+        var duration = isImage ? 5 : GetAssetDuration(path);
         var clip = new VideoClip
         {
+            Kind = isImage ? "Image" : "Video",
             SourcePath = path,
             Track = _selectedTrack,
             StartTime = _project.TrackEnd(_selectedTrack),
             InPoint = 0,
-            OutPoint = duration > 0.5 ? duration : 10
+            OutPoint = isImage ? duration : duration > 0.5 ? duration : 10
         };
         PushUndo();
         _project.Clips.Add(clip);
@@ -1699,6 +2048,51 @@ internal sealed class VideoEditorWindow : MyWindow
         {
             return 0;
         }
+    }
+
+    /// <summary>
+    /// 从底图图层编辑器导入：把合成的底图快照 PNG 作为图片覆盖层加入时间轴。
+    /// 图片按原比例居中显示（比例与舞台一致时正好铺满，即按现有舞台画幅排好）；
+    /// 默认放轨道 0 最底层、时长跟随工程总时长（不足 5 秒按 5 秒）。
+    /// </summary>
+    public void ImportImageAsClip(string imagePath)
+    {
+        if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath))
+        {
+            return;
+        }
+
+        if (!_assets.Contains(imagePath))
+        {
+            _assets.Add(imagePath);
+        }
+
+        var duration = Math.Max(5, Math.Ceiling(_project.Duration));
+        var clip = new VideoClip
+        {
+            Kind = "Image",
+            SourcePath = imagePath,
+            Track = 0,
+            StartTime = 0,
+            InPoint = 0,
+            OutPoint = duration
+        };
+        if (!FitsOnTrack(0, clip.StartTime, clip.Duration))
+        {
+            clip.Track = _project.TrackCount;
+            clip.StartTime = FitToTrack(clip, clip.StartTime, clip.Track);
+        }
+
+        PushUndo();
+        _project.Clips.Add(clip);
+        _selected = clip;
+        _selectedTrack = clip.Track;
+        CompactTracks();
+        RefreshTimeline();
+        FillPropertyPanel();
+        RefreshAssetList();
+        ScheduleSave();
+        _statusText.Text = "已导入底图图层快照（图片覆盖层，可在属性面板调整）。";
     }
 
     /// <summary>取素材时长（带缓存，供裁剪右边界上限）。</summary>
@@ -1814,12 +2208,38 @@ internal sealed class VideoEditorWindow : MyWindow
         }
     }
 
-    /// <summary>后台解码素材首帧作为封面缩略图（缓存；重复调用只取缓存）。</summary>
+    /// <summary>后台加载素材封面缩略图（缓存；重复调用只取缓存）。图片直接解码，视频解码首帧。</summary>
     private void LoadAssetThumbnail(string path, Image target)
     {
         if (_assetThumbs.ContainsKey(path))
         {
             return; // 已有缓存，构建时已设置 Source。
+        }
+
+        if (VideoTranscoder.IsImageFile(path))
+        {
+            Task.Run(() =>
+            {
+                try
+                {
+                    // Avalonia Bitmap(stream)：读完即解码，可立即释放流。
+                    using var stream = File.OpenRead(path);
+                    var bmp = new Bitmap(stream);
+                    Dispatcher.UIThread.Post(() =>
+                    {
+                        _assetThumbs[path] = bmp;
+                        if (target.Source == null)
+                        {
+                            target.Source = bmp;
+                        }
+                    });
+                }
+                catch
+                {
+                    // 图片加载失败静默忽略（不显示缩略图）。
+                }
+            });
+            return;
         }
 
         Task.Run(() =>
@@ -2061,11 +2481,8 @@ internal sealed class VideoEditorWindow : MyWindow
         var trackCount = _project.TrackCount;
         _lanes.Clear();
         _newTrackZone = null;
-        // 重置滚动偏移：拖拽等操作可能让 ScrollViewer 产生垂直偏移，导致泳道与轨道头错位。
-        if (_timelineScroll != null && _timelineScroll.Offset.Y != 0)
-        {
-            _timelineScroll.Offset = new Vector(_timelineScroll.Offset.X, 0);
-        }
+        // 保留纵向滚动偏移：轨道头与泳道已通过 ScrollChanged 同步平移（不会错位），
+        // 拖到下方轨道释放后重建时间轴时不能跳回顶部（否则"很难把素材放到下面轨道"）。
 
         // 轨道头部：点击切换「添加到时间轴」的目标轨道。顶部先留出标尺高度，保证与泳道对齐。
         _trackHeaders.Children.Clear();
@@ -2120,12 +2537,16 @@ internal sealed class VideoEditorWindow : MyWindow
             _timeline.Children.Add(lane);
 
             // 泳道接受拖放：素材拖入 = 新增片段；片段拖入 = 移动到该轨道/位置。
+            // DragOver 同时高亮目标泳道 + 更新落点标签 + 驱动边缘自动滚动（素材多轨道时拖到远处/新轨道）。
             DragDrop.SetAllowDrop(lane, true);
             lane.AddHandler(DragDrop.DragOverEvent, (_, e) =>
             {
                 e.DragEffects = DragDropEffects.Copy | DragDropEffects.Move;
+                UpdateDragAutoScroll(e.GetPosition(_timelineScroll));
+                UpdateDropHighlight(trackIndex, _project.TrackCount);
                 e.Handled = true;
             });
+            lane.AddHandler(DragDrop.DragLeaveEvent, (_, _) => ClearDropHighlight());
             lane.AddHandler(DragDrop.DropEvent, (_, e) => HandleTimelineDrop(e, lane, trackIndex));
             // 点击泳道空白处：把播放头移到该位置（播放中则跳转）；点片段由块自己处理选中。
             lane.PointerPressed += (_, e) =>
@@ -2142,17 +2563,20 @@ internal sealed class VideoEditorWindow : MyWindow
             }
         }
 
-        // 时间轴根画布：标尺在顶、泳道网格在标尺下、播放头竖线覆盖在上（跨标尺到面板底），
+        // 时间轴根画布：泳道网格 + 播放头（标尺已移出滚动区固定在面板顶部，见 _rulerHost），
         // 底部留「新建轨道」拖放区（把片段/素材拖到最下方即建新轨道）。
         var lanesHeight = trackCount * _laneHeight;
-        var playheadHeight = RulerHeight + lanesHeight + NewTrackZoneHeight + 8;
+        var contentHeight = lanesHeight + NewTrackZoneHeight + 8;
         _timelineRoot.Children.Clear();
         _timelineRoot.Width = totalWidth;
-        _timelineRoot.Height = playheadHeight;
-        // 顶部标尺（带时间刻度，随内容横向滚动，与泳道 0 点对齐）。
-        _timelineRoot.Children.Add(BuildRuler(totalWidth));
-        Canvas.SetTop(_timeline, RulerHeight);
+        _timelineRoot.Height = contentHeight;
+        Canvas.SetTop(_timeline, 0);
         _timelineRoot.Children.Add(_timeline);
+        // 标尺重建进固定宿主（宽度 = 内容宽；横向随滚动平移，纵向不动）。
+        _rulerCanvas.Children.Clear();
+        _rulerCanvas.Width = totalWidth;
+        _rulerCanvas.Height = RulerHeight;
+        _rulerCanvas.Children.Add(BuildRuler(totalWidth));
         var newTrackZone = new Border
         {
             Height = NewTrackZoneHeight,
@@ -2169,7 +2593,7 @@ internal sealed class VideoEditorWindow : MyWindow
                 VerticalAlignment = VerticalAlignment.Center
             }
         };
-        Canvas.SetTop(newTrackZone, RulerHeight + lanesHeight + 4);
+        Canvas.SetTop(newTrackZone, lanesHeight + 4);
         Canvas.SetLeft(newTrackZone, 4);
         newTrackZone.Width = Math.Max(100, totalWidth - 8);
         _newTrackZone = newTrackZone;
@@ -2178,18 +2602,21 @@ internal sealed class VideoEditorWindow : MyWindow
         newTrackZone.AddHandler(DragDrop.DragOverEvent, (_, e) =>
         {
             e.DragEffects = DragDropEffects.Copy | DragDropEffects.Move;
+            UpdateDragAutoScroll(e.GetPosition(_timelineScroll));
+            UpdateDropHighlight(trackCount, trackCount);
             e.Handled = true;
         });
+        newTrackZone.AddHandler(DragDrop.DragLeaveEvent, (_, _) => ClearDropHighlight());
         newTrackZone.AddHandler(DragDrop.DropEvent, (_, e) => HandleTimelineDrop(e, newTrackZone, trackCount));
         _timelineRoot.Children.Add(newTrackZone);
         _timelineRoot.Children.Add(_playhead);
-        _playhead.Height = playheadHeight;
+        _playhead.Height = contentHeight;
         Canvas.SetLeft(_playhead, _playheadTime * _pxPerSecond - 9); // 18px 热区以视觉线居中
         _timeText.Text = FormatTime(_playheadTime);
 
         // 输出尺寸与统计（单行精简文本）。
         _outputSizeText.Text = $"输出 {_project.OutputWidth:0}×{_project.OutputHeight:0}";
-        _clipCountText.Text = $"轨道 {trackCount} · 片段 {_project.Clips.Count} · 总时长 {_project.Duration:0.#}s";
+        _clipCountText.Text = $"轨道 {trackCount} · 片段 {_project.Clips.Count} · 总时长 {FormatClock(_project.Duration)}";
         _zoomText.Text = $"{_pxPerSecond / 6 * 100:0}%";
         // 轨道头部底部的「新建轨道」提示条（与拖放区对齐，仅提示不可交互）。
         _trackHeaders.Children.Add(new Border
@@ -2209,11 +2636,19 @@ internal sealed class VideoEditorWindow : MyWindow
         });
 
         // 时间轴面板行高：默认随内容自动；拖分割条后取用户高度（下限为内容所需，上限 460）。
-        _timelineChromeHeight = 24 + TimelineToolbarHeight + 6 + playheadHeight;
+        // 内容高 = 标尺（固定行）+ 泳道/新建轨道区（滚动区）。
+        _timelineChromeHeight = 24 + TimelineToolbarHeight + 6 + RulerHeight + contentHeight;
         if (_timelinePanelHeight > 0 && _rootGrid != null)
         {
             _rootGrid.RowDefinitions[3] =
                 new RowDefinition(new GridLength(Math.Min(460, Math.Max(_timelinePanelHeight, _timelineChromeHeight))));
+        }
+
+        // 非播放时刷新舞台预览帧：新增滤镜/覆盖层/拖入素材后，播放头所在时刻的画面立即反映
+        // （之前拖入滤镜后舞台纹丝不动，效果"预览不出来"，要手动拖一下播放头才出现）。
+        if (!_playing && _project.Clips.Count > 0)
+        {
+            ShowFrameAt(_playheadTime);
         }
     }
 
@@ -2227,9 +2662,10 @@ internal sealed class VideoEditorWindow : MyWindow
             ClipToBounds = true
         };
         // 点击标尺：把播放头（seek 光条）移动到点击位置（与泳道空白处点击行为一致）。
+        // 标尺 Canvas 自身随滚动平移，GetPosition(ruler) 即内容坐标（与泳道 0 点对齐）。
         ruler.PointerPressed += (_, e) =>
         {
-            SetPlayhead(Math.Max(0, e.GetPosition(_timelineRoot).X / _pxPerSecond));
+            SetPlayhead(Math.Max(0, e.GetPosition(ruler).X / _pxPerSecond));
             e.Handled = true;
         };
         var interval = NiceTickInterval(_pxPerSecond);
@@ -2327,7 +2763,14 @@ internal sealed class VideoEditorWindow : MyWindow
         _timeText.Text = FormatTime(_playheadTime);
     }
 
-    private string FormatTime(double seconds) => $"{Math.Max(0, seconds):0.0} / {_project.Duration:0.0} s";
+    private string FormatTime(double seconds) => $"{FormatClock(seconds)} / {FormatClock(_project.Duration)}";
+
+    /// <summary>时长格式化（xx:xx:xx 时:分:秒恒三段）。</summary>
+    private static string FormatClock(double seconds)
+    {
+        var total = (long)Math.Round(Math.Max(0, seconds));
+        return $"{total / 3600:00}:{total / 60 % 60:00}:{total % 60:00}";
+    }
 
     /// <summary>未选中片段块的底色（随主题）。</summary>
     private static Color UnselectedBlockColor() => ThemePalette.IsDarkTheme()
@@ -2419,7 +2862,73 @@ internal sealed class VideoEditorWindow : MyWindow
         return Math.Max(0, occupied.Max(o => o.Item2));
     }
 
-    /// <summary>拖拽片段时高亮目标泳道（targetTrack == trackCount 表示新建轨道区）。</summary>
+    /// <summary>拖拽期间更新滚动探针（首次调用启动自动滚动计时器）。</summary>
+    private void UpdateDragAutoScroll(Point pointerInScroll)
+    {
+        _lastDragPointer = pointerInScroll;
+        if (_dragScrollProbe == null)
+        {
+            _dragScrollProbe = ComputeDragScroll;
+            _dragScrollTimer.Start();
+        }
+    }
+
+    /// <summary>停止拖拽自动滚动（释放/取消拖拽时调用）。</summary>
+    private void StopDragAutoScroll()
+    {
+        _dragScrollProbe = null;
+        _dragScrollTimer.Stop();
+    }
+
+    /// <summary>边缘检测：指针距滚动视口边缘 40px 内产生滚动增量（越贴边越快）。</summary>
+    private (double Dx, double Dy) ComputeDragScroll()
+    {
+        const double edge = 40;
+        const double speed = 14;
+        double dx = 0, dy = 0;
+        var w = _timelineScroll.Bounds.Width;
+        var h = _timelineScroll.Bounds.Height;
+        if (_lastDragPointer.X < edge)
+        {
+            dx = -speed * (1 - Math.Max(0, _lastDragPointer.X) / edge);
+        }
+        else if (_lastDragPointer.X > w - edge)
+        {
+            dx = speed * (1 - Math.Clamp(w - _lastDragPointer.X, 0, edge) / edge);
+        }
+
+        if (_lastDragPointer.Y < edge)
+        {
+            dy = -speed * (1 - Math.Max(0, _lastDragPointer.Y) / edge);
+        }
+        else if (_lastDragPointer.Y > h - edge)
+        {
+            dy = speed * (1 - Math.Clamp(h - _lastDragPointer.Y, 0, edge) / edge);
+        }
+
+        return (dx, dy);
+    }
+
+    /// <summary>拖拽落点提示标签（目标轨道号 / 新建轨道；accent 底白字，跟随目标泳道顶部移动）。</summary>
+    private Border BuildDropTrackBadge()
+    {
+        return new Border
+        {
+            IsHitTestVisible = false,
+            ZIndex = 40,
+            CornerRadius = new CornerRadius(3),
+            Padding = new Thickness(7, 2),
+            Background = ThemePalette.AccentBrushWithAlpha(235),
+            Child = new TextBlock
+            {
+                Foreground = Brushes.White,
+                FontSize = 11,
+                FontWeight = FontWeight.SemiBold
+            }
+        };
+    }
+
+    /// <summary>拖拽片段时高亮目标泳道 + 显示落点标签（targetTrack == trackCount 表示新建轨道区）。</summary>
     private void UpdateDropHighlight(int targetTrack, int trackCount)
     {
         for (var i = 0; i < _lanes.Count; i++)
@@ -2437,6 +2946,31 @@ internal sealed class VideoEditorWindow : MyWindow
                 ? ThemePalette.AccentBrush()
                 : ThemePalette.AccentBrushWithAlpha(120);
         }
+
+        // 落点标签：拖拽块本身会遮挡泳道高亮，用一枚小标签直接标明会落到哪条轨道。
+        if (_dropTrackBadge == null)
+        {
+            _dropTrackBadge = BuildDropTrackBadge();
+        }
+
+        var badge = _dropTrackBadge;
+        if (badge.Parent != _timelineRoot)
+        {
+            _timelineRoot.Children.Add(badge);
+        }
+
+        var isNew = targetTrack >= trackCount;
+        if (badge.Child is TextBlock text)
+        {
+            text.Text = isNew ? "＋ 新建轨道" : $"轨道 {targetTrack + 1}";
+        }
+
+        var top = isNew
+            ? trackCount * _laneHeight + 2
+            : Math.Max(0, targetTrack) * _laneHeight + 2;
+        Canvas.SetTop(badge, top);
+        Canvas.SetLeft(badge, 8);
+        badge.IsVisible = true;
     }
 
     /// <summary>清除拖拽高亮（释放/取消时）。</summary>
@@ -2452,6 +2986,13 @@ internal sealed class VideoEditorWindow : MyWindow
             _newTrackZone.BorderThickness = new Thickness(1);
             _newTrackZone.BorderBrush = ThemePalette.AccentBrushWithAlpha(120);
         }
+
+        if (_dropTrackBadge is { } badge)
+        {
+            badge.IsVisible = false;
+        }
+
+        StopDragAutoScroll();
     }
 
     /// <summary>构建一个时间轴片段块（绝对定位到泳道画布；支持点击选中、按住拖拽移动、左右边缘拖拽裁剪入/出点）。</summary>
@@ -2593,20 +3134,27 @@ internal sealed class VideoEditorWindow : MyWindow
                 }
 
                 block.ZIndex = 30; // 高于播放头（20），拖动时浮在所有泳道上
+                block.Opacity = 0.8; // 半透明：目标泳道的高亮/落点标签在块下仍可见
                 _timelineRoot.Children.Add(block);
+                // 拖拽启动自动滚动（贴滚动区边缘时滚动，含纵向滚到「新建轨道」区）。
+                UpdateDragAutoScroll(e.GetPosition(_timelineScroll));
+            }
+            else
+            {
+                UpdateDragAutoScroll(e.GetPosition(_timelineScroll));
             }
 
-            // 横向：时间 = 指针 X - 按下偏移，同轨不重叠实时修正。
+            // 横向：时间 = 指针 X - 按下偏移；拖动中实时吸附（片段边缘/播放头 ~8px）且不避让——
+            // 旧版实时 FitToTrack 避让会把块从目标位置弹开，导致「很难把 B 拖到 A 正上方对齐」。
             var desired = Math.Max(0, (rootPos.X - md.GrabX) / _pxPerSecond);
-            clip.StartTime = FitToTrack(clip, desired, clip.Track);
+            clip.StartTime = SnapTime(desired);
             Canvas.SetLeft(block, clip.StartTime * _pxPerSecond);
-            // 纵向：块顶 = 指针 Y - 按下偏移（跨泳道浮动跟手）。
-            var blockTop = Math.Max(RulerHeight, rootPos.Y - md.GrabY);
+            // 纵向：块顶 = 指针 Y - 按下偏移（跨泳道浮动跟手；泳道区顶 = _timelineRoot 顶，无标尺偏移）。
+            var blockTop = Math.Max(0, rootPos.Y - md.GrabY);
             Canvas.SetTop(block, blockTop);
             // 目标轨道按「块的视觉顶部」计算（与落轨一致），指针抓取高度不影响判断 → 不再错位。
             var trackCount = _project.TrackCount;
-            var yInLanes = blockTop - RulerHeight;
-            var targetTrack = yInLanes >= 0 ? (int)(yInLanes / _laneHeight) : 0;
+            var targetTrack = blockTop >= 0 ? (int)(blockTop / _laneHeight) : 0;
             UpdateDropHighlight(Math.Min(targetTrack, trackCount), trackCount);
         };
         block.PointerReleased += (_, e) =>
@@ -2626,18 +3174,19 @@ internal sealed class VideoEditorWindow : MyWindow
                 // 记录块是否已浮到根画布（发生过实际拖动）；Capture(null) 会触发 PointerCaptureLost，
                 // 其中可能重建时间轴，因此先记录再解绑。
                 var wasFloating = block.Parent == _timelineRoot;
+                StopDragAutoScroll();
                 e.Pointer.Capture(null);
                 if (wasFloating)
                 {
                     // 释放：吸附 → 按块的视觉顶部落轨（与拖动时显示一致，不再按指针位置产生错位）。
+                    // 移动既有片段不做 FitToTrack 避让：允许同轨叠放（上层遮住下层，调整层级），
+                    // 否则用户想把 B 拖到 A 正上方对齐时块总被弹开。
                     clip.StartTime = SnapTime(clip.StartTime);
                     var rootPos = e.GetPosition(_timelineRoot);
-                    var blockTop = Math.Max(RulerHeight, rootPos.Y - md.GrabY);
-                    var yInLanes = blockTop - RulerHeight;
-                    var targetTrack = yInLanes >= 0 ? (int)(yInLanes / _laneHeight) : 0;
+                    var blockTop = Math.Max(0, rootPos.Y - md.GrabY);
+                    var targetTrack = blockTop >= 0 ? (int)(blockTop / _laneHeight) : 0;
                     // 块顶落在末轨下方（含「新建轨道」拖放区）时新建轨道；上限防误拖到很远。
                     clip.Track = Math.Clamp(targetTrack, 0, 32);
-                    clip.StartTime = FitToTrack(clip, clip.StartTime, clip.Track);
                 }
 
                 ClearDropHighlight();
@@ -2651,6 +3200,7 @@ internal sealed class VideoEditorWindow : MyWindow
         block.PointerCaptureLost += (_, _) =>
         {
             _moveDrag = null;
+            block.Opacity = 1;
             ClearDropHighlight();
             // 若块仍悬浮在根画布上（拖拽异常中断 / 捕获被夺走），立即重建时间轴把片段恢复回泳道，
             // 避免块从时间轴上消失（只移除不重建会导致下次刷新前一直不可见）。
@@ -2692,13 +3242,14 @@ internal sealed class VideoEditorWindow : MyWindow
         _clipNameText.Text = $"{ClipDisplayName(clip)}\n轨道 {clip.Track + 1} · 开始 {clip.StartTime:0.#}s · 时长 {clip.Duration:0.#}s\n入 {clip.InPoint:0.#}s → 出 {clip.OutPoint:0.#}s";
         if (_playing && _player != null && clip.Track < _stageLayers.Count)
         {
-            ApplyTransform(_stageLayers[clip.Track].Image, clip);
+            ApplyTransform(_stageLayers[clip.Track], clip);
         }
     }
 
     /// <summary>时间轴泳道/新建轨道区放置处理：素材 → 新增片段；clip:n → 移动既有片段。</summary>
     private void HandleTimelineDrop(DragEventArgs e, Border lane, int trackIndex)
     {
+        StopDragAutoScroll(); // 系统拖放结束：先停自动滚动（否则 Drop 后仍按最后指针位置滚动）。
         if (!e.Data.Contains(DataFormats.Text))
         {
             return;
@@ -2757,18 +3308,28 @@ internal sealed class VideoEditorWindow : MyWindow
             };
             _project.Clips.Add(clip);
             _selected = clip;
+            // 滤镜只作用于更低轨道的画面；下方没有视频片段时提前说明（否则"加了特效没反应"）。
+            var affects = _project.Clips.Any(c => c.Kind == "Video" && c.Track < clip.Track &&
+                                                  clip.StartTime < c.StartTime + c.Duration &&
+                                                  clip.StartTime + clip.Duration > c.StartTime);
+            _statusText.Text = affects
+                ? $"已添加「{FilterName(clip.Filter)}」滤镜（作用于其下方轨道 {clip.StartTime:0.#}s 起的画面）。"
+                : "提示：滤镜只作用于更低轨道的画面——先把视频片段放到更低的轨道，滤镜才会生效。";
         }
         else if (_assets.Contains(text))
         {
             // 素材拖入：目标轨道/位置新增片段（同轨不重叠，自动放到最近可用位置）。
-            var duration = GetAssetDuration(text);
+            // 图片素材建 Kind=Image 覆盖层（固定 5 秒）；视频按素材时长建普通片段。
+            var isImage = VideoTranscoder.IsImageFile(text);
+            var duration = isImage ? 5 : GetAssetDuration(text);
             var clip = new VideoClip
             {
+                Kind = isImage ? "Image" : "Video",
                 SourcePath = text,
                 Track = Math.Max(0, trackIndex),
                 StartTime = startTime,
                 InPoint = 0,
-                OutPoint = duration > 0.5 ? duration : 10
+                OutPoint = isImage ? duration : duration > 0.5 ? duration : 10
             };
             clip.StartTime = FitToTrack(clip, startTime, clip.Track);
             _project.Clips.Add(clip);
@@ -2783,11 +3344,12 @@ internal sealed class VideoEditorWindow : MyWindow
         e.Handled = true;
     }
 
-    /// <summary>时间吸附：距离时间轴开头、任意片段边缘（头/尾）或播放头 1s 内自动对齐，便于头贴尾拼接。</summary>
+    /// <summary>时间吸附：距离时间轴开头、任意片段边缘（头/尾）或播放头约 8px 内自动对齐，便于头贴尾拼接/素材上下对齐。
+    /// 阈值按像素换算（8px / pxPerSecond）：时间轴缩放后吸附手感一致。</summary>
     private double SnapTime(double time)
     {
         var best = time;
-        var bestDist = 1.0;
+        var bestDist = 8.0 / Math.Max(1.0, _pxPerSecond);
         if (time < bestDist)
         {
             best = 0;
@@ -2972,8 +3534,8 @@ internal sealed class VideoEditorWindow : MyWindow
                 control.IsEnabled = has;
             }
 
-            // 文本/形状覆盖层编辑区：仅 Text/Shape 显示（滤镜片段不该出现文本/形状设置）。
-            var isOverlay = clip is { Kind: "Text" or "Shape" };
+            // 图片/文本/形状覆盖层编辑区：仅这三类显示（滤镜片段不该出现文本/形状设置）。
+            var isOverlay = clip is { Kind: "Text" or "Shape" or "Image" };
             _overlayPanel.IsVisible = isOverlay;
             if (isOverlay)
             {
@@ -2982,7 +3544,22 @@ internal sealed class VideoEditorWindow : MyWindow
                 _overlayShape.SelectedItem = clip.Shape;
                 _overlayText.IsEnabled = clip.Kind == "Text";
                 _overlayShape.IsEnabled = clip.Kind == "Shape";
-                _overlayColor.IsEnabled = true;
+                _overlayColor.IsEnabled = clip.Kind != "Image";
+                // 图片覆盖层：隐藏内容/颜色/形状行（变换与不透明度在通用属性里）。
+                if (_overlayTextRow is { } textRow)
+                {
+                    textRow.IsVisible = clip.Kind == "Text";
+                }
+
+                if (_overlayShapeRow is { } shapeRow)
+                {
+                    shapeRow.IsVisible = clip.Kind == "Shape";
+                }
+
+                if (_overlayColorRow is { } colorRow)
+                {
+                    colorRow.IsVisible = clip.Kind != "Image";
+                }
             }
 
             // 滤镜编辑区：仅 Kind=Filter 显示。
@@ -3036,7 +3613,7 @@ internal sealed class VideoEditorWindow : MyWindow
         // （之前用 _playing && _player 条件，暂停时调整缩放/偏移完全不更新舞台。）
         if (clip.Track < _stageLayers.Count && _stageLayers[clip.Track].Image.IsVisible)
         {
-            ApplyTransform(_stageLayers[clip.Track].Image, clip);
+            ApplyTransform(_stageLayers[clip.Track], clip);
             UpdateStageHandles();
         }
     }
@@ -3181,19 +3758,40 @@ internal sealed class VideoEditorWindow : MyWindow
         return best;
     }
 
-    /// <summary>对帧应用当前时刻更高轨道的滤镜（返回新拷贝；无滤镜时原样返回）。</summary>
+    /// <summary>滤镜结果缓冲（UI 线程专用；持续滤镜期间复用，避免每帧分配 ~1.4MB 触发 GC 抖动）。</summary>
+    private byte[]? _filterBuffer;
+
+    /// <summary>滤镜判定日志节流时间戳。</summary>
+    private DateTimeOffset _lastFilterLog;
+
+    /// <summary>对帧应用当前时刻更高轨道的滤镜（返回应用结果；无滤镜时原样返回）。
+    /// 判定结果节流写入 video-editor.log（诊断「滤镜无显示」：无滤镜片段 / 轨道位置不生效 / 已应用）。</summary>
     private VideoFrame ApplyActiveFilter(VideoFrame frame, VideoClip clip, double time)
     {
         var filter = FindActiveFilter(time);
-        if (filter == null || filter.Track <= clip.Track || string.IsNullOrEmpty(filter.Filter))
+        var applied = filter != null && filter.Track > clip.Track && !string.IsNullOrEmpty(filter.Filter);
+        if ((DateTimeOffset.Now - _lastFilterLog).TotalMilliseconds > 1500)
+        {
+            _lastFilterLog = DateTimeOffset.Now;
+            EditorLog($"t={time:0.##}s 片段轨{clip.Track}({clip.Kind}) → " +
+                      $"滤镜={(filter == null ? "无" : $"{filter.Filter}@轨{filter.Track} [{filter.StartTime:0.#}~{filter.StartTime + filter.Duration:0.#}s]")} " +
+                      $"应用={applied}");
+        }
+
+        if (!applied)
         {
             return frame;
         }
 
-        var copy = new byte[frame.Pixels.Length];
-        Buffer.BlockCopy(frame.Pixels, 0, copy, 0, copy.Length);
-        FilterUtils.ApplyInPlace(copy, frame.Width, frame.Height, filter.Filter);
-        return new VideoFrame(copy, frame.Width, frame.Height);
+        _filterBuffer ??= new byte[frame.Pixels.Length];
+        if (_filterBuffer.Length != frame.Pixels.Length)
+        {
+            _filterBuffer = new byte[frame.Pixels.Length];
+        }
+
+        Buffer.BlockCopy(frame.Pixels, 0, _filterBuffer, 0, _filterBuffer.Length);
+        FilterUtils.ApplyInPlace(_filterBuffer, frame.Width, frame.Height, filter!.Filter);
+        return new VideoFrame(_filterBuffer, frame.Width, frame.Height);
     }
 
     private void StartSeekFrameDecode(double time)
@@ -3233,16 +3831,11 @@ internal sealed class VideoEditorWindow : MyWindow
                     }
 
                     var mediaTime = clip.InPoint + (time - clip.StartTime);
-                    // 复用已打开的源（同轨同片段直接 seek，快）；换片段/换轨才重新打开。
-                    var source = GetSeekSource(t, clip);
+                    // 复用已打开的源；定位在 GetSeekSource 内部完成（微移=顺序读帧，大跳=seek）。
+                    var source = GetSeekSource(t, clip, mediaTime);
                     if (source == null)
                     {
                         continue;
-                    }
-
-                    if (mediaTime > 0)
-                    {
-                        source.SeekTo(mediaTime);
                     }
 
                     if (source.TryReadFrame(out var frame) && frame != null)
@@ -3288,11 +3881,45 @@ internal sealed class VideoEditorWindow : MyWindow
         });
     }
 
-    /// <summary>获取某轨道的 seek 解码源（同轨同片段复用，避免每次拖动都重新打开解码器 → 拖动即时显示帧）。</summary>
-    private VideoFrameSource? GetSeekSource(int track, VideoClip clip)
+    /// <summary>
+    /// 获取某轨道的 seek 解码源并定位到媒体时间（同轨同片段复用解码器）。
+    /// 微移（±3 帧内）用顺序读帧推进——反复 SeekTo 会回退到关键帧并重解整段 GOP，
+    /// 长视频 scrub 会越来越卡；大跳/后退才真正 seek。
+    /// </summary>
+    private VideoFrameSource? GetSeekSource(int track, VideoClip clip, double mediaTime)
     {
         if (_seekSources.TryGetValue(track, out var entry) && ReferenceEquals(entry.Clip, clip))
         {
+            var fps = entry.Source.SourceFps;
+            if (fps <= 0)
+            {
+                fps = 25;
+            }
+
+            var target = (long)Math.Round((mediaTime - clip.InPoint) * fps);
+            var delta = target - entry.LastFrameIndex;
+            if (delta >= 0 && delta <= 3)
+            {
+                // 顺序读帧推进到目标帧号（丢弃中间帧，单帧解码几毫秒）。
+                for (var i = 0; i < delta; i++)
+                {
+                    if (!entry.Source.TryReadFrame(out _))
+                    {
+                        break;
+                    }
+                }
+
+                entry.LastFrameIndex = target;
+                return entry.Source;
+            }
+
+            // 大跳 / 后退：真正 seek。
+            if (mediaTime > 0)
+            {
+                entry.Source.SeekTo(mediaTime);
+            }
+
+            entry.LastFrameIndex = target;
             return entry.Source;
         }
 
@@ -3318,7 +3945,15 @@ internal sealed class VideoEditorWindow : MyWindow
             return null;
         }
 
-        _seekSources[track] = (clip, source);
+        var state = new SeekSourceState { Clip = clip, Source = source };
+        if (mediaTime > 0)
+        {
+            source.SeekTo(mediaTime);
+            var sfps = source.SourceFps;
+            state.LastFrameIndex = (long)Math.Round((mediaTime - clip.InPoint) * (sfps > 0 ? sfps : 25));
+        }
+
+        _seekSources[track] = state;
         return source;
     }
 
@@ -3480,16 +4115,17 @@ internal sealed class VideoEditorWindow : MyWindow
 
         var layer = _stageLayers[track];
         WriteFrameToImage(layer.Image, ref layer.Bitmap, frame, clip.Grayscale);
-        ApplyTransform(layer.Image, clip);
+        ApplyTransform(layer, clip);
         layer.Image.IsVisible = true;
         UpdateStageHandles();
     }
 
-    /// <summary>片段在时间轴/属性面板的显示名（视频 = 文件名，文本 = 内容，形状 = 类型）。</summary>
+    /// <summary>片段在时间轴/属性面板的显示名（视频/图片 = 文件名，文本 = 内容，形状 = 类型）。</summary>
     private static string ClipDisplayName(VideoClip clip) => clip.Kind switch
     {
         "Text" => clip.Text,
         "Shape" => ShapeName(clip.Shape),
+        "Image" => Path.GetFileName(clip.SourcePath),
         "Filter" => FilterName(clip.Filter),
         _ => Path.GetFileName(clip.SourcePath)
     };
@@ -3557,9 +4193,12 @@ internal sealed class VideoEditorWindow : MyWindow
         image.InvalidateVisual();
     }
 
-    /// <summary>把片段变换应用到指定舞台 Image（与运行时 ApplyVideoClipTransform 同逻辑）。</summary>
-    private void ApplyTransform(Image image, VideoClip clip)
+    /// <summary>把片段变换应用到指定舞台 Image（与运行时 ApplyVideoClipTransform 同逻辑）。
+    /// 播放中每帧调用：签名（画幅 + 全部变换值）未变化时直接跳过（不再每帧重建 TransformGroup
+    /// 触发全舞台重排——静止片段播放时这里曾是持续卡顿来源）。</summary>
+    private void ApplyTransform(StageTrackLayer layer, VideoClip clip)
     {
+        var image = layer.Image;
         var w = _stageBorder.Bounds.Width;
         var h = _stageBorder.Bounds.Height;
         if (w <= 0 || h <= 0)
@@ -3567,6 +4206,19 @@ internal sealed class VideoEditorWindow : MyWindow
             return;
         }
 
+        var sigA = (w, h,
+            clip.Scale * clip.ScaleX * (clip.FlipH ? -1 : 1),
+            clip.Scale * clip.ScaleY * (clip.FlipV ? -1 : 1),
+            clip.Rotation, clip.OffsetX, clip.OffsetY);
+        var sigB = (Math.Clamp(clip.Opacity, 0, 1), clip.CropLeft, clip.CropTop, clip.CropRight, clip.CropBottom);
+        if (layer.HasTransform && layer.LastTransformA == sigA && layer.LastTransformB == sigB)
+        {
+            return;
+        }
+
+        layer.LastTransformA = sigA;
+        layer.LastTransformB = sigB;
+        layer.HasTransform = true;
         var group = new TransformGroup();
         // 翻转用负缩放（绕中心镜像，与渲染器 uv 取镜像一致）。
         group.Children.Add(new ScaleTransform(
@@ -3878,7 +4530,7 @@ internal sealed class VideoEditorWindow : MyWindow
 
         if (clip.Track < _stageLayers.Count)
         {
-            ApplyTransform(_stageLayers[clip.Track].Image, clip);
+            ApplyTransform(_stageLayers[clip.Track], clip);
         }
 
         UpdateStageHandles();
@@ -3959,8 +4611,18 @@ internal sealed class VideoEditorWindow : MyWindow
 
         if (!FFmpegRuntime.IsAvailable || !FFmpegRuntime.EnsureLoaded())
         {
-            _statusText.Text = "缺少 FFmpeg 编码库，无法渲染。请先在设置页下载 FFmpeg。";
+            _statusText.Text = "缺少 FFmpeg 库，无法渲染。请先在设置页下载 FFmpeg。";
             return;
+        }
+
+        if (!FFmpegRuntime.EncoderAvailable)
+        {
+            // 当前是精简解码包（无 H.264 编码器）：引导升级完整包，升级完成自动继续渲染。
+            if (!await EnsureFullPackageAsync("渲染视频剪辑需要 H.264 编码器（当前精简包仅支持解码）。"))
+            {
+                _statusText.Text = "已取消渲染：需要完整 FFmpeg 包才能编码输出。";
+                return;
+            }
         }
 
         // 1. 选择输出位置。

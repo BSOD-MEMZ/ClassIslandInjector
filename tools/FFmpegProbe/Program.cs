@@ -15,11 +15,6 @@ internal static unsafe class Program
         var path = args.Length > 0 ? args[0] : @"D:\BSOD-MEMZ\为你的课表注入活力——ClassIslandInjector样式注入器发布！.mp4";
         var maxFrames = args.Length > 1 ? int.Parse(args[1]) : 10;
         Console.WriteLine($"=== FFmpeg 探针 路径={path} 帧数上限={maxFrames} ===");
-        if (!File.Exists(path))
-        {
-            Console.WriteLine("文件不存在！");
-            return 1;
-        }
 
         // FFmpeg dll 目录：优先环境变量 FFMPEG_DIR，其次本程序目录下的 ffmpeg\
         var root = Environment.GetEnvironmentVariable("FFMPEG_DIR");
@@ -28,15 +23,29 @@ internal static unsafe class Program
             root = Path.Combine(AppContext.BaseDirectory, "ffmpeg");
         }
 
-        if (!Directory.Exists(root))
+        // 编码器检测：区分「仅解码精简包」（动态壁纸）与「解码+编码完整包」（渲染剪辑）。
+        try
         {
-            Console.WriteLine($"未找到 FFmpeg dll 目录（设置 FFMPEG_DIR 或放到 {root}）");
+            ffmpeg.RootPath = root;
+            Console.WriteLine($"ffmpeg.RootPath = {root}");
+            Console.WriteLine($"avcodec version: {ffmpeg.avcodec_version()}");
+            foreach (var id in new[] { AVCodecID.AV_CODEC_ID_H264, AVCodecID.AV_CODEC_ID_HEVC, AVCodecID.AV_CODEC_ID_AAC })
+            {
+                var enc = ffmpeg.avcodec_find_encoder(id);
+                Console.WriteLine($"编码器 {id}: {(enc == null ? "无" : Marshal.PtrToStringAnsi((IntPtr)enc->name))}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"FFmpeg 加载失败：{ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
             return 1;
         }
 
-        ffmpeg.RootPath = root;
-        Console.WriteLine($"ffmpeg.RootPath = {root}");
-        Console.WriteLine($"avcodec version: {ffmpeg.avcodec_version()}");
+        if (!File.Exists(path))
+        {
+            Console.WriteLine("文件不存在！");
+            return 1;
+        }
 
         try
         {
@@ -89,7 +98,7 @@ internal static unsafe class Program
             }
 
             var sws = ffmpeg.sws_getContext(codecpar->width, codecpar->height, (AVPixelFormat)codecpar->format,
-                outW, outH, AVPixelFormat.AV_PIX_FMT_BGRA, ffmpeg.SWS_BILINEAR, null, null, null);
+                outW, outH, AVPixelFormat.AV_PIX_FMT_BGRA, (int)SwsFlags.SWS_BILINEAR, null, null, null);
             if (sws == null)
             {
                 Console.WriteLine("sws_getContext 失败");
