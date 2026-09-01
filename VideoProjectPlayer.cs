@@ -39,6 +39,8 @@ internal sealed class VideoProjectPlayer : IDisposable
     private readonly int _overlayH;
     /// <summary>轨道是否启用（跳过隐藏轨）。</summary>
     private readonly bool[] _trackEnabled;
+    /// <summary>硬件解码器名（"auto" = 按编码自动选 D3D11VA；null = 软解）。</summary>
+    public string? HardwareDecoder { get; set; }
 
     private readonly object _sync = new();
     private Thread? _worker;
@@ -440,7 +442,7 @@ internal sealed class VideoProjectPlayer : IDisposable
     {
         try
         {
-            var source = new VideoFrameSource();
+            var source = new VideoFrameSource { HardwareDecoder = HardwareDecoder };
             if (!source.Open(clip.SourcePath, _maxDimension))
             {
                 source.Dispose();

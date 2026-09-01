@@ -712,7 +712,7 @@ internal sealed class VideoEditorWindow : MyWindow
             _zoomText.Text = $"{_pxPerSecond / BasePxPerSecond * 100:0}%";
         };
         ToolTip.SetTip(_zoomSlider, "缩放时间轴（也可 Ctrl+滚轮）");
-        ToolTip.SetTip(_cutButton, "刀片切割：在播放头位置把所有覆盖该时刻的片段切成两段");
+        ToolTip.SetTip(_cutButton, "刀片切割：在播放头位置切割片段（有选中时只切选中的片段，否则切所有覆盖该时刻的片段）");
         ToolTip.SetTip(_deleteButton, "删除选中片段");
         ToolTip.SetTip(_canvasButton, "自定义画幅：修改输出宽高");
         // 素材列表按住拖出 → 拖到时间轴指定轨道/位置（更符合人类操作习惯）。
@@ -1050,8 +1050,7 @@ internal sealed class VideoEditorWindow : MyWindow
             var t = Math.Max(0, e.GetPosition(_rulerCanvas).X / _pxPerSecond);
             if (_splitTool)
             {
-                var cut = CutClipsAt(t);
-                _statusText.Text = cut == 0 ? $"{t:0.#}s 处没有片段可分割。" : $"已在 {t:0.#}s 分割 {cut} 个片段。";
+                _statusText.Text = CutStatusText(t, CutClipsAt(t));
                 e.Handled = true;
                 return;
             }
@@ -1127,8 +1126,7 @@ internal sealed class VideoEditorWindow : MyWindow
             }
 
             var t = Math.Max(0, e.GetPosition(_timelineRoot).X / _pxPerSecond);
-            var cut = CutClipsAt(t);
-            _statusText.Text = cut == 0 ? $"{t:0.#}s 处没有片段可分割。" : $"已在 {t:0.#}s 分割 {cut} 个片段。";
+            _statusText.Text = CutStatusText(t, CutClipsAt(t));
             e.Handled = true;
         };
         var timelineArea = timelineRight;
@@ -4532,22 +4530,48 @@ internal sealed class VideoEditorWindow : MyWindow
             : $"已删除 {deletable.Count} 个片段。";
     }
 
-    /// <summary>刀片工具：在播放头位置把所有覆盖该时刻的片段切成两段（保留入出点与变换）。</summary>
+    /// <summary>刀片工具：在播放头位置切割（有选中片段时只切选中的，否则切所有覆盖该时刻的片段）。</summary>
     private void CutAtPlayhead()
     {
         var cut = CutClipsAt(_playheadTime);
-        _statusText.Text = cut == 0
-            ? $"播放头位置 {_playheadTime:0.#}s 没有片段，无法切割。"
-            : $"已在 {_playheadTime:0.#}s 切割 {cut} 个片段。";
+        _statusText.Text = CutStatusText(_playheadTime, cut);
     }
 
-    /// <summary>在指定时间切割所有覆盖该时刻的片段，返回切割数量。</summary>
+    /// <summary>切割后的状态文案：有选中时按“选中片段”描述，无选中按“N 个片段”描述。</summary>
+    private string CutStatusText(double t, int cut)
+    {
+        var hadSelection = _selected != null || _selectedClips.Count > 0;
+        if (cut == 0)
+        {
+            return hadSelection
+                ? $"{t:0.#}s 处选中片段不可分割（不在选中片段内）。"
+                : $"{t:0.#}s 处没有片段，无法切割。";
+        }
+
+        return hadSelection
+            ? $"已在 {t:0.#}s 切割选中片段。"
+            : $"已在 {t:0.#}s 切割 {cut} 个片段。";
+    }
+
+    /// <summary>在指定时间切割片段，返回切割数量。有选中片段时只切选中的；无选中时切割所有覆盖该时刻的片段。</summary>
     private int CutClipsAt(double time)
     {
+        // 主选中同步进多选集合（DeleteSelectedClip 同款）；有选中 = 只切选中片段。
+        if (_selectedClips.Count == 0 && _selected != null)
+        {
+            _selectedClips.Add(_selected);
+        }
+
+        var restrictToSelection = _selectedClips.Count > 0;
         var toAdd = new List<VideoClip>();
         var toRemove = new List<VideoClip>();
         foreach (var clip in _project.Clips)
         {
+            if (restrictToSelection && !_selectedClips.Contains(clip))
+            {
+                continue; // 只切割选中片段，其余片段保持不动。
+            }
+
             var end = clip.StartTime + clip.Duration;
             if (time <= clip.StartTime + 0.001 || time >= end - 0.001)
             {
@@ -4579,9 +4603,18 @@ internal sealed class VideoEditorWindow : MyWindow
         }
 
         _project.Clips.AddRange(toAdd);
-        if (ReferenceEquals(_selected, toRemove[0]))
+        // 选中跟随左半段：主选中与多选集合同步替换，切割后继续选中，便于继续编辑/再次切割。
+        for (var i = 0; i < toRemove.Count; i++)
         {
-            _selected = toAdd[0]; // 选中左段。
+            if (_selectedClips.Remove(toRemove[i]))
+            {
+                _selectedClips.Add(toAdd[i * 2]);
+            }
+
+            if (ReferenceEquals(_selected, toRemove[i]))
+            {
+                _selected = toAdd[i * 2]; // 选中左段。
+            }
         }
 
         CompactTracks();

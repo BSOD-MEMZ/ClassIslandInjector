@@ -4,10 +4,13 @@ using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.Controls.Templates;
+using Avalonia.Data;
 using Avalonia.Layout;
 using Avalonia.Media;
 using ClassIsland.Core;
 using ClassIsland.Core.Controls;
+using FluentAvalonia.UI.Controls;
 
 namespace ClassIslandInjector.Views;
 
@@ -29,6 +32,8 @@ internal sealed class FfmpegInstallWindow : MyWindow
     private readonly TextBlock _logText = new() { FontFamily = MonoFont, FontSize = 11, Opacity = 0.7, TextWrapping = TextWrapping.Wrap };
     private readonly ScrollViewer _logScroller = new() { MaxHeight = 120, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
     private readonly Button _actionButton = new() { Content = "取消" };
+    /// <summary>彻底删除已安装解码库（库已就绪时可见，独立于安装流程）。</summary>
+    private readonly Button _deleteButton = new() { Content = "删除已安装库" };
     private readonly StackPanel _choicePanel;
     private readonly CancellationTokenSource _cts = new();
     private readonly Progress<FfmpegInstallProgress> _progress;
@@ -46,14 +51,14 @@ internal sealed class FfmpegInstallWindow : MyWindow
         _fixedKind = kind;
         Title = "FFmpeg 库安装器";
         Width = 480;
-        Height = 470;
+        Height = 530;
         CanResize = false;   // 禁止拖拽边缘调整大小
         CanMaximize = false; // 禁止最大化
         // 与 Min/Max 相等：彻底锁死尺寸。
         MinWidth = 480;
         MaxWidth = 480;
-        MinHeight = 450;
-        MaxHeight = 450;
+        MinHeight = 530;
+        MaxHeight = 530;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         // Progress<T> 捕获创建时的同步上下文（UI 线程），回调自动 marshal 回 UI 线程。
         _progress = new Progress<FfmpegInstallProgress>(ApplyProgress);
@@ -69,6 +74,7 @@ internal sealed class FfmpegInstallWindow : MyWindow
             }
         };
         _actionButton.Click += (_, _) => Close();
+        _deleteButton.Click += async (_, _) => await DeleteLibrariesAsync();
         Closed += (_, _) =>
         {
             if (Current == this)
@@ -126,9 +132,96 @@ internal sealed class FfmpegInstallWindow : MyWindow
         return new StackPanel
         {
             Spacing = 8,
-            Children = { minimal, full, start }
+            Children =
+            {
+                BuildComparisonTable(),
+                new TextBlock
+                {
+                    Text = "注：当前镜像的 FFmpeg 构建未编译硬解（D3D11VA），精简与完整包均为软件解码；完整包仅额外提供编码能力（剪辑渲染 / 压缩转码）。",
+                    FontSize = 11, Opacity = 0.6, TextWrapping = TextWrapping.Wrap
+                },
+                minimal,
+                full,
+                start
+            }
         };
     }
+
+    /// <summary>包档位对比表：不安装 / 精简解码包 / 完整包的能力差异（原生 DataGrid）。</summary>
+    private Control BuildComparisonTable()
+    {
+        const string no = "✗";
+        const string yes = "✓";
+        var rows = new List<FfmpegComparisonRow>
+        {
+            new("动态视频背景", no, yes, yes),
+            new("编辑器预览 / 素材播放", no, yes, yes),
+            new("剪辑渲染 / 压缩转码（编码）", no, no, yes),
+            new("下载体积", "—", "约 7 MB", "约 50 MB"),
+        };
+
+        var grid = new DataGrid
+        {
+            ItemsSource = rows,
+            AutoGenerateColumns = false,
+            IsReadOnly = true,
+            HeadersVisibility = DataGridHeadersVisibility.All,
+            GridLinesVisibility = DataGridGridLinesVisibility.Horizontal,
+            CanUserReorderColumns = false,
+            CanUserResizeColumns = false,
+            CanUserSortColumns = false,
+            RowHeight = 26,
+            MaxHeight = 170,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Margin = new Thickness(0, 4, 0, 0)
+        };
+        grid.Columns.Add(new DataGridTemplateColumn
+        {
+            Header = "功能",
+            Width = new DataGridLength(1, DataGridLengthUnitType.Star),
+            CellTemplate = CellTemplate("Feature", null, center: false)
+        });
+        grid.Columns.Add(new DataGridTemplateColumn { Header = "不安装", Width = new DataGridLength(60), CellTemplate = CellTemplate("None", "NoneBrush", center: true) });
+        grid.Columns.Add(new DataGridTemplateColumn { Header = "精简版", Width = new DataGridLength(60), CellTemplate = CellTemplate("Minimal", "MinimalBrush", center: true) });
+        grid.Columns.Add(new DataGridTemplateColumn { Header = "完整版", Width = new DataGridLength(60), CellTemplate = CellTemplate("Full", "FullBrush", center: true) });
+        return grid;
+    }
+
+    /// <summary>对比表行：✓ 用强调色、✗ 弱化灰、体积等文本用默认前景。</summary>
+    private sealed record FfmpegComparisonRow(string Feature, string None, string Minimal, string Full)
+    {
+        public IBrush? NoneBrush => MarkBrush(None);
+        public IBrush? MinimalBrush => MarkBrush(Minimal);
+        public IBrush? FullBrush => MarkBrush(Full);
+
+        private static IBrush? MarkBrush(string s) => s switch
+        {
+            "✓" => ThemePalette.AccentBrush(),
+            "✗" => Brushes.Gray,
+            _ => null
+        };
+    }
+
+    /// <summary>DataGrid 单元格模板：文本 + 可选前景画刷（null = 默认前景）。</summary>
+    private static IDataTemplate CellTemplate(string textPath, string? brushPath, bool center) =>
+        new FuncDataTemplate<object>((_, _) =>
+        {
+            var tb = new TextBlock
+            {
+                FontSize = 11,
+                HorizontalAlignment = center ? HorizontalAlignment.Center : HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = center ? new Thickness(0) : new Thickness(6, 0, 0, 0)
+            };
+            tb.Bind(TextBlock.TextProperty, new Binding(textPath));
+            if (brushPath != null)
+            {
+                tb.Bind(TextBlock.ForegroundProperty, new Binding(brushPath));
+            }
+
+            return tb;
+        });
 
     /// <summary>开始安装指定档位（隐藏选择区，启动下载任务）。</summary>
     private void StartInstall(FfmpegPackageKind kind)
@@ -140,6 +233,16 @@ internal sealed class FfmpegInstallWindow : MyWindow
 
         _installStarted = true;
         _choicePanel.IsVisible = false;
+        // 当前进程已加载 FFmpeg 库（dll 被锁定）：覆盖安装必然失败，直接提示重启，避免白下载再报错。
+        if (FFmpegRuntime.IsLoaded)
+        {
+            _progressBar.IsIndeterminate = false;
+            _stageText.Text = "需要重启";
+            _actionButton.Content = "关闭";
+            AppendLog("✗ 当前进程已加载 FFmpeg 解码库（文件被占用），无法覆盖安装。\n请重启 ClassIsland 后再安装。");
+            return;
+        }
+
         _ = RunInstallAsync(kind);
     }
 
@@ -229,6 +332,14 @@ internal sealed class FfmpegInstallWindow : MyWindow
         _logScroller.Content = _logText;
         _actionButton.HorizontalAlignment = HorizontalAlignment.Right;
         _actionButton.MinWidth = 88;
+        _deleteButton.IsVisible = FFmpegRuntime.IsAvailable;
+        // 底部：左 = 删除已安装库（库就绪时显示），右 = 关闭/取消。
+        var bottomRow = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+            Children = { _deleteButton, _actionButton }
+        };
+        Grid.SetColumn(_actionButton, 1);
 
         return new StackPanel
         {
@@ -242,10 +353,41 @@ internal sealed class FfmpegInstallWindow : MyWindow
                 _stageText,
                 statsRow,
                 _logScroller,
-                _actionButton
+                bottomRow
             }
         };
     }
+
+    /// <summary>确认并彻底删除已安装解码库（库被占用时写入「重启后自动清除」标记）。</summary>
+    private async Task DeleteLibrariesAsync()
+    {
+        var dialog = new ContentDialog
+        {
+            Title = "彻底删除 FFmpeg 解码库",
+            Content = new TextBlock
+            {
+                Text = "将删除已安装的 FFmpeg 解码库（约 7~50 MB）。删除后动态视频背景、视频编辑器预览与渲染均不可用，需要时重新下载安装即可。\n确定要彻底删除吗？",
+                TextWrapping = TextWrapping.Wrap
+            },
+            PrimaryButtonText = "彻底删除",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Close
+        };
+        if (await ShowDialogAsync(dialog) != ContentDialogResult.Primary)
+        {
+            return;
+        }
+
+        var (success, message) = FFmpegRuntime.DeleteLibraries();
+        FFmpegRuntime.Refresh();
+        AppendLog((success ? "✓ " : "✗ ") + message);
+        _stageText.Text = success ? "已删除" : "删除待完成";
+        _deleteButton.IsVisible = FFmpegRuntime.IsAvailable;
+    }
+
+    /// <summary>以本窗口为宿主弹出 ContentDialog（无参会挂到主界面，点不到）。</summary>
+    private Task<ContentDialogResult> ShowDialogAsync(ContentDialog dialog) =>
+        TopLevel.GetTopLevel(this) is Window host ? dialog.ShowAsync(host) : dialog.ShowAsync();
 
     private static string FormatBytes(double bytes) =>
         bytes >= 1024 * 1024 * 1024 ? $"{bytes / (1024 * 1024 * 1024):0.00} GB"

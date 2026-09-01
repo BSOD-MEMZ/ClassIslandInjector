@@ -1879,31 +1879,55 @@ internal sealed class MainWindowStyleInjector : IDisposable
     }
 
     /// <summary>
-    /// 把单行底纹宿主约束到该行 BackgroundBorder 的实际可见边界内（行模板坐标空间）。
+    /// 把单行底纹宿主约束到该行背景的实际可见边界内（行模板坐标空间）。
+    /// 同时识别非分体的 BackgroundBorder 与分体模式每行根组件的 line-background：
+    /// 分体下宿主隐藏 BackgroundBorder、改由各组件块的 line-background 提供背景，
+    /// 底纹取该行所有背景 Border 的并集（与底图/视频覆盖层同款策略）。
     /// </summary>
     private void PositionTextureHost(Border host, Grid gridRoot)
     {
-        var background = gridRoot.GetVisualDescendants().OfType<Border>()
-            .FirstOrDefault(x => x.Name == HostContract.BackgroundBorder && x.IsVisible && x.Bounds.Width > 0 && x.Bounds.Height > 0);
-        if (background == null)
+        var backgrounds = gridRoot.GetVisualDescendants().OfType<Border>()
+            .Where(x => (x.Name == HostContract.BackgroundBorder || IsSplitComponentBackground(x)) &&
+                        x.IsVisible && x.Bounds.Width > 0 && x.Bounds.Height > 0)
+            .ToArray();
+        if (backgrounds.Length == 0)
         {
             host.IsVisible = false;
             return;
         }
 
-        var topLeft = background.TranslatePoint(new Point(0, 0), gridRoot);
-        if (topLeft == null)
+        // 各背景 Border 相对行模板坐标不同，统一换算到 gridRoot 再求包围盒（分体多块并集）。
+        var minX = double.MaxValue;
+        var minY = double.MaxValue;
+        var maxX = double.MinValue;
+        var maxY = double.MinValue;
+        foreach (var background in backgrounds)
+        {
+            var topLeft = background.TranslatePoint(new Point(0, 0), gridRoot);
+            var bottomRight = background.TranslatePoint(new Point(background.Bounds.Width, background.Bounds.Height), gridRoot);
+            if (topLeft == null || bottomRight == null)
+            {
+                continue;
+            }
+
+            minX = Math.Min(minX, topLeft.Value.X);
+            minY = Math.Min(minY, topLeft.Value.Y);
+            maxX = Math.Max(maxX, bottomRight.Value.X);
+            maxY = Math.Max(maxY, bottomRight.Value.Y);
+        }
+
+        if (minX > maxX || minY > maxY)
         {
             host.IsVisible = false;
             return;
         }
 
         host.IsVisible = true;
-        host.Width = background.Bounds.Width;
-        host.Height = background.Bounds.Height;
+        host.Width = maxX - minX;
+        host.Height = maxY - minY;
         host.HorizontalAlignment = HorizontalAlignment.Left;
         host.VerticalAlignment = VerticalAlignment.Top;
-        host.Margin = new Thickness(topLeft.Value.X, topLeft.Value.Y, 0, 0);
+        host.Margin = new Thickness(minX, minY, 0, 0);
         UpdateTextureClip(host);
     }
 
@@ -2055,7 +2079,11 @@ internal sealed class MainWindowStyleInjector : IDisposable
         StopVideoProjectPlayer();
         _videoSource?.Dispose();
         _videoSource = null;
-        var source = new VideoFrameSource();
+        var source = new VideoFrameSource
+        {
+            // 自动硬解：FFmpeg 包编译了 D3D11VA 硬解时走硬解，否则解码器内部自动回退软解。
+            HardwareDecoder = _settings.RenderHardwareAccelerated ? "auto" : null
+        };
         if (!source.Open(path, _settings.VideoFillMaxDimension))
         {
             RemoveVideoFill();
@@ -2136,7 +2164,11 @@ internal sealed class MainWindowStyleInjector : IDisposable
         SyncVideoTrackLayers(project);
         _videoProjectSignature = signature;
         _videoProjectPlayer = new VideoProjectPlayer(project, _settings.VideoFillMaxDimension,
-            (int)_settings.VideoFillTargetFps, OnProjectFrame);
+            (int)_settings.VideoFillTargetFps, OnProjectFrame)
+        {
+            // 自动硬解：包/驱动支持 D3D11VA 时走硬解，否则播放器内部回退软解。
+            HardwareDecoder = _settings.RenderHardwareAccelerated ? "auto" : null
+        };
         _videoProjectPlayer.Start();
         UpdateVideoFillBounds();
     }

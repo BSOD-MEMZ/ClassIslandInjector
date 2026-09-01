@@ -143,6 +143,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     /// <summary>FFmpeg 解码库缺失提示（缺失时显示，含下载按钮）。</summary>
     private InfoBar _ffmpegInfoBar = null!;
     private Button _ffmpegDownloadButton = null!;
+    /// <summary>FFmpeg 解码库删除按钮（库已就绪时显示，彻底删除已安装解码包）。</summary>
+    private Button _ffmpegDeleteButton = null!;
     private readonly TextBlock _ffmpegStatusText = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.8 };
     /// <summary>自定义 FFmpeg 下载源输入（用户自建镜像，始终可编辑，不受库可用性禁用）。</summary>
     private readonly TextBox _customFfmpegUrl = new()
@@ -879,12 +881,11 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         {
             panel.Children.Add(new InfoBar
             {
-                Severity = InfoBarSeverity.Warning,
-                Title = "检测到分体主界面",
-                Message = "本插件暂不支持 ClassIsland 的分体主界面模式，请关闭分体主界面。",
+                Severity = InfoBarSeverity.Informational,
+                Title = "分体主界面模式",
+                Message = "已适配分体主界面：底色/边框/阴影、分体块独立配色、底图/视频背景与底纹纹理均可用。",
                 IsOpen = true,
-                IsClosable = false,
-                ActionButton = Button("去关闭分体主界面", OpenAppearanceSettings)
+                IsClosable = false
             });
         }
         if (MainWindowStyleInjector.IsMultiLineMode())
@@ -1044,6 +1045,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         // 并在组下方显示 InfoBar 引导联机下载。
         _ffmpegDownloadButton = Button("下载 FFmpeg 解码库", OpenFfmpegInstaller);
         _ffmpegDownloadButton.Name = "FfmpegDownloadButton";
+        _ffmpegDeleteButton = Button("删除已安装库", DeleteFfmpegLibraries);
+        _ffmpegDeleteButton.Name = "FfmpegDeleteButton";
         _ffmpegStatusText.Text = string.Empty;
         _ffmpegInfoBar = new InfoBar
         {
@@ -3409,6 +3412,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _ffmpegInfoBar.IsOpen = !available;
         _ffmpegInfoBar.Severity = available ? InfoBarSeverity.Success : InfoBarSeverity.Warning;
         _ffmpegInfoBar.Title = available ? "FFmpeg 库已就绪" : "缺少 FFmpeg 库";
+        // 操作按钮随可用性切换：缺失 = 下载引导；就绪 = 删除已安装库。
+        _ffmpegInfoBar.ActionButton = available ? _ffmpegDeleteButton : _ffmpegDownloadButton;
         if (available)
         {
             // 已就绪：轻量加载后区分精简解码包与完整包（剪辑渲染需要完整包）。
@@ -3447,6 +3452,33 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         var window = new VideoEditorWindow();
         window.Closed += (_, _) => Dispatcher.UIThread.Post(LoadFromSettings);
         window.Show();
+    }
+
+    /// <summary>彻底删除已安装的 FFmpeg 解码库（确认后执行；库正被占用时写入「重启后自动清除」标记）。</summary>
+    private async void DeleteFfmpegLibraries()
+    {
+        var dialog = new ContentDialog
+        {
+            Title = "彻底删除 FFmpeg 解码库",
+            Content = new TextBlock
+            {
+                Text = "将删除已安装的 FFmpeg 解码库（约 7~50 MB）。删除后动态视频背景、视频编辑器预览与渲染均不可用，需要时重新下载安装即可。\n确定要彻底删除吗？",
+                TextWrapping = TextWrapping.Wrap
+            },
+            PrimaryButtonText = "彻底删除",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Close
+        };
+        if (await ShowDialogAsync(dialog) != ContentDialogResult.Primary)
+        {
+            return;
+        }
+
+        var (success, message) = FFmpegRuntime.DeleteLibraries();
+        FFmpegRuntime.Refresh();
+        RefreshFfmpegAvailability();
+        ShowReminder(message, success ? InfoBarSeverity.Success : InfoBarSeverity.Warning,
+            success ? "已删除" : "删除待完成");
     }
 
     /// <summary>打开 FFmpeg 解码库安装器窗口（仿 Linux 软件包管理器，含进度/速度/剩余时间估算）。</summary>

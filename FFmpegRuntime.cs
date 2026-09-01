@@ -50,6 +50,9 @@ public static class FFmpegRuntime
     /// <summary>内置默认下载源（完整包，用户自建镜像）。解码 + 编码（libx264），剪辑渲染必需。</summary>
     public const string FullSourceUrl = "https://xxtsoft.top/support/injector/ffmpeg-8.1-win64-shared-full.zip";
 
+    /// <summary>「重启后彻底删除」标记文件名（删除时库正被进程占用时写入，下次启动自动清空剩余文件）。</summary>
+    private const string PendingDeleteFlag = "_delete-on-restart";
+
     /// <summary>是否已安装全部所需解码库。</summary>
     public static bool IsAvailable { get; private set; }
 
@@ -73,10 +76,24 @@ public static class FFmpegRuntime
 
     private static bool _loaded;
 
+    /// <summary>当前进程是否已加载过 FFmpeg 库（dll 被加载后锁定，覆盖安装需重启宿主才能生效）。</summary>
+    public static bool IsLoaded => _loaded;
+
+    /// <summary>安装时覆盖所需 dll 失败：目标文件正被当前进程加载占用（如已装精简库后升级完整包）。</summary>
+    private sealed class FfmpegLibraryInUseException : IOException
+    {
+        public FfmpegLibraryInUseException(string message, Exception inner) : base(message, inner)
+        {
+        }
+    }
+
     /// <summary>初始化：设置库目录并检测可用性。App 启动时调用一次。</summary>
     public static void Initialize(string libraryDirectory)
     {
         LibraryDirectory = libraryDirectory;
+        // 上次「彻底删除」因库正被进程占用而残留了待删标记：此时尚未加载任何 dll，
+        // 趁启动早期清空剩余文件（见 DeleteLibraries），保证删除真正彻底。
+        PurgePendingDelete();
         Refresh();
     }
 
@@ -120,6 +137,133 @@ public static class FFmpegRuntime
             _loaded = false;
             EncoderAvailable = false;
         }
+    }
+
+    /// <summary>
+    /// 若有「重启后删除」标记（上次彻底删除时库正被本进程占用），趁库尚未加载清空目录并移除标记。
+    /// 启动早期没有任何 dll 被加载，此时删除不会被锁定，可实现“彻底删除”的最终落定。
+    /// </summary>
+    private static void PurgePendingDelete()
+    {
+        if (string.IsNullOrEmpty(LibraryDirectory) || !Directory.Exists(LibraryDirectory))
+        {
+            return;
+        }
+
+        var marker = Path.Combine(LibraryDirectory, PendingDeleteFlag);
+        if (!File.Exists(marker))
+        {
+            return;
+        }
+
+        var allOk = true;
+        foreach (var file in Directory.EnumerateFiles(LibraryDirectory, "*", SearchOption.AllDirectories))
+        {
+            if (string.Equals(file, marker, StringComparison.OrdinalIgnoreCase))
+            {
+                continue; // 标记文件最后再删。
+            }
+
+            try
+            {
+                File.Delete(file);
+            }
+            catch
+            {
+                allOk = false; // 仍有文件被占用：保留标记，下次启动再清。
+            }
+        }
+
+        if (allOk)
+        {
+            try
+            {
+                File.Delete(marker);
+            }
+            catch
+            {
+                // 标记删除失败不影响（下次启动再清）。
+            }
+        }
+    }
+
+    /// <summary>
+    /// 彻底删除已安装的 FFmpeg 解码库（清空库目录并重置运行时状态）。
+    /// 若当前进程已加载库（dll 被锁定）导致部分文件无法删除，会写入「重启后删除」标记，
+    /// 下次启动时自动清空剩余文件——因此删除总能彻底完成，不受进程占用阻碍。
+    /// </summary>
+    public static (bool Success, string Message) DeleteLibraries()
+    {
+        if (string.IsNullOrEmpty(LibraryDirectory))
+        {
+            Refresh();
+            return (true, "未安装 FFmpeg 解码库，无需删除。");
+        }
+
+        var locked = new List<string>();
+        var deleted = 0;
+        if (Directory.Exists(LibraryDirectory))
+        {
+            foreach (var file in Directory.EnumerateFiles(LibraryDirectory, "*", SearchOption.AllDirectories))
+            {
+                if (string.Equals(Path.GetFileName(file), PendingDeleteFlag, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    File.Delete(file);
+                    deleted++;
+                }
+                catch
+                {
+                    locked.Add(Path.GetFileName(file));
+                }
+            }
+        }
+
+        LastError = null;
+        Refresh(); // 重置 IsAvailable / _loaded / EncoderAvailable / MissingLibraries。
+
+        if (locked.Count == 0)
+        {
+            // 目录已清空，尝试删除整个 ffmpeg 目录。
+            try
+            {
+                if (Directory.Exists(LibraryDirectory) && !Directory.EnumerateFileSystemEntries(LibraryDirectory).Any())
+                {
+                    Directory.Delete(LibraryDirectory, true);
+                }
+            }
+            catch
+            {
+                // 目录删除失败不影响结果。
+            }
+
+            return (true, deleted == 0
+                ? "未安装 FFmpeg 解码库，无需删除。"
+                : $"已彻底删除 FFmpeg 解码库（{deleted} 个文件）。");
+        }
+
+        // 有文件正被进程占用：写「重启后删除」标记，下次启动自动清空剩余文件。
+        var markerWritten = false;
+        try
+        {
+            Directory.CreateDirectory(LibraryDirectory);
+            File.WriteAllText(Path.Combine(LibraryDirectory, PendingDeleteFlag), DateTime.Now.ToString("O"));
+            markerWritten = true;
+        }
+        catch
+        {
+            // 标记写入失败：只能提示重启后手动删除。
+        }
+
+        return (false,
+            $"已删除 {deleted} 个文件；{locked.Count} 个文件正被当前进程占用（{string.Join("、", locked)}）。\n" +
+            (markerWritten
+                ? "重启 ClassIsland 后剩余文件会自动彻底清除。"
+                : "请重启 ClassIsland 后再删除（重启后这些文件不再被占用）。"));
     }
 
     /// <summary>
@@ -280,7 +424,18 @@ public static class FFmpegRuntime
                     }
 
                     Report(progress, "正在解压 FFmpeg 解码库…", indeterminate: true, log: "→ 下载完成，正在解压…");
-                    var installed = ExtractRequiredLibraries(tempZip, kind == FfmpegPackageKind.Full);
+                    List<string>? installed;
+                    try
+                    {
+                        installed = ExtractRequiredLibraries(tempZip, kind == FfmpegPackageKind.Full);
+                    }
+                    catch (FfmpegLibraryInUseException ex)
+                    {
+                        // 目标 dll 正被当前进程加载占用，换任何下载源都同样无法覆盖，直接给出明确指引。
+                        Report(progress, "安装失败：库文件被占用", indeterminate: true, log: "✗ " + ex.Message);
+                        return (false, ex.Message);
+                    }
+
                     if (installed != null)
                     {
                         Refresh();
@@ -394,6 +549,14 @@ public static class FFmpegRuntime
                     installed.Add(target);
                 }
             }
+        }
+        catch (IOException ex)
+        {
+            // 覆盖写入失败 = 目标 dll 正被当前进程加载占用（已装精简库后覆盖完整包）。
+            // 换任何下载源结果都一样，抛给 InstallAsync 给出明确指引，不再误报“版本不匹配”。
+            throw new FfmpegLibraryInUseException(
+                "所需解码库文件正被当前进程占用（已加载 FFmpeg 库），无法覆盖写入。\n" +
+                "请重启 ClassIsland 后再安装。", ex);
         }
         catch
         {

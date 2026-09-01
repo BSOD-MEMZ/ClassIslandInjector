@@ -90,9 +90,16 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
                 return false;
             }
 
-            var name = Marshal.PtrToStringAnsi((IntPtr)codec->name);
+            var name = Marshal.PtrToStringAnsi((IntPtr)codec->name) ?? "h264";
             var softCodec = codec;
             var hwName = HardwareDecoder;
+            if (string.Equals(hwName, "auto", StringComparison.OrdinalIgnoreCase))
+            {
+                // 自动硬解：按流实际编码类型选 D3D11VA 解码器（h264_d3d11va / hevc_d3d11va 等）。
+                // 包未编译硬解 / 驱动不支持时 avcodec_find_decoder_by_name 返回 null → 走下方软解回退。
+                hwName = $"{name}_d3d11va";
+            }
+
             if (!string.IsNullOrWhiteSpace(hwName))
             {
                 // 硬件解码尝试：包内有同名解码器且流编码类型匹配时用之；hwdevice 创建失败则回退软解。
@@ -260,9 +267,9 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
 
                         if (ffmpeg.av_hwframe_transfer_data(_hwFrame, _frame, 0) < 0)
                         {
-                            Log("av_hwframe_transfer_data 失败");
-                            ffmpeg.av_packet_unref(_pkt);
-                            return false;
+                            // 单帧回读失败（GPU 瞬时故障）跳过该帧，不中断整条播放。
+                            Log("av_hwframe_transfer_data 失败，跳过该帧");
+                            continue;
                         }
 
                         src = _hwFrame;
