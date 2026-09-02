@@ -51,14 +51,14 @@ internal sealed class FfmpegInstallWindow : MyWindow
         _fixedKind = kind;
         Title = "FFmpeg 库安装器";
         Width = 480;
-        Height = 530;
+        Height = 490;
         CanResize = false;   // 禁止拖拽边缘调整大小
         CanMaximize = false; // 禁止最大化
         // 与 Min/Max 相等：彻底锁死尺寸。
         MinWidth = 480;
         MaxWidth = 480;
-        MinHeight = 530;
-        MaxHeight = 530;
+        MinHeight = 490;
+        MaxHeight = 490;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         // Progress<T> 捕获创建时的同步上下文（UI 线程），回调自动 marshal 回 UI 线程。
         _progress = new Progress<FfmpegInstallProgress>(ApplyProgress);
@@ -100,7 +100,7 @@ internal sealed class FfmpegInstallWindow : MyWindow
                     new TextBlock { Text = "精简解码包（约 7 MB）", FontWeight = FontWeight.SemiBold },
                     new TextBlock
                     {
-                        Text = "仅解码：动态壁纸、视频预览播放。体积小，推荐只做动态壁纸时选择。",
+                        Text = "仅解码：动态壁纸、视频预览。",
                         FontSize = 11, Opacity = 0.65, TextWrapping = TextWrapping.Wrap
                     }
                 }
@@ -116,7 +116,7 @@ internal sealed class FfmpegInstallWindow : MyWindow
                     new TextBlock { Text = "完整包（约 50 MB）", FontWeight = FontWeight.SemiBold },
                     new TextBlock
                     {
-                        Text = "解码 + H.264/HEVC 编码：渲染视频剪辑、素材压缩转码必需（含精简包全部能力）。",
+                        Text = "解码+编码：剪辑渲染、素材压缩转码。",
                         FontSize = 11, Opacity = 0.65, TextWrapping = TextWrapping.Wrap
                     }
                 }
@@ -137,7 +137,7 @@ internal sealed class FfmpegInstallWindow : MyWindow
                 BuildComparisonTable(),
                 new TextBlock
                 {
-                    Text = "注：当前镜像的 FFmpeg 构建未编译硬解（D3D11VA），精简与完整包均为软件解码；完整包仅额外提供编码能力（剪辑渲染 / 压缩转码）。",
+                    Text = "注：均为软解（构建未含硬解）；完整包额外支持编码。",
                     FontSize = 11, Opacity = 0.6, TextWrapping = TextWrapping.Wrap
                 },
                 minimal,
@@ -170,8 +170,8 @@ internal sealed class FfmpegInstallWindow : MyWindow
             CanUserReorderColumns = false,
             CanUserResizeColumns = false,
             CanUserSortColumns = false,
-            RowHeight = 26,
-            MaxHeight = 170,
+            RowHeight = 20,
+            MaxHeight = 120,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
             Margin = new Thickness(0, 4, 0, 0)
@@ -237,25 +237,27 @@ internal sealed class FfmpegInstallWindow : MyWindow
         if (FFmpegRuntime.IsLoaded)
         {
             _progressBar.IsIndeterminate = false;
+            SetProgressVisible(false);
             _stageText.Text = "需要重启";
             _actionButton.Content = "关闭";
             AppendLog("✗ 当前进程已加载 FFmpeg 解码库（文件被占用），无法覆盖安装。\n请重启 ClassIsland 后再安装。");
             return;
         }
 
+        SetProgressVisible(true);
         _ = RunInstallAsync(kind);
     }
 
     private bool _installStarted;
 
-    /// <summary>启动安装任务（窗口打开后触发）。完成后更新 UI 为结果状态。</summary>
+    /// <summary>启动安装任务（窗口打开后触发）。完成后更新 UI 为结果状态（隐藏进度条与统计）。</summary>
     private async Task RunInstallAsync(FfmpegPackageKind kind)
     {
         try
         {
             var (success, message) = await FFmpegRuntime.InstallAsync(kind, _progress, _cts.Token);
             _progressBar.IsIndeterminate = false;
-            _progressBar.Value = success ? 100 : 0;
+            SetProgressVisible(false); // 安装结束：进度条与速度/剩余时间不再有意义，隐藏。
             _stageText.Text = success ? "安装完成" : "安装失败";
             _actionButton.Content = "关闭";
             AppendLog((success ? "✓ " : "✗ ") + message);
@@ -263,10 +265,20 @@ internal sealed class FfmpegInstallWindow : MyWindow
         catch (Exception ex)
         {
             _progressBar.IsIndeterminate = false;
+            SetProgressVisible(false);
             _stageText.Text = "安装中断";
             _actionButton.Content = "关闭";
             AppendLog($"✗ {ex.Message}");
         }
+    }
+
+    /// <summary>显示 / 隐藏下载进度区（进度条 + 速度/剩余时间统计）。</summary>
+    private void SetProgressVisible(bool visible)
+    {
+        _progressBar.IsVisible = visible;
+        _bytesText.IsVisible = visible;
+        _speedText.IsVisible = visible;
+        _etaText.IsVisible = visible;
     }
 
     /// <summary>消费进度快照，更新进度条 / 速度 / 剩余时间 / 日志。</summary>
@@ -312,8 +324,7 @@ internal sealed class FfmpegInstallWindow : MyWindow
                 new TextBlock { Text = "FFmpeg 库安装", FontSize = 18, FontWeight = FontWeight.SemiBold },
                 new TextBlock
                 {
-                    Text = "版本 " + FFmpegRuntime.FfmpegVersion +
-                           " · FFmpeg 共享库（avcodec / avformat / avutil / swscale / swresample）",
+                    Text = $"FFmpeg {FFmpegRuntime.FfmpegVersion} 共享解码库",
                     FontSize = 12,
                     Opacity = 0.6,
                     TextWrapping = TextWrapping.Wrap
@@ -343,8 +354,8 @@ internal sealed class FfmpegInstallWindow : MyWindow
 
         return new StackPanel
         {
-            Margin = new Thickness(24),
-            Spacing = 10,
+            Margin = new Thickness(20),
+            Spacing = 8,
             Children =
             {
                 header,

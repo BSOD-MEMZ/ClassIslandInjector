@@ -102,8 +102,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private string _lastReminder = string.Empty;
     private DateTime _lastReminderAt;
     /// <summary>分体块勾选列表（键 = 组件 Id，值 = 复选框）。</summary>
-    private readonly StackPanel _splitBlockList = new() { Spacing = 4 };
-    private readonly Dictionary<string, CheckBox> _splitBlockChecks = [];
+    private readonly StackPanel _splitBlockList = new() { Spacing = 6 };
+    private readonly Dictionary<string, ToggleSwitch> _splitBlockChecks = [];
     private readonly ToggleSwitch _gradient = Toggle();
     private readonly ColorPicker _gradientEndColor = ColorPicker();
     private readonly ComboBox _gradientDirection = Combo(GradientDirections);
@@ -1534,18 +1534,18 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     /// <summary>分体块列表 + 操作按钮（刷新 / 全选 / 清空）。</summary>
     private Control SplitBlockListFooter() => new StackPanel
     {
-        Spacing = 4,
+        Spacing = 6,
         Children =
         {
             new StackPanel
             {
                 Orientation = Orientation.Horizontal,
-                Spacing = 4,
+                Spacing = 6,
                 Children =
                 {
-                    Button("刷新分块列表", RefreshSplitBlockList),
+                    Button("刷新", RefreshSplitBlockList),
                     Button("全选", SelectAllSplitBlocks),
-                    Button("清空选择", ClearSplitBlockSelection)
+                    Button("清空", ClearSplitBlockSelection)
                 }
             },
             _splitBlockList
@@ -1572,32 +1572,34 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         var lineGroups = blocks.GroupBy(b => b.LineNumber).OrderBy(g => g.Key).ToList();
         foreach (var lineGroup in lineGroups)
         {
-            if (lineGroups.Count > 1 || lineGroup.Key != 0)
+            // Fluent 风格：每行一个 SettingsExpander，分块为带开关的项。
+            var expander = new SettingsExpander
             {
-                _splitBlockList.Children.Add(new TextBlock
+                IconSource = new FluentIconSource("\uE51F"),
+                Header = lineGroups.Count > 1 ? $"第 {lineGroup.Key + 1} 行" : "分体块",
+                Description = "开关某个分块，即把下方「底色填充」的当前配置应用到这个块（所见即所得）",
+                IsExpanded = true
+            };
+            foreach (var block in lineGroup)
+            {
+                var toggle = new ToggleSwitch
                 {
-                    Text = $"第 {lineGroup.Key + 1} 行",
-                    FontWeight = FontWeight.SemiBold,
-                    Margin = new Thickness(0, 4, 0, 0),
-                    Opacity = 0.8
+                    // 已配置独立配色的分块默认开启（程序性赋值不触发 Click，不会误写盘）。
+                    IsChecked = InjectorRuntime.Settings.SplitBlockBackgrounds.ContainsKey(block.Id)
+                };
+                // 开关变化即用当前「底色填充」配置同步该分块（开哪些改哪些）。
+                toggle.Click += (_, _) => SyncSplitBlocksToBackground();
+                _splitBlockChecks[block.Id] = toggle;
+                expander.Items.Add(new SettingsExpanderItem
+                {
+                    IconSource = new FluentIconSource("\uE51F"),
+                    Content = block.Name,
+                    Description = "独立配色：应用当前底色填充配置",
+                    Footer = toggle
                 });
             }
 
-            foreach (var block in lineGroup)
-            {
-                var check = new CheckBox
-                {
-                    Content = block.Name,
-                    VerticalAlignment = VerticalAlignment.Center,
-                    Margin = new Thickness(12, 0, 0, 0),
-                    // 已配置独立配色的分块默认勾选（程序性赋值不触发 Click，不会误写盘）。
-                    IsChecked = InjectorRuntime.Settings.SplitBlockBackgrounds.ContainsKey(block.Id)
-                };
-                // 勾选变化即用当前「底色填充」配置同步该分块（勾哪些改哪些）。
-                check.Click += (_, _) => SyncSplitBlocksToBackground();
-                _splitBlockChecks[block.Id] = check;
-                _splitBlockList.Children.Add(check);
-            }
+            _splitBlockList.Children.Add(expander);
         }
     }
 

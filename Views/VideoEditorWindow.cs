@@ -2711,35 +2711,78 @@ internal sealed class VideoEditorWindow : MyWindow
         }
     }
 
-    /// <summary>重建文字模板面板（文字工具时点击模板添加文本片段到播放头）。</summary>
+    /// <summary>重建文字模板面板（文字工具时：点击模板添加到播放头；按住可拖到时间轴指定轨道/位置）。</summary>
     private void RefreshTextTemplates()
     {
         _textTemplatesPanel.Children.Clear();
         foreach (var (name, text) in TextTemplates)
         {
+            var payload = $"text:{name}";
             var preview = new TextBlock
             {
                 Text = text,
                 FontSize = 15,
                 FontWeight = FontWeight.SemiBold,
-                HorizontalAlignment = HorizontalAlignment.Center
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Margin = new Thickness(8, 10, 8, 2)
             };
             var caption = new TextBlock
             {
                 Text = name,
                 FontSize = 10,
                 Opacity = 0.6,
-                HorizontalAlignment = HorizontalAlignment.Center
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Margin = new Thickness(8, 0, 8, 8)
             };
-            var btn = new Button
+            var item = new Border
             {
-                Content = new StackPanel { Spacing = 2, Children = { preview, caption } },
                 Width = 148,
                 Margin = new Thickness(2),
-                HorizontalContentAlignment = HorizontalAlignment.Center
+                CornerRadius = new CornerRadius(6),
+                Background = new SolidColorBrush(Color.FromArgb(30, 255, 255, 255)),
+                BorderBrush = Brushes.Transparent,
+                BorderThickness = new Thickness(1.5),
+                Cursor = new Cursor(StandardCursorType.Hand),
+                Child = new StackPanel { Children = { preview, caption } }
             };
-            btn.Click += (_, _) => AddTextTemplateClip(text, name);
-            _textTemplatesPanel.Children.Add(btn);
+            Point? press = null;
+            var dragged = false;
+            item.PointerPressed += (_, e) =>
+            {
+                press = e.GetPosition(item);
+                dragged = false;
+            };
+            // 按住左键移动超过阈值 = 开始拖拽（载荷 text:模板名，时间轴放置时创建文本片段）。
+            item.PointerMoved += (_, e) =>
+            {
+                if (press is not { } p || !e.GetCurrentPoint(item).Properties.IsLeftButtonPressed)
+                {
+                    return;
+                }
+
+                if (!dragged)
+                {
+                    var cur = e.GetPosition(item);
+                    if (Math.Abs(cur.X - p.X) < 4 && Math.Abs(cur.Y - p.Y) < 4)
+                    {
+                        return; // 尚未超过拖拽阈值
+                    }
+                }
+
+                dragged = true;
+                var data = new DataObject();
+                data.Set(DataFormats.Text, payload);
+                DragDrop.DoDragDrop(e, data, DragDropEffects.Copy);
+            };
+            // 无拖拽的轻点 = 点击添加（到当前播放头/选中轨道）；拖拽过的释放不再触发点击。
+            item.PointerReleased += (_, _) =>
+            {
+                if (!dragged)
+                {
+                    AddTextTemplateClip(text, name);
+                }
+            };
+            _textTemplatesPanel.Children.Add(item);
         }
     }
 
@@ -2784,11 +2827,28 @@ internal sealed class VideoEditorWindow : MyWindow
         }
     }
 
+    /// <summary>轻量刷新形状/滤镜库选中高亮（不重建面板，避免打断卡片拖拽）。</summary>
+    private void UpdateLibrarySelectionHighlight()
+    {
+        foreach (var child in _libraryPanel.Children)
+        {
+            if (child is not Border b || b.Tag is not string payload)
+            {
+                continue;
+            }
+
+            var selected = payload.StartsWith("shape:") && payload["shape:".Length..] == _currentShape;
+            b.BorderBrush = selected ? ThemePalette.AccentBrush() : Brushes.Transparent;
+            b.BorderThickness = new Thickness(selected ? 1.5 : 0);
+        }
+    }
+
     /// <summary>构建库列表行（紧凑：名称 + 拖到时间轴；点击选中与卡片一致）。</summary>
     private Border BuildLibraryRow(string name, string payload, bool selected)
     {
         var item = new Border
         {
+            Tag = payload,
             Margin = new Thickness(1),
             CornerRadius = new CornerRadius(4),
             Background = new SolidColorBrush(Color.FromArgb(30, 255, 255, 255)),
@@ -2807,7 +2867,7 @@ internal sealed class VideoEditorWindow : MyWindow
             if (_currentTool == "shape")
             {
                 _currentShape = payload["shape:".Length..];
-                RefreshLibraryCards();
+                UpdateLibrarySelectionHighlight();
             }
         };
         item.PointerMoved += (_, e) =>
@@ -2836,6 +2896,7 @@ internal sealed class VideoEditorWindow : MyWindow
         };
         var item = new Border
         {
+            Tag = payload,
             Width = 104,
             Margin = new Thickness(2),
             CornerRadius = new CornerRadius(4),
@@ -2867,7 +2928,7 @@ internal sealed class VideoEditorWindow : MyWindow
             if (_currentTool == "shape")
             {
                 _currentShape = payload["shape:".Length..];
-                RefreshLibraryCards();
+                UpdateLibrarySelectionHighlight();
             }
         };
         // 按住拖到时间轴（数据为 shape:/filter: 前缀，时间轴放置时创建对应片段）。
@@ -4326,6 +4387,36 @@ internal sealed class VideoEditorWindow : MyWindow
             };
             _project.Clips.Add(clip);
         }
+        else if (text.StartsWith("text:", StringComparison.Ordinal))
+        {
+            // 文字模板拖入：在目标轨道/位置新增文本覆盖层片段（内容 = 模板文字）。
+            var tname = text["text:".Length..];
+            var ttext = "文本";
+            foreach (var (n, t) in TextTemplates)
+            {
+                if (n == tname)
+                {
+                    ttext = t;
+                    break;
+                }
+            }
+
+            clip = new VideoClip
+            {
+                Kind = "Text",
+                Shape = "Rect",
+                Text = ttext,
+                Color = "#FFFFEB3B",
+                Track = 0,
+                StartTime = startTime,
+                InPoint = 0,
+                OutPoint = 5,
+                Scale = 1,
+                ScaleX = 1,
+                ScaleY = 1
+            };
+            _project.Clips.Add(clip);
+        }
         else if (isFilter)
         {
             // 滤镜库拖入：始终放到最高的新轨道（滤镜作用于其下方所有画面）。
@@ -4387,9 +4478,11 @@ internal sealed class VideoEditorWindow : MyWindow
 
             clip.StartTime = startTime;
             // 同轨不允许堆叠：落点被占时自动挪到最近空位。
+            var overlapped = false;
             if (!FitsOnTrack(clip.Track, clip.StartTime, clip.Duration, clip))
             {
                 clip.StartTime = FitToTrack(clip, clip.StartTime, clip.Track);
+                overlapped = true;
                 _statusText.Text = "目标位置与同轨素材重叠，已自动放到最近空位（素材不会堆叠）。";
             }
 
@@ -4403,6 +4496,16 @@ internal sealed class VideoEditorWindow : MyWindow
                 _statusText.Text = affects
                     ? $"已添加「{FilterName(clip.Filter)}」滤镜（作用于其下方轨道 {clip.StartTime:0.#}s 起的画面）。"
                     : "提示：滤镜只作用于更低轨道的画面——先把视频片段放到更低的轨道，滤镜才会生效。";
+            }
+            else if (!isMove && !overlapped)
+            {
+                // 素材/形状/文字拖入成功：给出简明提示（不覆盖上面的重叠提示）。
+                _statusText.Text = clip.Kind switch
+                {
+                    "Shape" => $"已添加「{ShapeName(clip.Shape)}」形状（右侧可改颜色/变换）。",
+                    "Text" => "已添加文本覆盖层（右侧可编辑文字与颜色）。",
+                    _ => $"已添加素材（时长 {clip.Duration:0.#}s）。"
+                };
             }
         }
 
