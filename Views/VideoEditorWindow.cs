@@ -6129,14 +6129,7 @@ internal sealed class VideoEditorWindow : MyWindow
                 {
                     statusText,
                     bar,
-                    etaText,
-                    new TextBlock
-                    {
-                        Text = "渲染期间窗口被占用；可「后台渲染」关闭窗口继续跑。",
-                        Opacity = 0.5,
-                        FontSize = 11,
-                        TextWrapping = TextWrapping.Wrap
-                    }
+                    etaText
                 }
             },
             PrimaryButtonText = "取消",

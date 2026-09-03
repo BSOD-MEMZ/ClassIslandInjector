@@ -170,8 +170,18 @@ internal sealed class MainWindowStyleInjector : IDisposable
         public WriteableBitmap? Bitmap;
     }
     /// <summary>每行主界面的底纹宿主（键为 MainWindowLine 模板 GridRoot），
-    /// 插在底色填充之上、组件内容之下。</summary>
+    /// 插在底色填充之上、组件内容之下。用于非分体模式，以及分体模式下的动态频谱（行级）。</summary>
     private readonly Dictionary<Grid, Border> _textureHosts = [];
+    /// <summary>分体模式下每个分块的静态底纹宿主（键 = 分块 line-background Border），
+    /// 插在该块底色之上、内容之下。仅当分体且全局为静态纹理时启用（逐块覆盖/清除）。</summary>
+    private readonly Dictionary<Border, Border> _blockTextureHosts = [];
+    /// <summary>当前是否处于「分体逐块底纹」模式（用于切换行级/逐块宿主时的一次性清理）。</summary>
+    private bool _blockTextureActive;
+    /// <summary>分体模式下每个分块的专属背景图宿主（键 = 分块 line-background Border），
+    /// 插在该块底色之上、底纹之下；未设置的块保持透明透出整岛底图。</summary>
+    private readonly Dictionary<Border, Border> _blockWallpaperHosts = [];
+    /// <summary>专属图宿主当前装入的位图（释放管理）。</summary>
+    private readonly Dictionary<Border, Bitmap> _blockWallpaperBitmaps = [];
     /// <summary>当前底纹画刷（随设置变更重建）。</summary>
     private IBrush? _textureBrush;
     /// <summary>动态频谱底纹：系统声音输出回环捕获器（仅 Spectrum 纹理时启用）。</summary>
@@ -719,6 +729,12 @@ internal sealed class MainWindowStyleInjector : IDisposable
     {
         if (!_settings.Enabled || _mainWindow == null || _islandRoot == null)
         {
+            // 停用 / 无主窗口：释放分块专属背景图宿主。
+            if (_blockWallpaperHosts.Count > 0)
+            {
+                RemoveBlockWallpaperHosts();
+            }
+
             DebugLog($"OnStateTick 提前返回: enabled={_settings.Enabled}, mainWindow={_mainWindow != null}, islandRoot={_islandRoot != null}");
             return;
         }
@@ -737,7 +753,18 @@ internal sealed class MainWindowStyleInjector : IDisposable
             UpdateVideoFillBounds(descendants);
         }
 
+        // 分块专属背景图（逐块底图）：有块设置了图才逐块同步；否则仅清理残留宿主。
+        if (_settings.SplitBlockBackgrounds.Values.Any(v => v.HasWallpaperOverride && !string.IsNullOrEmpty(v.WallpaperPath)))
+        {
+            UpdateBlockWallpapers(descendants);
+        }
+        else if (_blockWallpaperHosts.Count > 0)
+        {
+            RemoveBlockWallpaperHosts();
+        }
+
         if (_textureHosts.Count > 0 ||
+            _blockTextureHosts.Count > 0 ||
             (_settings.Enabled && _settings.BackgroundTextureType != BackgroundTexture.None))
         {
             UpdateTextureBounds(descendants);
@@ -1836,8 +1863,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
     }
 
     /// <summary>
-    /// 按行同步/定位所有底纹宿主：为每个主界面行的模板 GridRoot 建立宿主，
-    /// 约束到该行 BackgroundBorder 边界，并清理已消失行的宿主。
+    /// 同步/定位所有底纹宿主：
+    /// 非分体模式或全局动态频谱 → 每行一个宿主（行级，跨块连续）；
+    /// 分体模式且全局为静态纹理 → 逐块宿主（每块可继承全局 / 用自己的图案 / 清除）。
     /// </summary>
     private void UpdateTextureBounds(IEnumerable<Control>? descendants = null)
     {
@@ -1846,16 +1874,48 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
-        if (!_settings.Enabled || _settings.BackgroundTextureType == BackgroundTexture.None)
+        if (!_settings.Enabled)
         {
             StopSpectrum();
             RemoveTextureHost();
             return;
         }
 
-        EnsureTextureBrush();
-
         var controls = (descendants ?? _mainWindow.GetVisualDescendants().OfType<Control>()).ToArray();
+        var splitAnchors = controls.OfType<Border>().Where(IsSplitComponentBackground).ToArray();
+        // 分体且全局不是频谱 → 逐块底纹（块的底纹覆盖可独立于全局开关：即使全局关闭也生效）。
+        if (splitAnchors.Length > 0 && _settings.BackgroundTextureType != BackgroundTexture.Spectrum)
+        {
+            if (!_blockTextureActive)
+            {
+                _blockTextureActive = true;
+                RemoveLineTextureHosts();
+            }
+
+            UpdateBlockTextureBounds(splitAnchors);
+            return;
+        }
+
+        if (_settings.BackgroundTextureType == BackgroundTexture.None)
+        {
+            StopSpectrum();
+            RemoveTextureHost();
+            return;
+        }
+
+        if (_blockTextureActive)
+        {
+            _blockTextureActive = false;
+            RemoveBlockTextureHosts();
+        }
+
+        EnsureTextureBrush();
+        UpdateLineTextureBounds(controls);
+    }
+
+    /// <summary>行级底纹宿主：为每个主界面行的模板 GridRoot 建立宿主并约束到该行背景边界。</summary>
+    private void UpdateLineTextureBounds(IReadOnlyList<Control> controls)
+    {
         var liveRoots = new HashSet<Grid>();
         foreach (var gridRoot in controls.OfType<Grid>()
                      .Where(x => x.Name == HostContract.GridRoot &&
@@ -1876,6 +1936,320 @@ internal sealed class MainWindowStyleInjector : IDisposable
                 panel.Children.Remove(removed);
             }
         }
+    }
+
+    /// <summary>
+    /// 分体逐块底纹：为每个分块背景建立/定位自己的静态底纹宿主。
+    /// 块的有效图案＝块覆盖（若 <see cref="SplitBlockBackgroundSetting.HasTextureOverride"/>）否则继承全局；
+    /// 覆盖为 None＝该块清除底纹。动态频谱不可逐块（全局为频谱时走行级）。
+    /// </summary>
+    private void UpdateBlockTextureBounds(IReadOnlyList<Border> splitAnchors)
+    {
+        StopSpectrum(); // 该路径（分体 + 全局静态纹理）不使用频谱。
+        var live = new HashSet<Border>();
+        foreach (var anchor in splitAnchors)
+        {
+            if (!anchor.IsVisible || anchor.Bounds.Width <= 0 || anchor.Bounds.Height <= 0)
+            {
+                continue;
+            }
+
+            var spec = GetBlockTextureSpec(GetSplitBlockComponentId(anchor));
+            if (spec.Type is BackgroundTexture.None or BackgroundTexture.Spectrum)
+            {
+                continue; // 该块清除底纹 / 异常值：不建宿主。
+            }
+
+            live.Add(anchor);
+            var host = EnsureBlockTextureHost(anchor, spec);
+            if (host != null)
+            {
+                PositionBlockTextureHost(host, anchor);
+            }
+        }
+
+        foreach (var stale in _blockTextureHosts.Keys.Where(k => !live.Contains(k)).ToArray())
+        {
+            RemoveBlockTextureHost(stale);
+        }
+    }
+
+    /// <summary>读取分块的有效底纹规格（类型 / 颜色 / 单元大小）：块覆盖优先，否则继承全局。</summary>
+    private (BackgroundTexture Type, Color Color, double Size) GetBlockTextureSpec(string? id)
+    {
+        var type = _settings.BackgroundTextureType;
+        var color = TryParseColor(_settings.BackgroundTextureColor, out var parsed) ? parsed : DefaultTextureColor;
+        var size = _settings.BackgroundTextureSize;
+        if (id != null &&
+            _settings.SplitBlockBackgrounds.TryGetValue(id, out var block) &&
+            block.HasTextureOverride)
+        {
+            type = block.TextureType;
+            if (TryParseColor(block.TextureColor, out var blockColor))
+            {
+                color = blockColor;
+            }
+
+            if (block.TextureSize > 0)
+            {
+                size = block.TextureSize;
+            }
+        }
+
+        return (type, color, size);
+    }
+
+    /// <summary>为分块背景建立静态底纹宿主（插在该块底色 Border 之后），已存在则仅在规格变化时更新画刷。</summary>
+    private Border? EnsureBlockTextureHost(Border anchor, (BackgroundTexture Type, Color Color, double Size) spec)
+    {
+        if (_blockTextureHosts.TryGetValue(anchor, out var existing))
+        {
+            if (!Equals(existing.Tag, spec))
+            {
+                SetBlockTextureBrush(existing, spec);
+                existing.Tag = spec;
+            }
+
+            return existing;
+        }
+
+        if (anchor.Parent is not Panel panel)
+        {
+            return null;
+        }
+
+        var host = new Border
+        {
+            IsHitTestVisible = false,
+            ClipToBounds = true,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top
+        };
+        SetBlockTextureBrush(host, spec);
+        host.Tag = spec;
+        var insertIndex = Math.Max(0, panel.Children.IndexOf(anchor) + 1);
+        // 底纹宿主排在块专属图宿主之后（渲染顺序：底色 → 块图 → 底纹 → 内容）。
+        while (insertIndex < panel.Children.Count && _blockWallpaperHosts.ContainsValue((Border)panel.Children[insertIndex]))
+        {
+            insertIndex++;
+        }
+
+        panel.Children.Insert(insertIndex, host);
+        _blockTextureHosts[anchor] = host;
+        return host;
+    }
+
+    /// <summary>把静态底纹画刷应用到逐块宿主。</summary>
+    private void SetBlockTextureBrush(Border host, (BackgroundTexture Type, Color Color, double Size) spec)
+    {
+        host.Background = BuildTextureBrush(spec.Type, spec.Color, spec.Size);
+    }
+
+    /// <summary>把逐块宿主定位到对应分块背景之上（同父面板内绝对偏移）。</summary>
+    private void PositionBlockTextureHost(Border host, Border anchor)
+    {
+        if (anchor.Parent is not Visual parent)
+        {
+            return;
+        }
+
+        var pos = anchor.TranslatePoint(new Point(0, 0), parent);
+        host.Width = anchor.Bounds.Width;
+        host.Height = anchor.Bounds.Height;
+        host.Margin = new Thickness(pos?.X ?? 0, pos?.Y ?? 0, 0, 0);
+        host.CornerRadius = new CornerRadius(_effectiveCornerRadius);
+        host.IsVisible = anchor.IsVisible && anchor.Bounds.Width > 0 && anchor.Bounds.Height > 0;
+    }
+
+    /// <summary>移除某个分块的静态底纹宿主。</summary>
+    private void RemoveBlockTextureHost(Border anchor)
+    {
+        if (_blockTextureHosts.Remove(anchor, out var host) && host.Parent is Panel panel)
+        {
+            panel.Children.Remove(host);
+        }
+    }
+
+    /// <summary>移除全部分块静态底纹宿主。</summary>
+    private void RemoveBlockTextureHosts()
+    {
+        foreach (var host in _blockTextureHosts.Values)
+        {
+            if (host.Parent is Panel panel)
+            {
+                panel.Children.Remove(host);
+            }
+        }
+
+        _blockTextureHosts.Clear();
+    }
+
+    /// <summary>移除全部行级底纹宿主。</summary>
+    private void RemoveLineTextureHosts()
+    {
+        foreach (var host in _textureHosts.Values)
+        {
+            if (host.Parent is Panel panel)
+            {
+                panel.Children.Remove(host);
+            }
+        }
+
+        _textureHosts.Clear();
+    }
+
+    // ============ 分块专属背景图（底图逐块）============
+
+    /// <summary>
+    /// 刷新分块专属背景图宿主：为每个设置了 HasWallpaperOverride 且图片存在的分块建立一张
+    /// 背景图宿主（插在该块底色 Border 之后、底纹宿主之前 → 渲染 底色→块图→底纹→内容）。
+    /// 未设置 / 文件缺失的块保持透明，透出整岛底图。
+    /// </summary>
+    private void UpdateBlockWallpapers(IEnumerable<Control> controls)
+    {
+        if (!_settings.Enabled)
+        {
+            RemoveBlockWallpaperHosts();
+            return;
+        }
+
+        var anchors = controls.OfType<Border>().Where(IsSplitComponentBackground).ToArray();
+        if (anchors.Length == 0)
+        {
+            RemoveBlockWallpaperHosts();
+            return;
+        }
+
+        var live = new HashSet<Border>();
+        foreach (var anchor in anchors)
+        {
+            if (!anchor.IsVisible || anchor.Bounds.Width <= 0 || anchor.Bounds.Height <= 0)
+            {
+                continue;
+            }
+
+            var id = GetSplitBlockComponentId(anchor);
+            var block = id != null && _settings.SplitBlockBackgrounds.TryGetValue(id, out var b) ? b : null;
+            var path = block?.HasWallpaperOverride == true ? block.WallpaperPath ?? string.Empty : string.Empty;
+            if (string.IsNullOrEmpty(path) || !File.Exists(path))
+            {
+                continue; // 无专属图 / 文件缺失：保持透明，透出整岛底图。
+            }
+
+            live.Add(anchor);
+            var host = EnsureBlockWallpaperHost(anchor, path);
+            if (host != null)
+            {
+                PositionBlockTextureHost(host, anchor);
+            }
+        }
+
+        foreach (var stale in _blockWallpaperHosts.Keys.Where(k => !live.Contains(k)).ToArray())
+        {
+            RemoveBlockWallpaperHost(stale);
+        }
+    }
+
+    /// <summary>为分块建立/更新专属背景图宿主（存在则仅当路径变化时重载图片）。</summary>
+    private Border? EnsureBlockWallpaperHost(Border anchor, string path)
+    {
+        if (_blockWallpaperHosts.TryGetValue(anchor, out var existing))
+        {
+            ApplyBlockWallpaperSource(existing, path);
+            return existing;
+        }
+
+        if (anchor.Parent is not Panel panel)
+        {
+            return null;
+        }
+
+        var host = new Border
+        {
+            IsHitTestVisible = false,
+            ClipToBounds = true,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top
+        };
+        _blockWallpaperHosts[anchor] = host;
+        // 插在底色 Border 之后；底纹宿主创建时也会跳过它排到其上方（块图 → 底纹 → 内容）。
+        panel.Children.Insert(Math.Max(0, panel.Children.IndexOf(anchor) + 1), host);
+        ApplyBlockWallpaperSource(host, path);
+        return host;
+    }
+
+    /// <summary>给专属图宿主装入指定图片（路径变化才重建并释放旧位图；加载失败置空保持透明）。</summary>
+    private void ApplyBlockWallpaperSource(Border host, string path)
+    {
+        if (Equals(host.Tag, path))
+        {
+            return;
+        }
+
+        if (_blockWallpaperBitmaps.Remove(host, out var old))
+        {
+            old.Dispose();
+        }
+
+        host.Tag = path;
+        Bitmap? bitmap = null;
+        try
+        {
+            bitmap = new Bitmap(path);
+        }
+        catch
+        {
+            bitmap = null;
+        }
+
+        if (bitmap != null)
+        {
+            _blockWallpaperBitmaps[host] = bitmap;
+            host.Background = new ImageBrush(bitmap) { Stretch = Stretch.UniformToFill };
+        }
+        else
+        {
+            host.Background = null;
+        }
+    }
+
+    /// <summary>移除某个分块的专属背景图宿主并释放位图。</summary>
+    private void RemoveBlockWallpaperHost(Border anchor)
+    {
+        if (!_blockWallpaperHosts.Remove(anchor, out var host))
+        {
+            return;
+        }
+
+        if (host.Parent is Panel panel)
+        {
+            panel.Children.Remove(host);
+        }
+
+        if (_blockWallpaperBitmaps.Remove(host, out var bitmap))
+        {
+            bitmap.Dispose();
+        }
+    }
+
+    /// <summary>移除并释放全部分块专属背景图宿主。</summary>
+    private void RemoveBlockWallpaperHosts()
+    {
+        foreach (var host in _blockWallpaperHosts.Values)
+        {
+            if (host.Parent is Panel panel)
+            {
+                panel.Children.Remove(host);
+            }
+        }
+
+        foreach (var bitmap in _blockWallpaperBitmaps.Values)
+        {
+            bitmap.Dispose();
+        }
+
+        _blockWallpaperHosts.Clear();
+        _blockWallpaperBitmaps.Clear();
     }
 
     /// <summary>
@@ -2000,6 +2374,11 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private void UpdateTextureClip()
     {
         foreach (var host in _textureHosts.Values)
+        {
+            ApplyOverlayClip(host);
+        }
+
+        foreach (var host in _blockTextureHosts.Values)
         {
             ApplyOverlayClip(host);
         }
@@ -3147,6 +3526,25 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
+        // 分体模式：逐块底纹覆盖独立于全局「底纹纹理」开关，统一交给 UpdateTextureBounds 决策
+        // （含逐块静态 / 行级频谱两种形态）。
+        if (_mainWindow.GetVisualDescendants().OfType<Border>().Any(IsSplitComponentBackground))
+        {
+            if (_settings.BackgroundTextureType == BackgroundTexture.Spectrum)
+            {
+                StartSpectrum();
+            }
+            else
+            {
+                StopSpectrum();
+            }
+
+            _textureBrush = null;
+            UpdateTextureBounds();
+            UpdateTextureClip();
+            return;
+        }
+
         var enabled = _settings.Enabled && _settings.BackgroundTextureType != BackgroundTexture.None;
         if (!enabled)
         {
@@ -3270,7 +3668,17 @@ internal sealed class MainWindowStyleInjector : IDisposable
             }
         }
 
+        foreach (var host in _blockTextureHosts.Values)
+        {
+            if (host.Parent is Panel panel)
+            {
+                panel.Children.Remove(host);
+            }
+        }
+
         _textureHosts.Clear();
+        _blockTextureHosts.Clear();
+        _blockTextureActive = false;
         _spectrumOverlays.Clear();
         _textureBrush = null;
     }

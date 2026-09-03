@@ -1,5 +1,8 @@
+using System.ComponentModel;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Templates;
+using Avalonia.Data;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
@@ -95,15 +98,78 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private SettingsExpander _borderGroup = null!;
     /// <summary>背景图片：图层编辑器为唯一入口（简单模式已删除）。</summary>
     private SettingsExpander _wallpaperGroup = null!;
-    // ===== 分体块背景（分体主界面独立配色）=====
-    /// <summary>分体块背景独立区域（页面顶部大标题下方，非卡片）。</summary>
+    // ===== 分体块背景（分体主界面独立配色，页面最顶部）=====
+    /// <summary>分体块背景独立区域（页面最顶部，主标题「样式注入器」之上）。</summary>
     private StackPanel _splitBlockSection = null!;
     /// <summary>右上角 Toast 防刷屏：上一条提醒文本与时间。</summary>
     private string _lastReminder = string.Empty;
     private DateTime _lastReminderAt;
-    /// <summary>分体块勾选列表（键 = 组件 Id，值 = 复选框）。</summary>
-    private readonly StackPanel _splitBlockList = new() { Spacing = 6 };
-    private readonly Dictionary<string, ToggleSwitch> _splitBlockChecks = [];
+    /// <summary>分体块多选表格（勾选＝画笔「底色填充」作用到的分块；默认全选＝整体统一）。</summary>
+    private DataGrid _splitBlockGrid = null!;
+    /// <summary>表格行（RefreshSplitBlockList 重建）。</summary>
+    private List<SplitBlockRow> _splitBlockRows = [];
+    /// <summary>当前勾选（画笔作用域）的分体块 Id 集合。</summary>
+    private readonly HashSet<string> _splitSelectedIds = [];
+    /// <summary>构建 / 程序性重建表格行勾选时抑制行级处理。</summary>
+    private bool _suppressSplitRowSync;
+    /// <summary>当前是否为分体页面（存在分体块行）：分体页面里「底色填充」整组充当分块画笔。</summary>
+    private bool _splitPage;
+    /// <summary>分体页面下画笔（底色填充）是否正对勾选分块生效（勾选为空时为 false，整组禁用）。</summary>
+    private bool _brushActive;
+    /// <summary>程序性回填画笔控件时抑制提交（加载勾选块取值 / 恢复默认）。</summary>
+    private bool _suppressBrushRefresh;
+    /// <summary>画笔(底色填充)待提交属性集合（颜色拖动等高频变化合并后一次写盘）。</summary>
+    private readonly HashSet<string> _pendingBrushProps = [];
+    /// <summary>分块画笔提交防抖定时器（避免颜色拖动时高频写盘）。</summary>
+    private readonly DispatcherTimer _splitCommitTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
+    /// <summary>「底色填充」组条目引用（分体画笔模式下动态更新说明 / 混值提示）。</summary>
+    private SettingsExpanderItem _bgColorItem = null!;
+    private SettingsExpanderItem _bgDynamicItem = null!;
+    private SettingsExpanderItem _bgGradientItem = null!;
+    private SettingsExpanderItem _bgGradientDirItem = null!;
+    private SettingsExpanderItem _bgGradientEndItem = null!;
+    private const string BgColorBaseDesc = "支持透明度的背景颜色。";
+    private const string BgDynamicBaseDesc = "背景跟随当前 SMTC 专辑封面自动取色（关闭时使用固定颜色）。";
+    private const string BgGradientBaseDesc = "开启后使用线性渐变背景。";
+    private const string BgGradientDirBaseDesc = "线性渐变从起始色到终止色的方向。";
+    private const string BgGradientEndBaseDesc = "线性渐变的结束颜色。";
+    private const string BgMixedSuffix = "\n（多个值）勾选的分块此项取值不一致——在此重新设置后将统一应用到这些分块。";
+    // ===== 底纹画笔（分体页面第二画笔：复用「底纹纹理」组）=====
+    /// <summary>「底纹纹理」组条目引用（逐块模式动态说明/混值提示用）。</summary>
+    private SettingsExpanderItem _texTypeItem = null!;
+    private SettingsExpanderItem _texColorItem = null!;
+    private SettingsExpanderItem _texSizeItem = null!;
+    private const string TexTypeBaseDesc = "选择铺到勾选分块/主界面的纹理图案。";
+    private const string TexColorBaseDesc = "支持透明度的纹理线条颜色。";
+    private const string TexSizeBaseDesc = "单个纹理单元的大小（像素）。";
+    private const string TexMixedSuffix = "\n（多个值）勾选的分块此项取值不一致——在此重新设置后将统一应用到这些分块。";
+    /// <summary>底纹画笔待提交标记（图案/颜色/大小任一变化防抖后一次性写入勾选块）。</summary>
+    private bool _pendingTextureCommit;
+    /// <summary>「纹理图案」下拉当前是否为逐块选项（仅四种静态图案；开/关由组总开关表达）。</summary>
+    private bool _textureBlockOptions;
+    /// <summary>逐块底纹图案下拉（分体页用，仅静态图案；动态频谱不可逐块，无/继承不再混入）。</summary>
+    private static readonly Choice<BackgroundTexture>[] BlockTextureOptions =
+    [
+        new(BackgroundTexture.Grid, "网格线"),
+        new(BackgroundTexture.Dots, "点阵"),
+        new(BackgroundTexture.DiagonalLines, "斜线"),
+        new(BackgroundTexture.Cross, "十字网格"),
+    ];
+    // ===== 块专属背景图画笔（分体页面第三支画笔）=====
+    /// <summary>「分块背景图片」卡片（顶部作用域下方，仅分体页面显示）。</summary>
+    private SettingsExpander _blockWallpaperGroup = null!;
+    /// <summary>图片行条目（动态说明/混值提示）。</summary>
+    private SettingsExpanderItem _blockWallpaperImgItem = null!;
+    /// <summary>该块背景图开关：开=用自己选的图；关=无专属图（保持透明、透出整岛底图）。</summary>
+    private readonly ToggleSwitch _blockWallpaperEnabled = Toggle();
+    /// <summary>图片路径只读展示（真实路径存在 <see cref="_blockWallpaperChosenPath"/>；混值时显示「多个值」占位）。</summary>
+    private readonly TextBox _blockWallpaperPath = new() { MinWidth = 240, IsReadOnly = true, Watermark = "尚未选择图片（保持透明，透出整岛底图）" };
+    /// <summary>最近一次真实选择的图片路径（仅由文件选择写入）。</summary>
+    private string _blockWallpaperChosenPath = string.Empty;
+    /// <summary>块专属图画笔待提交标记。</summary>
+    private bool _pendingWallpaperCommit;
+    private const string BlockWallpaperImgBaseDesc = "给勾选的分块选一张自己的背景图；未设图的分块保持透明、透出整岛底图。";
+    private const string BlockWallpaperMixed = "（多个值）勾选的分块背景图不一致，重新选择后将统一应用。";
     private readonly ToggleSwitch _gradient = Toggle();
     private readonly ColorPicker _gradientEndColor = ColorPicker();
     private readonly ComboBox _gradientDirection = Combo(GradientDirections);
@@ -224,7 +290,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         HorizontalContentAlignment = HorizontalAlignment.Left
     };
     private readonly ToggleSwitch _presetAssociation = Toggle();
-    private readonly TextBlock _presetAssociationStatus = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.8 };
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.8 };
     /// <summary>实时预览开关：开启后设置项修改立即保存应用（可视化编辑器仍为手动保存）。默认开启。</summary>
     private readonly ToggleSwitch _livePreview = new()
@@ -388,7 +453,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         Content = BuildContent();
         WireVisualEditor();
         WireLivePreview();
-        WireSplitBlockLiveSync();
+        WireBackgroundBrush();
+        WireTextureBrush();
+        WireWallpaperBrush();
         WirePresetAssociation();
         // 调试开关即时生效（须在 LoadFromSettings 之前挂接，加载持久化值时也会触发）。
         _reduceVisualBurden.PropertyChanged += (_, _) => ApplyVisualBurdenReduction();
@@ -419,6 +486,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             _tutorialGuardTimer = null;
         }
 
+        _splitCommitTimer.Stop();
         base.OnDetachedFromVisualTree(e);
     }
 
@@ -848,34 +916,12 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Spacing = 4
         };
 
-        panel.Children.Add(new IconText { Glyph = "\uEC4A", Text = "样式注入器", Margin = new Thickness(0, 0, 0, 4) });
-
-        // 分体块背景：独立区域，直接放在页面顶部（大标题下方），不做成可折叠卡片。
+        // 分体块背景：独立区域放到页面最顶部（主标题「样式注入器」之上）。
         // 非分体主界面模式下整个区域隐藏（由 RefreshSplitBlockList 控制 IsVisible）。
-        _splitBlockSection = new StackPanel
-        {
-            Spacing = 8,
-            Margin = new Thickness(0, 4, 0, 0)
-        };
-        _splitBlockSection.Children.Add(new IconText { Glyph = "\uE51F", Text = "分体块背景", Margin = new Thickness(0, 8, 0, 0) });
-        _splitBlockSection.Children.Add(new TextBlock
-        {
-            Text = "分体主界面模式下，可为每个分体组件块设置独立的背景颜色。勾选分块后，下方「底色填充」分组的配置会即时应用到选中的分块（所见即所得）。",
-            TextWrapping = TextWrapping.Wrap,
-            Opacity = 0.8
-        });
-        _splitBlockSection.Children.Add(SplitBlockListFooter());
-        _splitBlockSection.Children.Add(new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 4,
-            Children =
-            {
-                Button("将当前块的样式应用到其他块", ApplyCurrentBlockStyleToOthers),
-                Button("清除选中分块", ClearSplitBlockColors)
-            }
-        });
+        _splitBlockSection = BuildSplitBlockSection();
         panel.Children.Add(_splitBlockSection);
+
+        panel.Children.Add(new IconText { Glyph = "\uEC4A", Text = "样式注入器", Margin = new Thickness(0, 0, 0, 4) });
 
         if (MainWindowStyleInjector.IsSeparatedMode())
         {
@@ -947,8 +993,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         };
         panel.Children.Add(_smtcTutorialInfoBar);
 
-        // 分体块背景已上移到页面顶部（大标题下方）作为独立区域，这里不再重复。
-
         AddSection(panel, "\uF42F", "用户预设");
         panel.Children.Add(Setting("\uF42F", "保存当前为预设", "把插件当前全部设置项保存为一个命名预设（同名覆盖）", PresetSaveFooter()));
         panel.Children.Add(Setting("\uF42F", "套用 / 删除预设", "套用会把全部设置项替换为该预设保存时的状态。", PresetManageFooter()));
@@ -957,26 +1001,31 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(Setting("\uE0BD", "恢复插件默认", "把全部设置恢复为插件默认（不会修改 Overrides.axaml）", Button("恢复默认", ResetToDefaults)));
 
         AddSection(panel, "\uE51F", "背景");
-        var backgroundColorItem = Item("背景色", "支持透明度的主界面背景颜色。", _backgroundColor);
-        _backgroundGroup = SwitchableGroup("\uE520", "底色填充", "关闭时保留 ClassIsland 自身的背景颜色。", _customBackground,
-            backgroundColorItem,
-            Item("动态专辑封面取色", "读取当前 SMTC 专辑封面，并使用 Material You（Monet）算法自动提取主题色。", _dynamicBackgroundColor),
-            Item("线性渐变", "开启后会使用渐变终止色。", _gradient),
-            Item("渐变方向", "线性渐变从起始色到终止色的方向。", _gradientDirection, _gradient),
-            Item("渐变终止色", "线性渐变背景的结束颜色。", _gradientEndColor, _gradient));
+        // 「底色填充」在非分体页面＝全局主界面底色；在分体页面＝给勾选分块上色的画笔
+        // （分体页面隐藏总开关，条目说明/混值提示由 RefreshBackgroundBrushState 动态更新）。
+        _bgColorItem = Item("背景色", BgColorBaseDesc, _backgroundColor);
+        _bgDynamicItem = Item("动态专辑封面取色", BgDynamicBaseDesc, _dynamicBackgroundColor);
+        _bgGradientItem = Item("线性渐变", BgGradientBaseDesc, _gradient);
+        _bgGradientDirItem = Item("渐变方向", BgGradientDirBaseDesc, _gradientDirection, _gradient);
+        _bgGradientEndItem = Item("渐变终止色", BgGradientEndBaseDesc, _gradientEndColor, _gradient);
+        _backgroundGroup = SwitchableGroup("\uE520", "底色填充", "非分体模式画整个主界面背景；分体模式给勾选的分块上色（未单独配色的分块跟随全局底色）。", _customBackground,
+            _bgColorItem, _bgDynamicItem, _bgGradientItem, _bgGradientDirItem, _bgGradientEndItem);
         _backgroundGroup.Name = "BackgroundGroup";
         _dynamicBackgroundColor.Name = "BackgroundDynamicToggle";
-        EnabledWhenManualColor(backgroundColorItem, _customBackground, _dynamicBackgroundColor);
+        EnabledWhenManualColor(_bgColorItem, _customBackground, _dynamicBackgroundColor);
         panel.Children.Add(_backgroundGroup);
-        var textureSizeItem = Item("纹理大小", "单个纹理单元的大小（像素）。", _backgroundTextureSize);
+        // 底纹纹理：非分体页叠加在主界面底色之上；分体页给勾选分块逐块设置底纹（第二画笔）。
+        _texTypeItem = Item("纹理图案", TexTypeBaseDesc, _backgroundTextureType);
+        _texColorItem = Item("纹理颜色", TexColorBaseDesc, _backgroundTextureColor);
+        _texSizeItem = Item("纹理大小", TexSizeBaseDesc, _backgroundTextureSize);
         var spectrumSensitivityItem = Item("频谱灵敏度", "动态频谱柱条的放大倍率（越大跳动越剧烈）。", _backgroundTextureSpectrumSensitivity);
         var spectrumBarsItem = Item("频谱柱条数", "主界面约 400 像素宽时的柱条数，柱条宽度保持恒定。", _backgroundTextureSpectrumBars);
         var spectrumMirroredItem = Item("双面对称", "同时向上和向下绘制镜像频谱。", _backgroundTextureSpectrumMirrored);
         var spectrumAutoWidthItem = Item("自动匹配宽度", "开启后柱条数随主界面宽度自动增减（柱宽恒定）。", _backgroundTextureSpectrumAutoWidth);
-        _textureGroup = SwitchableGroup("\uE92B", "底纹纹理", "在底色之上叠加可平铺的纹理图案。", _backgroundTextureEnabled,
-            Item("纹理图案", "选择填充纹理的类型。", _backgroundTextureType),
-            Item("纹理颜色", "支持透明度的纹理线条颜色。", _backgroundTextureColor),
-            textureSizeItem,
+        _textureGroup = SwitchableGroup("\uE92B", "底纹纹理", "在底色之上叠加可平铺的纹理图案；分体模式下给勾选的分块逐块设置。", _backgroundTextureEnabled,
+            _texTypeItem,
+            _texColorItem,
+            _texSizeItem,
             spectrumSensitivityItem,
             spectrumBarsItem,
             spectrumMirroredItem,
@@ -987,7 +1036,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(_textureGroup);
         AutoSelectOnEnable(_backgroundTextureEnabled, _backgroundTextureType, BackgroundTextures);
         // 动态频谱不使用纹理单元大小：选中频谱时隐藏该项。
-        VisibleWhenNotAny(textureSizeItem, _backgroundTextureType, BackgroundTexture.Spectrum);
+        VisibleWhenNotAny(_texSizeItem, _backgroundTextureType, BackgroundTexture.Spectrum);
         VisibleWhen(spectrumSensitivityItem, _backgroundTextureType, BackgroundTexture.Spectrum);
         VisibleWhen(spectrumBarsItem, _backgroundTextureType, BackgroundTexture.Spectrum);
         VisibleWhen(spectrumMirroredItem, _backgroundTextureType, BackgroundTexture.Spectrum);
@@ -1183,16 +1232,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         VisibleWhen(cinematicFlashItem, _rippleType, RippleType.Cinematic);
         AutoSelectOnEnable(_rippleEnabled, _rippleType, RippleTypes);
         panel.Children.Add(rippleGroup);
-        var hanabiInfoBar = new InfoBar
-        {
-            Severity = InfoBarSeverity.Informational,
-            Title = "关于舞萌花火（Hanabi）效果",
-            Message = "受当前技术限制，本插件无法实现类似 maimai でらっくす 的带光影的烟花效果，只能仿制经典旧版烟花效果。",
-            IsOpen = true,
-            IsClosable = false
-        };
-        VisibleWhen(hanabiInfoBar, _rippleType, RippleType.Hanabi);
-        panel.Children.Add(hanabiInfoBar);
         panel.Children.Add(SwitchableGroup("\uE85E", "全屏流光", "仿照手机智慧识屏或语音助手激活时的全屏内发光效果，可与上方任意 Ripple 效果叠加播放。", _marqueeEnabled,
             Item("流光颜色", "流光的整体色调；纯白为完整彩虹，带色调会整体偏向该颜色。", _marqueeColor),
             Item("流光时长", "流光效果的播放时长（秒）。", _marqueeDuration),
@@ -1529,109 +1568,200 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _userPresetList.SelectedItem = names.FirstOrDefault(n => n == selected) ?? (names.Count > 0 ? names[0] : null);
     }
 
-    // ============ 分体块背景（分体主界面独立配色）============
+    // ============ 分体块背景（分体主界面：底色填充画笔作用域，页面最顶部）============
 
-    /// <summary>分体块列表 + 操作按钮（刷新 / 全选 / 清空）。</summary>
-    private Control SplitBlockListFooter() => new StackPanel
+    /// <summary>分体块作用域选择区：标题 + 图标 CommandBar + 多选表格（不包含画笔本身——画笔复用下方「背景 → 底色填充」组）。</summary>
+    private StackPanel BuildSplitBlockSection()
     {
-        Spacing = 6,
-        Children =
+        var section = new StackPanel
         {
-            new StackPanel
+            Spacing = 6,
+            Margin = new Thickness(0, 4, 0, 0)
+        };
+        section.Children.Add(new IconText { Glyph = "\uE51F", Text = "分体块背景（底色填充画笔）", Margin = new Thickness(0, 4, 0, 0) });
+        section.Children.Add(new TextBlock
+        {
+            Text = "下方「背景 → 底色填充」就是画笔：勾选哪些分块，它就只给哪些分块上色（默认全选＝整体统一）。取消勾选某块＝这轮不动它、保留它的颜色；一个都不勾＝画笔禁用。",
+            TextWrapping = TextWrapping.Wrap,
+            Opacity = 0.8
+        });
+
+        // 顶栏：带图标的 CommandBar（替代原先的文字按钮）。
+        section.Children.Add(new CommandBar
+        {
+            DefaultLabelPosition = CommandBarDefaultLabelPosition.Right,
+            PrimaryCommands =
+            {
+                SplitCommandButton("\uEF07", "全选", "勾选全部分块：画笔（底色填充）改的是全部（默认状态）", SelectAllSplitBlocks),
+                new CommandBarSeparator(),
+                SplitCommandButton("\uEF05", "清空", "取消勾选全部分块：画笔禁用（不改任何块）", ClearSplitBlockSelection),
+                SplitCommandButton("\uE161", "刷新", "重新检测主界面的分体块（新增分块默认勾选）", RefreshSplitBlockList),
+                new CommandBarSeparator(),
+                SplitCommandButton("\uE7FF", "清除配色", "移除勾选分块的专属配色，让它们回到全局底色", ClearSplitBlockColors)
+            }
+        });
+
+        _splitBlockGrid = BuildSplitBlockGrid();
+        section.Children.Add(_splitBlockGrid);
+
+        // 分块背景图片（第三支画笔）：给勾选的分块各贴一张自己的图。
+        var chooseButton = Button("选择图片…", PickBlockWallpaper);
+        _blockWallpaperImgItem = new SettingsExpanderItem
+        {
+            Content = "图片",
+            Description = BlockWallpaperImgBaseDesc,
+            Footer = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
-                Spacing = 6,
-                Children =
-                {
-                    Button("刷新", RefreshSplitBlockList),
-                    Button("全选", SelectAllSplitBlocks),
-                    Button("清空", ClearSplitBlockSelection)
-                }
-            },
-            _splitBlockList
-        }
-    };
+                Spacing = 4,
+                VerticalAlignment = VerticalAlignment.Center,
+                Children = { _blockWallpaperPath, chooseButton }
+            }
+        };
+        _allItems.Add(_blockWallpaperImgItem);
+        _blockWallpaperGroup = new SettingsExpander
+        {
+            IconSource = new FluentIconSource("\uF42D"),
+            Header = "分块背景图片",
+            Description = "整岛底图之外的可选逐块背景图：给勾选的分块各贴一张自己的图；未设图的分块保持透明、透出整岛底图。",
+            IsExpanded = true,
+            Footer = _blockWallpaperEnabled
+        };
+        _blockWallpaperGroup.Items.Add(_blockWallpaperImgItem);
+        _allExpanders.Add(_blockWallpaperGroup);
+        void SyncImgItem() =>
+            _blockWallpaperImgItem.IsEnabled = _blockWallpaperEnabled.IsChecked == true && _blockWallpaperGroup.IsEnabled;
+        _blockWallpaperEnabled.PropertyChanged += (_, e) =>
+        {
+            if (e.Property == ToggleSwitch.IsCheckedProperty)
+            {
+                SyncImgItem();
+            }
+        };
+        section.Children.Add(_blockWallpaperGroup);
+        return section;
+    }
+
+    /// <summary>分体块表格：勾选列在最前，随后罗列组件名 / 行号 / 当前底色（仿宿主「档案→科目」表格）。</summary>
+    private DataGrid BuildSplitBlockGrid()
+    {
+        var grid = new DataGrid
+        {
+            ItemsSource = new List<SplitBlockRow>(),
+            AutoGenerateColumns = false,
+            IsReadOnly = false,
+            HeadersVisibility = DataGridHeadersVisibility.All,
+            GridLinesVisibility = DataGridGridLinesVisibility.Horizontal,
+            CanUserReorderColumns = false,
+            CanUserResizeColumns = false,
+            CanUserSortColumns = false,
+            MaxHeight = 240,
+            RowHeight = 34,
+            FontSize = 13,
+            Margin = new Thickness(0, 4, 0, 0)
+        };
+
+        // 勾选列（最前）：勾选 = 画笔(底色填充)作用到的分块（默认全选）。
+        // 用宿主同款 DataGridCheckBoxColumn（其主题自带居中勾选框，点击即可切换）。
+        grid.Columns.Add(new DataGridCheckBoxColumn
+        {
+            Header = "勾选",
+            Width = new DataGridLength(64),
+            Binding = new Binding(nameof(SplitBlockRow.IsChecked)) { Mode = BindingMode.TwoWay }
+        });
+        // 组件名称。
+        grid.Columns.Add(new DataGridTemplateColumn
+        {
+            Header = "组件",
+            IsReadOnly = true,
+            Width = new DataGridLength(1, DataGridLengthUnitType.Star),
+            CellTemplate = new FuncDataTemplate<SplitBlockRow>((_, _) =>
+            {
+                var text = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
+                text.Bind(TextBlock.TextProperty, new Binding(nameof(SplitBlockRow.Name)));
+                return text;
+            })
+        });
+        // 所属行。
+        grid.Columns.Add(new DataGridTemplateColumn
+        {
+            Header = "行",
+            IsReadOnly = true,
+            Width = new DataGridLength(80),
+            CellTemplate = new FuncDataTemplate<SplitBlockRow>((_, _) =>
+            {
+                var text = new TextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center };
+                text.Bind(TextBlock.TextProperty, new Binding(nameof(SplitBlockRow.LineText)));
+                return text;
+            })
+        });
+        return grid;
+    }
 
     /// <summary>
-    /// 重新枚举主界面的分体块并按行分组重建勾选列表。
-    /// 非分体主界面（或暂不可用）时隐藏整个分体块区域。
+    /// 挂接画笔（底色填充组）控件变化：分体页面且勾选了分块 → 防抖写入分块专属配置；
+    /// 否则（非分体全局模式）走原有实时预览。分体页面勾选为空时整组禁用，不会触发。
     /// </summary>
-    private void RefreshSplitBlockList()
+    private void WireBackgroundBrush()
     {
-        _splitBlockList.Children.Clear();
-        _splitBlockChecks.Clear();
-        var blocks = MainWindowStyleInjector.EnumerateSplitBlocks();
-        if (blocks.Count == 0)
+        _splitCommitTimer.Tick += (_, _) =>
         {
-            // 非分体主界面：不显示分体块选择区域。
-            _splitBlockSection.IsVisible = false;
-            return;
-        }
-
-        _splitBlockSection.IsVisible = true;
-        var lineGroups = blocks.GroupBy(b => b.LineNumber).OrderBy(g => g.Key).ToList();
-        foreach (var lineGroup in lineGroups)
-        {
-            // Fluent 风格：每行一个 SettingsExpander，分块为带开关的项。
-            var expander = new SettingsExpander
+            _splitCommitTimer.Stop();
+            if (_pendingWallpaperCommit)
             {
-                IconSource = new FluentIconSource("\uE51F"),
-                Header = lineGroups.Count > 1 ? $"第 {lineGroup.Key + 1} 行" : "分体块",
-                Description = "开关某个分块，即把下方「底色填充」的当前配置应用到这个块（所见即所得）",
-                IsExpanded = true
-            };
-            foreach (var block in lineGroup)
-            {
-                var toggle = new ToggleSwitch
-                {
-                    // 已配置独立配色的分块默认开启（程序性赋值不触发 Click，不会误写盘）。
-                    IsChecked = InjectorRuntime.Settings.SplitBlockBackgrounds.ContainsKey(block.Id)
-                };
-                // 开关变化即用当前「底色填充」配置同步该分块（开哪些改哪些）。
-                toggle.Click += (_, _) => SyncSplitBlocksToBackground();
-                _splitBlockChecks[block.Id] = toggle;
-                expander.Items.Add(new SettingsExpanderItem
-                {
-                    IconSource = new FluentIconSource("\uE51F"),
-                    Content = block.Name,
-                    Description = "独立配色：应用当前底色填充配置",
-                    Footer = toggle
-                });
+                _pendingWallpaperCommit = false;
+                CommitWallpaperToBlocks();
             }
 
-            _splitBlockList.Children.Add(expander);
-        }
+            if (_pendingTextureCommit)
+            {
+                _pendingTextureCommit = false;
+                CommitTextureToBlocks();
+            }
+
+            CommitBrushToBlocks();
+        };
+
+        // 同一套画笔控件在两种模式间复用：分体页面写分块，非分体页面写全局。
+        _backgroundColor.PropertyChanged += (_, e) => { if (e.Property == Avalonia.Controls.ColorPicker.ColorProperty) BrushChanged("color"); };
+        _gradientEndColor.PropertyChanged += (_, e) => { if (e.Property == Avalonia.Controls.ColorPicker.ColorProperty) BrushChanged("gradientEnd"); };
+        _gradient.PropertyChanged += (_, e) => { if (e.Property == ToggleSwitch.IsCheckedProperty) BrushChanged("gradient"); };
+        _dynamicBackgroundColor.PropertyChanged += (_, e) => { if (e.Property == ToggleSwitch.IsCheckedProperty) BrushChanged("dynamic"); };
+        _gradientDirection.SelectionChanged += (_, _) => BrushChanged("direction");
     }
 
-    private void SelectAllSplitBlocks()
+    /// <summary>画笔值变化：分体画笔模式 → 记录待提交属性并防抖写分块；否则 → 全局实时预览。</summary>
+    private void BrushChanged(string prop)
     {
-        foreach (var check in _splitBlockChecks.Values)
-        {
-            check.IsChecked = true;
-        }
-    }
-
-    private void ClearSplitBlockSelection()
-    {
-        foreach (var check in _splitBlockChecks.Values)
-        {
-            check.IsChecked = false;
-        }
-    }
-
-    /// <summary>
-    /// 把下方「底色填充」分组的当前配置即时同步到所有勾选的分体块（所见即所得，勾哪些改哪些）。
-    /// 同步后经 200ms 防抖触发保存应用（复用实时预览计时器，不依赖「实时预览」开关）。
-    /// </summary>
-    private void SyncSplitBlocksToBackground()
-    {
-        if (_suppressLivePreview)
+        if (_suppressBrushRefresh)
         {
             return;
         }
 
-        var selected = _splitBlockChecks.Where(kv => kv.Value.IsChecked == true).Select(kv => kv.Key).ToList();
-        if (selected.Count == 0)
+        if (_brushActive)
+        {
+            _pendingBrushProps.Add(prop);
+            _splitCommitTimer.Stop();
+            _splitCommitTimer.Start();
+        }
+        else
+        {
+            TriggerLivePreview();
+        }
+    }
+
+    /// <summary>把画笔（底色填充）待提交的属性统一写入全部勾选分块（专属配置 Enabled=true，200ms 防抖）。</summary>
+    private void CommitBrushToBlocks()
+    {
+        if (_suppressBrushRefresh || _pendingBrushProps.Count == 0)
+        {
+            return;
+        }
+
+        var props = _pendingBrushProps.ToList();
+        _pendingBrushProps.Clear();
+        var ids = _splitBlockRows.Where(r => r.IsChecked).Select(r => r.Id).ToList();
+        if (ids.Count == 0)
         {
             return;
         }
@@ -1640,17 +1770,301 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         settings.BeginUpdate();
         try
         {
-            foreach (var id in selected)
+            foreach (var id in ids)
+            {
+                if (!settings.SplitBlockBackgrounds.TryGetValue(id, out var block))
+                {
+                    // 尚无专属配置的块：以画笔整套当前样式初始化（含其余属性），
+                    // 避免“只改一项”时其它属性回落到默认值导致跳变。
+                    block = new SplitBlockBackgroundSetting();
+                    CopyBrushStyle(block);
+                    settings.SplitBlockBackgrounds[id] = block;
+                }
+                else
+                {
+                    // 已有专属配置的块：只更新本次改动的那几项，避免覆盖未改属性。
+                    ApplyBrushProp(block, props);
+                    block.Enabled = true;
+                }
+            }
+        }
+        finally
+        {
+            settings.EndUpdate();
+        }
+
+        // 分块上色为显式所见即所得：无论「实时预览」开关如何都立即保存应用。
+        InjectorRuntime.SaveAndApply();
+        foreach (var row in _splitBlockRows)
+        {
+            UpdateSplitRowVisual(row);
+        }
+        RefreshBackgroundBrushState();
+    }
+
+    /// <summary>把画笔当前全部属性写入分体块专属配置（新块初始化用）。</summary>
+    private void CopyBrushStyle(SplitBlockBackgroundSetting block)
+    {
+        block.Enabled = true;
+        block.Color = _backgroundColor.Color.ToString();
+        block.GradientEnabled = _gradient.IsChecked == true;
+        block.GradientEndColor = _gradientEndColor.Color.ToString();
+        block.GradientDirection = Selected(_gradientDirection, GradientDirection.TopLeftToBottomRight);
+        block.UseDynamicColor = _dynamicBackgroundColor.IsChecked == true;
+    }
+
+    /// <summary>把画笔当前控件的指定属性写入分体块专属配置。</summary>
+    private void ApplyBrushProp(SplitBlockBackgroundSetting block, IEnumerable<string> props)
+    {
+        var set = props.ToHashSet();
+        if (set.Contains("color"))
+        {
+            block.Color = _backgroundColor.Color.ToString();
+        }
+        if (set.Contains("gradient"))
+        {
+            block.GradientEnabled = _gradient.IsChecked == true;
+        }
+        if (set.Contains("gradientEnd"))
+        {
+            block.GradientEndColor = _gradientEndColor.Color.ToString();
+        }
+        if (set.Contains("direction"))
+        {
+            block.GradientDirection = Selected(_gradientDirection, GradientDirection.TopLeftToBottomRight);
+        }
+        if (set.Contains("dynamic"))
+        {
+            block.UseDynamicColor = _dynamicBackgroundColor.IsChecked == true;
+        }
+    }
+
+    /// <summary>一次性刷新三支画笔（底色填充 + 底纹纹理 + 分块背景图）状态。</summary>
+    private void RefreshBackgroundBrushState()
+    {
+        RefreshBackgroundBrushStateCore();
+        RefreshBackgroundTextureState();
+        RefreshBlockWallpaperState();
+    }
+
+    /// <summary>
+    /// 底纹画笔：总开关（该块底纹）与 图案/颜色/大小 变化 → 分体模式写勾选分块，
+    /// 否则（非分体全局模式）走原有实时预览。
+    /// </summary>
+    private void WireTextureBrush()
+    {
+        void Changed()
+        {
+            if (_suppressBrushRefresh)
+            {
+                return;
+            }
+
+            if (_brushActive)
+            {
+                _pendingTextureCommit = true;
+                _splitCommitTimer.Stop();
+                _splitCommitTimer.Start();
+            }
+            else
+            {
+                TriggerLivePreview();
+            }
+        }
+
+        _backgroundTextureEnabled.PropertyChanged += (_, e) => { if (e.Property == ToggleSwitch.IsCheckedProperty) Changed(); };
+        _backgroundTextureType.SelectionChanged += (_, _) => Changed();
+        _backgroundTextureColor.PropertyChanged += (_, e) => { if (e.Property == Avalonia.Controls.ColorPicker.ColorProperty) Changed(); };
+        _backgroundTextureSize.PropertyChanged += (_, _) => Changed();
+    }
+
+    /// <summary>
+    /// 刷新底纹画笔（底纹纹理组）状态：非分体 → 保持全局语义；
+    /// 分体页面 → 该组作为第二画笔：总开关＝“该块底纹”（开=用自己的图案 / 关=这块无底纹），
+    /// 图案下拉只列静态图案，勾选为空整组禁用，勾选多个且底纹不一致时标注「（多个值）」。
+    /// </summary>
+    private void RefreshBackgroundTextureState()
+    {
+        if (_textureGroup == null)
+        {
+            return;
+        }
+
+        var settings = InjectorRuntime.Settings;
+        var checkedIds = _splitBlockRows.Where(r => r.IsChecked).Select(r => r.Id).ToList();
+        if (!_splitPage)
+        {
+            // 非分体页面：恢复全局图案下拉。
+            if (_textureBlockOptions)
+            {
+                _textureBlockOptions = false;
+                _backgroundTextureType.ItemsSource = BackgroundTextures;
+            }
+
+            _textureGroup.IsEnabled = true;
+            return;
+        }
+
+        // 分体页面：图案下拉切为逐块静态图案（总开关保持可见 = 该块底纹开关）。
+        if (!_textureBlockOptions)
+        {
+            _textureBlockOptions = true;
+            _backgroundTextureType.ItemsSource = BlockTextureOptions;
+        }
+
+        // 动态频谱是全局一层，无法逐块，禁用整组并提示。
+        if (settings.BackgroundTextureType == BackgroundTexture.Spectrum)
+        {
+            _textureGroup.IsEnabled = false;
+            SetTexGroupDesc("全局底纹为「动态频谱」时不可逐块设置（频谱是整岛一层）。请先在非分体模式把图案改为静态纹理，再回来逐块配置。");
+            return;
+        }
+
+        var active = checkedIds.Count > 0;
+        _textureGroup.IsEnabled = active;
+        if (!active)
+        {
+            SetTexGroupDesc("未勾选任何分块：请先在上方表格勾选要设置的分块（默认全选）。未勾选时此处禁用。");
+            return;
+        }
+
+        var fallbackColor = Color.FromArgb(0x2E, 0xFF, 0xFF, 0xFF);
+        var globalColor = ReadColor(settings.BackgroundTextureColor, fallbackColor);
+        // 每块有效状态：None=无底纹；否则显示的静态图案（继承全局或块覆盖）。
+        var none = BackgroundTexture.None;
+        var globalType = settings.BackgroundTextureType;
+        var effs = checkedIds.Select(id =>
+        {
+            var o = settings.SplitBlockBackgrounds.TryGetValue(id, out var b) && b.HasTextureOverride ? b : null;
+            var oType = o?.TextureType;
+            var isNone = (o != null && oType == BackgroundTexture.None)
+                         || (o == null && globalType == BackgroundTexture.None);
+            var type = isNone
+                ? none
+                : (o != null && oType is { } t && t != BackgroundTexture.None && t != BackgroundTexture.Spectrum)
+                    ? t
+                    : globalType;
+            var isOwn = o != null && !isNone;
+            var color = isOwn ? ReadColor(o!.TextureColor, globalColor) : globalColor;
+            var size = isOwn && o!.TextureSize > 0 ? o.TextureSize : settings.BackgroundTextureSize;
+            return (None: isNone, Type: type, Color: color, Size: size);
+        }).ToList();
+
+        _suppressBrushRefresh = true;
+        try
+        {
+            var allNone = effs.All(v => v.None);
+            var hasNone = effs.Any(v => v.None);
+            var patternTypes = effs.Select(v => v.Type).Where(t => t != none).Distinct().ToList();
+            if (allNone)
+            {
+                // 全部无底纹：关掉开关，其余行随之置灰。
+                _backgroundTextureEnabled.IsChecked = false;
+                SetBgItemDesc(_texTypeItem, TexTypeBaseDesc, false);
+                SetBgItemDesc(_texColorItem, TexColorBaseDesc, false);
+                SetBgItemDesc(_texSizeItem, TexSizeBaseDesc, false);
+            }
+            else if (hasNone || patternTypes.Count > 1)
+            {
+                // 混合：开关/图案保持原值仅作提示，卡片标注「多个值」；操作开关或图案即统一。
+                SetBgItemDesc(_texTypeItem, TexTypeBaseDesc, true);
+                _texColorItem.IsEnabled = false;
+                _texSizeItem.IsEnabled = false;
+                SetBgItemDesc(_texColorItem, TexColorBaseDesc, false);
+                SetBgItemDesc(_texSizeItem, TexSizeBaseDesc, false);
+            }
+            else
+            {
+                // 统一为某一种静态图案：开开关并回填该图案。
+                _backgroundTextureEnabled.IsChecked = true;
+                Select(_backgroundTextureType, BlockTextureOptions, patternTypes[0]);
+                SetBgItemDesc(_texTypeItem, TexTypeBaseDesc, false);
+
+                var colors = effs.Select(v => v.Color).Distinct().ToList();
+                if (colors.Count == 1)
+                {
+                    _backgroundTextureColor.Color = colors[0];
+                    SetBgItemDesc(_texColorItem, TexColorBaseDesc, false);
+                }
+                else
+                {
+                    SetBgItemDesc(_texColorItem, TexColorBaseDesc, true);
+                }
+
+                var sizes = effs.Select(v => v.Size).Distinct().ToList();
+                if (sizes.Count == 1)
+                {
+                    _backgroundTextureSize.DoubleValue = sizes[0];
+                    SetBgItemDesc(_texSizeItem, TexSizeBaseDesc, false);
+                }
+                else
+                {
+                    SetBgItemDesc(_texSizeItem, TexSizeBaseDesc, true);
+                }
+            }
+        }
+        finally
+        {
+            _suppressBrushRefresh = false;
+        }
+
+        SetTexGroupDesc($"底纹画笔：正在给勾选的 {checkedIds.Count} 个分块设置底纹（开=用自己的图案 / 关=这块无底纹；未勾选保留原样）。动态频谱仍为全局层，不可逐块。");
+    }
+
+    /// <summary>更新底纹画笔（底纹纹理组）说明（「降低视觉负担」开启时保持隐藏）。</summary>
+    private void SetTexGroupDesc(string desc)
+    {
+        if (_reduceVisualBurden.IsChecked == true)
+        {
+            return;
+        }
+
+        _textureGroup.Description = desc;
+    }
+
+    /// <summary>
+    /// 把底纹画笔当前选择写入全部勾选分块：
+    /// 总开关开 → 用自己的图案（图案下拉 + 颜色/大小）；总开关关 → 该块无底纹（HasTextureOverride + None）。
+    /// </summary>
+    private void CommitTextureToBlocks()
+    {
+        if (_suppressBrushRefresh || !_brushActive)
+        {
+            return;
+        }
+
+        var ids = _splitBlockRows.Where(r => r.IsChecked).Select(r => r.Id).ToList();
+        if (ids.Count == 0)
+        {
+            return;
+        }
+
+        var on = _backgroundTextureEnabled.IsChecked == true;
+        var selectedType = _backgroundTextureType.SelectedItem is Choice<BackgroundTexture> choice
+            ? choice.Value
+            : BackgroundTexture.Grid;
+        var settings = InjectorRuntime.Settings;
+        settings.BeginUpdate();
+        try
+        {
+            foreach (var id in ids)
             {
                 var block = settings.SplitBlockBackgrounds.TryGetValue(id, out var existing)
                     ? existing
                     : new SplitBlockBackgroundSetting();
-                block.Enabled = true;
-                block.Color = _backgroundColor.Color.ToString();
-                block.GradientEnabled = _gradient.IsChecked == true;
-                block.GradientEndColor = _gradientEndColor.Color.ToString();
-                block.GradientDirection = Selected(_gradientDirection, GradientDirection.TopLeftToBottomRight);
-                block.UseDynamicColor = _dynamicBackgroundColor.IsChecked == true;
+                block.HasTextureOverride = true;
+                if (!on)
+                {
+                    // 关：这块无底纹（即使全局有也不显示）。
+                    block.TextureType = BackgroundTexture.None;
+                }
+                else
+                {
+                    block.TextureType = selectedType;
+                    block.TextureColor = _backgroundTextureColor.Color.ToString();
+                    block.TextureSize = _backgroundTextureSize.DoubleValue;
+                }
+
                 settings.SplitBlockBackgrounds[id] = block;
             }
         }
@@ -1659,30 +2073,645 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.EndUpdate();
         }
 
-        _livePreviewTimer.Stop();
-        _livePreviewTimer.Start();
+        InjectorRuntime.SaveAndApply();
+        RefreshBackgroundBrushState();
+    }
+
+    /// <summary>块背景图画笔：总开关变化 → 分体模式写勾选分块（图片由文件选择设置）。</summary>
+    private void WireWallpaperBrush()
+    {
+        _blockWallpaperEnabled.PropertyChanged += (_, e) =>
+        {
+            if (e.Property != ToggleSwitch.IsCheckedProperty || _suppressBrushRefresh)
+            {
+                return;
+            }
+
+            if (_brushActive)
+            {
+                _pendingWallpaperCommit = true;
+                _splitCommitTimer.Stop();
+                _splitCommitTimer.Start();
+            }
+        };
+    }
+
+    /// <summary>选择一张图片作为勾选分块的专属背景图。</summary>
+    private async void PickBlockWallpaper()
+    {
+        var topLevel = TopLevel.GetTopLevel(this);
+        if (topLevel?.StorageProvider is not { } provider)
+        {
+            return;
+        }
+
+        var files = await provider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "选择分块背景图片",
+            AllowMultiple = false,
+            FileTypeFilter =
+            [
+                new FilePickerFileType("图片") { Patterns = ["*.png", "*.jpg", "*.jpeg", "*.bmp", "*.webp", "*.gif"] },
+                FilePickerFileTypes.All
+            ]
+        });
+        if (files.Count == 0)
+        {
+            return;
+        }
+
+        var path = files[0].TryGetLocalPath() ?? string.Empty;
+        if (string.IsNullOrEmpty(path))
+        {
+            return;
+        }
+
+        _blockWallpaperChosenPath = path;
+        _blockWallpaperPath.Text = path;
+        if (_brushActive)
+        {
+            _pendingWallpaperCommit = true;
+            _splitCommitTimer.Stop();
+            _splitCommitTimer.Start();
+        }
+    }
+
+    /// <summary>把块背景图选择写入全部勾选分块：开（且有可用图片）= 用自己的图；关 = 无专属图（透明透出整岛底图）。</summary>
+    private void CommitWallpaperToBlocks()
+    {
+        if (_suppressBrushRefresh || !_brushActive)
+        {
+            return;
+        }
+
+        var ids = _splitBlockRows.Where(r => r.IsChecked).Select(r => r.Id).ToList();
+        if (ids.Count == 0)
+        {
+            return;
+        }
+
+        var on = _blockWallpaperEnabled.IsChecked == true &&
+                 !string.IsNullOrEmpty(_blockWallpaperChosenPath) &&
+                 File.Exists(_blockWallpaperChosenPath);
+        var path = on ? _blockWallpaperChosenPath : string.Empty;
+        var settings = InjectorRuntime.Settings;
+        settings.BeginUpdate();
+        try
+        {
+            foreach (var id in ids)
+            {
+                var block = settings.SplitBlockBackgrounds.TryGetValue(id, out var existing)
+                    ? existing
+                    : new SplitBlockBackgroundSetting();
+                block.HasWallpaperOverride = on;
+                block.WallpaperPath = path;
+                settings.SplitBlockBackgrounds[id] = block;
+            }
+        }
+        finally
+        {
+            settings.EndUpdate();
+        }
+
+        InjectorRuntime.SaveAndApply();
+        RefreshBackgroundBrushState();
     }
 
     /// <summary>
-    /// 把「底色填充」分组的控件变化即时同步到勾选的分体块；
-    /// 以及勾选状态变化时用当前配置同步一次（勾选即应用）。
+    /// 刷新分块背景图画笔状态：非分体 → 无操作；分体页面 → 按勾选分块回填开关与图片路径，
+    /// 勾选为空整组禁用，勾选多个且图不一致时标注「多个值」。
     /// </summary>
-    private void WireSplitBlockLiveSync()
+    private void RefreshBlockWallpaperState()
     {
-        _backgroundColor.PropertyChanged += (_, _) => SyncSplitBlocksToBackground();
-        _gradient.PropertyChanged += (_, _) => SyncSplitBlocksToBackground();
-        _gradientEndColor.PropertyChanged += (_, _) => SyncSplitBlocksToBackground();
-        _gradientDirection.PropertyChanged += (_, _) => SyncSplitBlocksToBackground();
-        _dynamicBackgroundColor.PropertyChanged += (_, _) => SyncSplitBlocksToBackground();
+        if (_blockWallpaperGroup == null || !_splitPage)
+        {
+            return;
+        }
+
+        var settings = InjectorRuntime.Settings;
+        var checkedIds = _splitBlockRows.Where(r => r.IsChecked).Select(r => r.Id).ToList();
+        var active = checkedIds.Count > 0;
+        _blockWallpaperGroup.IsEnabled = active;
+        if (!active)
+        {
+            SetBlockWallpaperGroupDesc("未勾选任何分块：请先在上方表格勾选要设置的分块（默认全选）。未勾选时此处禁用。");
+            return;
+        }
+
+        var overrides = checkedIds
+            .Where(id => settings.SplitBlockBackgrounds.TryGetValue(id, out var b) && b.HasWallpaperOverride)
+            .Select(id => settings.SplitBlockBackgrounds[id].WallpaperPath ?? string.Empty)
+            .ToList();
+        _suppressBrushRefresh = true;
+        try
+        {
+            if (overrides.Count == 0)
+            {
+                _blockWallpaperEnabled.IsChecked = false;
+                _blockWallpaperPath.Text = string.Empty;
+                SetBgItemDesc(_blockWallpaperImgItem, BlockWallpaperImgBaseDesc, false);
+            }
+            else if (overrides.Count < checkedIds.Count || overrides.Distinct().Count() > 1)
+            {
+                _blockWallpaperEnabled.IsChecked = true;
+                _blockWallpaperPath.Text = BlockWallpaperMixed;
+                SetBgItemDesc(_blockWallpaperImgItem, BlockWallpaperImgBaseDesc, true);
+            }
+            else
+            {
+                var path = overrides[0];
+                _blockWallpaperEnabled.IsChecked = true;
+                _blockWallpaperPath.Text = path;
+                _blockWallpaperChosenPath = path;
+                SetBgItemDesc(_blockWallpaperImgItem, BlockWallpaperImgBaseDesc, false);
+            }
+        }
+        finally
+        {
+            _suppressBrushRefresh = false;
+        }
+
+        SetBlockWallpaperGroupDesc(active
+            ? $"当前给勾选的 {checkedIds.Count} 个分块设置背景图（开=用下方所选图片 / 关=该块保持透明透出整岛底图；未勾选保留原样）。"
+            : "未勾选任何分块：请先在上方表格勾选要设置的分块（默认全选）。未勾选时此处禁用。");
     }
 
-    /// <summary>移除选中分块的独立配色，使其恢复使用全局底色。</summary>
+    /// <summary>更新分块背景图画笔（卡片）说明（「降低视觉负担」开启时保持隐藏）。</summary>
+    private void SetBlockWallpaperGroupDesc(string desc)
+    {
+        if (_reduceVisualBurden.IsChecked == true)
+        {
+            return;
+        }
+
+        _blockWallpaperGroup.Description = desc;
+    }
+
+    /// <summary>
+    /// 刷新画笔（底色填充组）状态：
+    /// 非分体页面 → 保持全局语义（BuildContent 原始行为）；分体页面 → 整组作为分块画笔：
+    /// 勾选为空整组禁用；勾选多个且取值不一致时在对应卡片说明标注「（多个值）」。
+    /// 每个分块的“当前值”＝其专属配置（若启用），否则＝全局底色——这正是它运行时显示的样子。
+    /// </summary>
+    private void RefreshBackgroundBrushStateCore()
+    {
+        if (_backgroundGroup == null)
+        {
+            return;
+        }
+
+        var settings = InjectorRuntime.Settings;
+        var checkedIds = _splitBlockRows.Where(r => r.IsChecked).Select(r => r.Id).ToList();
+        if (!_splitPage)
+        {
+            // 非分体页面：恢复总开关并复位条目说明。
+            _brushActive = false;
+            if (_backgroundGroup.Footer == null)
+            {
+                _backgroundGroup.Footer = _customBackground;
+            }
+
+            _backgroundGroup.IsEnabled = true;
+            ResetBgItemDesc();
+            return;
+        }
+
+        var active = checkedIds.Count > 0;
+        _brushActive = active;
+        // 分体页面：隐藏「底色填充」总开关（每块是否用专属色由块级 Enabled 决定）；勾选为空整组禁用。
+        _backgroundGroup.Footer = null;
+        _backgroundGroup.IsEnabled = active;
+        if (!active)
+        {
+            SetBgGroupDesc("未勾选任何分块：请先在上方表格勾选要设置的分块（默认全选）。未勾选时此处禁用。");
+            ResetBgItemDesc();
+            return;
+        }
+
+        // 让组内条目的“总开关=开”逻辑放行（专属配色与全局总开关无关）。
+        if (_customBackground.IsChecked != true)
+        {
+            _suppressBrushRefresh = true;
+            try
+            {
+                _customBackground.IsChecked = true;
+            }
+            finally
+            {
+                _suppressBrushRefresh = false;
+            }
+        }
+
+        // 各分块有效值（专属配置优先，否则回落到全局底色）。
+        var globalColor = ReadColor(settings.BackgroundColor, Color.FromArgb(0xCC, 0x20, 0x20, 0x20));
+        var globalEnd = ReadColor(settings.GradientEndColor, Color.FromArgb(0xCC, 0x40, 0x40, 0xA0));
+        var effective = checkedIds.Select(id =>
+        {
+            var o = settings.SplitBlockBackgrounds.TryGetValue(id, out var b) && b.Enabled ? b : null;
+            return (Color: o != null ? ReadColor(o.Color, globalColor) : globalColor,
+                End: o != null ? ReadColor(o.GradientEndColor, globalEnd) : globalEnd,
+                Gradient: o?.GradientEnabled ?? settings.GradientEnabled,
+                Direction: o?.GradientDirection ?? settings.GradientDirection,
+                Dynamic: o?.UseDynamicColor ?? settings.DynamicBackgroundColorEnabled);
+        }).ToList();
+
+        _suppressBrushRefresh = true;
+        try
+        {
+            // 背景颜色。
+            var colors = effective.Select(v => v.Color).Distinct().ToList();
+            if (colors.Count == 1)
+            {
+                _backgroundColor.Color = colors[0];
+                SetBgItemDesc(_bgColorItem, BgColorBaseDesc, false);
+            }
+            else
+            {
+                SetBgItemDesc(_bgColorItem, BgColorBaseDesc, true);
+            }
+
+            // 线性渐变。
+            var gradients = effective.Select(v => v.Gradient).Distinct().ToList();
+            if (gradients.Count == 1)
+            {
+                _gradient.IsChecked = gradients[0];
+                SetBgItemDesc(_bgGradientItem, BgGradientBaseDesc, false);
+            }
+            else
+            {
+                SetBgItemDesc(_bgGradientItem, BgGradientBaseDesc, true);
+            }
+
+            // 渐变终止色。
+            var ends = effective.Select(v => v.End).Distinct().ToList();
+            if (ends.Count == 1)
+            {
+                _gradientEndColor.Color = ends[0];
+                SetBgItemDesc(_bgGradientEndItem, BgGradientEndBaseDesc, false);
+            }
+            else
+            {
+                SetBgItemDesc(_bgGradientEndItem, BgGradientEndBaseDesc, true);
+            }
+
+            // 渐变方向。
+            var directions = effective.Select(v => v.Direction).Distinct().ToList();
+            if (directions.Count == 1)
+            {
+                Select(_gradientDirection, GradientDirections, directions[0]);
+                SetBgItemDesc(_bgGradientDirItem, BgGradientDirBaseDesc, false);
+            }
+            else
+            {
+                SetBgItemDesc(_bgGradientDirItem, BgGradientDirBaseDesc, true);
+            }
+
+            // 动态取色。
+            var dynamics = effective.Select(v => v.Dynamic).Distinct().ToList();
+            if (dynamics.Count == 1)
+            {
+                _dynamicBackgroundColor.IsChecked = dynamics[0];
+                SetBgItemDesc(_bgDynamicItem, BgDynamicBaseDesc, false);
+            }
+            else
+            {
+                SetBgItemDesc(_bgDynamicItem, BgDynamicBaseDesc, true);
+            }
+        }
+        finally
+        {
+            _suppressBrushRefresh = false;
+        }
+
+        SetBgGroupDesc($"画笔：正在给勾选的 {checkedIds.Count} 个分块上色（默认全选＝整体统一；未勾选的分块保留原样）。");
+    }
+
+    /// <summary>更新画笔条目说明：混值（多个值）时追加提示；「降低视觉负担」开启时保持隐藏。</summary>
+    private void SetBgItemDesc(SettingsExpanderItem item, string baseDesc, bool mixed)
+    {
+        if (_reduceVisualBurden.IsChecked == true)
+        {
+            return;
+        }
+
+        item.Description = mixed ? baseDesc + BgMixedSuffix : baseDesc;
+    }
+
+    /// <summary>复位全部画笔条目说明为基本文本（非分体 / 未勾选状态）。</summary>
+    private void ResetBgItemDesc()
+    {
+        if (_reduceVisualBurden.IsChecked == true)
+        {
+            return;
+        }
+
+        if (_bgColorItem != null)
+        {
+            SetBgItemDesc(_bgColorItem, BgColorBaseDesc, false);
+        }
+
+        if (_bgDynamicItem != null)
+        {
+            SetBgItemDesc(_bgDynamicItem, BgDynamicBaseDesc, false);
+        }
+
+        if (_bgGradientItem != null)
+        {
+            SetBgItemDesc(_bgGradientItem, BgGradientBaseDesc, false);
+        }
+
+        if (_bgGradientDirItem != null)
+        {
+            SetBgItemDesc(_bgGradientDirItem, BgGradientDirBaseDesc, false);
+        }
+
+        if (_bgGradientEndItem != null)
+        {
+            SetBgItemDesc(_bgGradientEndItem, BgGradientEndBaseDesc, false);
+        }
+    }
+
+    /// <summary>更新画笔（底色填充）组说明（仅分体页面调用；「降低视觉负担」开启时保持隐藏）。</summary>
+    private void SetBgGroupDesc(string desc)
+    {
+        if (_reduceVisualBurden.IsChecked == true)
+        {
+            return;
+        }
+
+        _backgroundGroup.Description = desc;
+    }
+
+    /// <summary>
+    /// 重新枚举主界面的分体块并重建表格行。非分体主界面（或暂不可用）时隐藏整个区域。
+    /// 打开页面默认勾选全部分块（画笔作用域＝全部）；「刷新」保留既有勾选并为新分块补勾。
+    /// 勾选变化会同步刷新下方「底色填充」画笔的状态。
+    /// </summary>
+    private void RefreshSplitBlockList()
+    {
+        if (_splitBlockSection == null)
+        {
+            return;
+        }
+
+        var blocks = MainWindowStyleInjector.EnumerateSplitBlocks();
+        if (blocks.Count == 0)
+        {
+            // 非分体主界面：不显示分体块区域，并清空表格与选择集。
+            _splitPage = false;
+            _splitBlockSection.IsVisible = false;
+            _splitBlockRows = [];
+            _splitSelectedIds.Clear();
+            if (_splitBlockGrid != null)
+            {
+                _splitBlockGrid.ItemsSource = new List<SplitBlockRow>();
+            }
+
+            RefreshBackgroundBrushState();
+            return;
+        }
+
+        _splitPage = true;
+        _splitBlockSection.IsVisible = true;
+
+        // 保留仍存在的勾选；新出现（或首次打开）的分块默认勾选。
+        var known = new HashSet<string>(blocks.Select(b => b.Id));
+        var keep = new HashSet<string>(_splitSelectedIds.Where(id => known.Contains(id)));
+        foreach (var id in known)
+        {
+            if (!keep.Contains(id))
+            {
+                keep.Add(id);
+            }
+        }
+
+        _splitSelectedIds.Clear();
+        _splitSelectedIds.UnionWith(keep);
+
+        // 重建行（程序性赋值勾选，不触发行级写盘）。
+        _suppressSplitRowSync = true;
+        try
+        {
+            var rows = new List<SplitBlockRow>();
+            foreach (var b in blocks)
+            {
+                var row = new SplitBlockRow(b.Id, b.Name, b.LineNumber)
+                {
+                    IsChecked = _splitSelectedIds.Contains(b.Id)
+                };
+                UpdateSplitRowVisual(row);
+                rows.Add(row);
+            }
+
+            _splitBlockRows = rows;
+            if (_splitBlockGrid != null)
+            {
+                _splitBlockGrid.ItemsSource = rows;
+            }
+        }
+        finally
+        {
+            _suppressSplitRowSync = false;
+        }
+
+        // 挂接行勾选变化：只更新画笔作用域与画笔状态（不直接写盘）。
+        foreach (var row in _splitBlockRows)
+        {
+            row.PropertyChanged += OnSplitRowPropertyChanged;
+        }
+
+        RefreshBackgroundBrushState();
+    }
+
+    /// <summary>勾选全部分块（默认状态，只改画笔作用域，不写盘）。</summary>
+    private void SelectAllSplitBlocks()
+    {
+        _suppressSplitRowSync = true;
+        try
+        {
+            foreach (var row in _splitBlockRows)
+            {
+                row.IsChecked = true;
+            }
+        }
+        finally
+        {
+            _suppressSplitRowSync = false;
+        }
+
+        SyncSplitSelectedFromRows();
+        RefreshBackgroundBrushState();
+    }
+
+    /// <summary>取消勾选全部分块（画笔随之禁用，只改作用域，不写盘）。</summary>
+    private void ClearSplitBlockSelection()
+    {
+        _suppressSplitRowSync = true;
+        try
+        {
+            foreach (var row in _splitBlockRows)
+            {
+                row.IsChecked = false;
+            }
+        }
+        finally
+        {
+            _suppressSplitRowSync = false;
+        }
+
+        SyncSplitSelectedFromRows();
+        RefreshBackgroundBrushState();
+    }
+
+    /// <summary>按行勾选状态重建编辑目标集合。</summary>
+    private void SyncSplitSelectedFromRows()
+    {
+        foreach (var row in _splitBlockRows)
+        {
+            if (row.IsChecked)
+            {
+                _splitSelectedIds.Add(row.Id);
+            }
+            else
+            {
+                _splitSelectedIds.Remove(row.Id);
+            }
+        }
+    }
+
+    /// <summary>表格行勾选变化：只更新画笔作用域并刷新画笔状态（不直接写盘）。</summary>
+    private void OnSplitRowPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(SplitBlockRow.IsChecked) || sender is not SplitBlockRow row)
+        {
+            return;
+        }
+
+        if (_suppressSplitRowSync)
+        {
+            return;
+        }
+
+        if (row.IsChecked)
+        {
+            _splitSelectedIds.Add(row.Id);
+        }
+        else
+        {
+            _splitSelectedIds.Remove(row.Id);
+        }
+
+        RefreshBackgroundBrushState();
+    }
+
+
+    /// <summary>刷新行「当前颜色」色块：专属配置优先，否则全局底色（两者均未启用则为空）。</summary>
+    private void UpdateSplitRowVisual(SplitBlockRow row)
+    {
+        var settings = InjectorRuntime.Settings;
+        if (settings.SplitBlockBackgrounds.TryGetValue(row.Id, out var block) && block.Enabled)
+        {
+            row.ColorBrush = new SolidColorBrush(ReadColor(block.Color, Color.FromArgb(0xCC, 0x20, 0x20, 0x20)));
+        }
+        else if (settings.CustomBackgroundEnabled)
+        {
+            row.ColorBrush = new SolidColorBrush(ReadColor(settings.BackgroundColor, Color.FromArgb(0xCC, 0x20, 0x20, 0x20)));
+        }
+        else
+        {
+            row.ColorBrush = null;
+        }
+
+        row.StatusText = string.Empty;
+    }
+
+
+    /// <summary>带图标 + 文字的 CommandBar 按钮（替代原先的文字按钮）。</summary>
+    private static CommandBarButton SplitCommandButton(string glyph, string label, string tooltip, Action action)
+    {
+        var button = new CommandBarButton
+        {
+            IconSource = new FluentIconSource(glyph),
+            Label = label
+        };
+        ToolTip.SetTip(button, tooltip);
+        button.Click += (_, _) => action();
+        return button;
+    }
+
+    /// <summary>分体块表格行（勾选 = 画笔作用到的分块；INPC 支撑 DataGrid 双向绑定）。</summary>
+    private sealed class SplitBlockRow : INotifyPropertyChanged
+    {
+        public string Id { get; }
+        public string Name { get; }
+        public int LineNumber { get; }
+        public string LineText => $"第 {LineNumber + 1} 行";
+        private bool _isChecked;
+        public bool IsChecked
+        {
+            get => _isChecked;
+            set
+            {
+                if (_isChecked == value)
+                {
+                    return;
+                }
+
+                _isChecked = value;
+                OnPropertyChanged(nameof(IsChecked));
+            }
+        }
+        private IBrush? _colorBrush;
+        /// <summary>当前独立配色预览画刷（未启用独立配色时为 null）。</summary>
+        public IBrush? ColorBrush
+        {
+            get => _colorBrush;
+            set
+            {
+                if (ReferenceEquals(_colorBrush, value))
+                {
+                    return;
+                }
+
+                _colorBrush = value;
+                OnPropertyChanged(nameof(ColorBrush));
+            }
+        }
+        private string _statusText = "跟随全局";
+        public string StatusText
+        {
+            get => _statusText;
+            set
+            {
+                if (_statusText == value)
+                {
+                    return;
+                }
+
+                _statusText = value;
+                OnPropertyChanged(nameof(StatusText));
+            }
+        }
+
+        public SplitBlockRow(string id, string name, int lineNumber)
+        {
+            Id = id;
+            Name = name;
+            LineNumber = lineNumber;
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+        private void OnPropertyChanged(string propertyName) =>
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+    }
+
+    /// <summary>移除勾选分块的独立配色，使它们回退到全局底色（未勾选的不受影响）。</summary>
     private void ClearSplitBlockColors()
     {
-        var selected = _splitBlockChecks.Where(kv => kv.Value.IsChecked == true).Select(kv => kv.Key).ToList();
+        var selected = _splitBlockRows.Where(r => r.IsChecked).Select(r => r.Id).ToList();
         if (selected.Count == 0)
         {
-            _status.Text = "请先勾选要清除的分体块。";
+            _status.Text = "请先勾选要清除独立配色的分体块。";
             return;
         }
 
@@ -1700,8 +2729,13 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.EndUpdate();
         }
 
-        _status.Text = $"已清除 {selected.Count} 个分体块的独立配色。";
-        SaveAndApply();
+        InjectorRuntime.SaveAndApply();
+        foreach (var row in _splitBlockRows)
+        {
+            UpdateSplitRowVisual(row);
+        }
+        RefreshBackgroundBrushState();
+        _status.Text = $"已清除 {selected.Count} 个分体块的专属配色，它们将回到全局底色。";
     }
 
     /// <summary>从宿主窗口右上角弹出操作提醒 Toast（自动消失，5 秒内同文本不重复防刷屏）。</summary>
@@ -1719,118 +2753,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         {
             new ReminderToastWindow().ShowFor(host, message, severity, title);
         }
-    }
-
-    /// <summary>分体块背景校验失败时从右上角弹出警告 Toast。</summary>
-    private void ShowSplitBlockInfoBar(string title, string message)
-    {
-        ShowReminder($"{title}：{message}", InfoBarSeverity.Warning, title);
-    }
-
-    /// <summary>
-    /// 把当前唯一选中的分体块的独立配色复制到用户选择的其他分体块。
-    /// 要求恰好选中一个分体块作为样式来源；弹出对话框重新勾选目标分块后点「确定」应用。
-    /// </summary>
-    private async void ApplyCurrentBlockStyleToOthers()
-    {
-        var selected = _splitBlockChecks.Where(kv => kv.Value.IsChecked == true).Select(kv => kv.Key).ToList();
-        if (selected.Count == 0)
-        {
-            ShowSplitBlockInfoBar("请先选中一个分体块", "要复制样式到其他块，请先只勾选一个分体块作为样式来源。");
-            return;
-        }
-
-        if (selected.Count > 1)
-        {
-            ShowSplitBlockInfoBar("只能选中一个分体块", "当前选中了多个分体块，请只勾选一个分体块作为样式来源。");
-            return;
-        }
-
-        var sourceId = selected[0];
-        var settings = InjectorRuntime.Settings;
-        if (!settings.SplitBlockBackgrounds.TryGetValue(sourceId, out var source))
-        {
-            ShowSplitBlockInfoBar("当前分体块还没有独立配色", "请先为该分体块勾选并应用「底色填充」的配置，再复制到其他块。");
-            return;
-        }
-
-        // 弹出对话框：重新勾选要应用到的目标分块（默认全选除来源外的所有块，来源块不可选）。
-        var blocks = MainWindowStyleInjector.EnumerateSplitBlocks();
-        var names = blocks.ToDictionary(b => b.Id, b => b.Name);
-        var sourceName = names.TryGetValue(sourceId, out var displayName) ? displayName : sourceId;
-        var checks = new Dictionary<string, CheckBox>();
-        var targetPanel = new StackPanel { Spacing = 6 };
-        foreach (var block in blocks)
-        {
-            var isSource = block.Id == sourceId;
-            var check = new CheckBox
-            {
-                Content = block.Name,
-                IsChecked = !isSource,
-                IsEnabled = !isSource
-            };
-            checks[block.Id] = check;
-            targetPanel.Children.Add(check);
-        }
-
-        var dialog = new ContentDialog
-        {
-            Title = $"将“{sourceName}”的样式应用到…",
-            Content = new StackPanel
-            {
-                Spacing = 8,
-                Children =
-                {
-                    new TextBlock
-                    {
-                        Text = "勾选要应用该样式（独立配色）的目标分块：",
-                        TextWrapping = TextWrapping.Wrap
-                    },
-                    new ScrollViewer { Content = targetPanel, MaxHeight = 320 }
-                }
-            },
-            PrimaryButtonText = "确定",
-            CloseButtonText = "取消",
-            DefaultButton = ContentDialogButton.Primary
-        };
-
-        var result = await ShowDialogAsync(dialog);
-        if (result != ContentDialogResult.Primary)
-        {
-            return;
-        }
-
-        var targets = checks.Where(kv => kv.Value.IsChecked == true).Select(kv => kv.Key).ToList();
-        if (targets.Count == 0)
-        {
-            ShowSplitBlockInfoBar("未选择目标分体块", "没有勾选任何目标分体块，未做任何更改。");
-            return;
-        }
-
-        settings.BeginUpdate();
-        try
-        {
-            foreach (var id in targets)
-            {
-                settings.SplitBlockBackgrounds[id] = source.Clone();
-            }
-        }
-        finally
-        {
-            settings.EndUpdate();
-        }
-
-        // 目标分块现在已有独立配色，同步勾选状态（程序性赋值不触发 Click，不会误写盘）。
-        foreach (var id in targets)
-        {
-            if (_splitBlockChecks.TryGetValue(id, out var check))
-            {
-                check.IsChecked = true;
-            }
-        }
-
-        _status.Text = $"已把“{sourceName}”的样式应用到 {targets.Count} 个分体块。";
-        SaveAndApply();
     }
 
     // ============ 宿主对照表 ============
@@ -2107,25 +3029,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                 Orientation = Orientation.Horizontal,
                 Spacing = 4,
                 Children = { _presetAssociation, Button("重新注册", ReRegisterPresetAssociation) }
-            },
-            _presetAssociationStatus
+            }
         }
     };
-
-    /// <summary>刷新 .cizip 文件关联状态提示。</summary>
-    private void RefreshPresetAssociationStatus()
-    {
-        try
-        {
-            _presetAssociationStatus.Text = PresetFileAssociation.IsRegistered()
-                ? "已注册：双击 .cizip 预设包即可启动 ClassIsland 并进入安装确认。"
-                : "未注册：双击 .cizip 预设包将无法直接安装。";
-        }
-        catch
-        {
-            _presetAssociationStatus.Text = "无法读取文件关联状态。";
-        }
-    }
 
     /// <summary>开关变化时立即确保文件关联（不等待实时预览防抖）。</summary>
     private void WirePresetAssociation()
@@ -2141,7 +3047,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             // 立即写设置（触发 Changed → 持久化）并确保关联状态。
             InjectorRuntime.Settings.PresetFileAssociationEnabled = enabled;
             PresetFileAssociation.Ensure(enabled);
-            RefreshPresetAssociationStatus();
         };
     }
 
@@ -2152,7 +3057,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         {
             PresetFileAssociation.Unregister();
             PresetFileAssociation.Register();
-            RefreshPresetAssociationStatus();
             ShowReminder("已重新注册 .cizip 文件关联。", InfoBarSeverity.Success, "注册完成");
         }
         catch (Exception ex)
@@ -2575,7 +3479,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                  {
                      _enabled, _opacity, _rotation, _offsetX, _offsetY, _cornerRadius,
                      _animationEnabled, _animationMode, _animationAmount, _animationPeriod,
-                     _customBackground, _backgroundColor, _dynamicBackgroundColor, _dynamicBorderColor, _dynamicShadowColor,
+                     _customBackground, _dynamicBorderColor, _dynamicShadowColor,
                      _revertColorsWhenPaused, _dynamicThemeColor, _albumColorPollingInterval, _albumColorTransition,
                      _mouseHoverKeepVisible, _clickEffectEnabled, _clickEffectType,
                      _fakeWeatherEnabled, _fakeWeatherCode, _fakeWeatherTemperature,
@@ -2584,10 +3488,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                      _fakeWeatherAlertType, _fakeWeatherAlertLevel, _fakeWeatherAlertTitle, _fakeWeatherAlertDetail,
                      _fakeWeatherRainRemainingMinutes, _startupOpenTarget,
                      _reduceVisualBurden, _disableVersionCheck, _disableDegradationCheck,
-                     _gradient, _gradientEndColor, _gradientDirection, _backgroundTextureType, _backgroundTextureColor, _backgroundTextureSize,
                      _backgroundTextureSpectrumSensitivity, _backgroundTextureSpectrumBars, _backgroundTextureSpectrumMirrored,
                      _backgroundTextureSpectrumAutoWidth,
-                     _backgroundTextureEnabled,
                      _shadow, _shadowColor, _shadowBlur, _shadowOffsetX, _shadowOffsetY, _shadowOpacity,
                      _border, _borderColor, _borderThickness,
                      _wallpaperEnabled, _wallpaperBlur,
@@ -3016,7 +3918,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _cinematicFlash.Value = settings.CinematicFlashAmount;
         RefreshUserPresets();
         RefreshSplitBlockList();
-        RefreshPresetAssociationStatus();
     }
 
     private void SaveAndApply()
@@ -3046,9 +3947,14 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                 settings.Shape = IslandShape.RoundedRectangle;
             }
 
-            settings.CustomBackgroundEnabled = _customBackground.IsChecked == true;
-            settings.BackgroundColor = _backgroundColor.Color.ToString();
-            settings.DynamicBackgroundColorEnabled = _dynamicBackgroundColor.IsChecked == true;
+            // 分体页面下「底色填充」是分块画笔，不写全局底色（全局底色保持已存值）。
+            if (!_splitPage)
+            {
+                settings.CustomBackgroundEnabled = _customBackground.IsChecked == true;
+                settings.BackgroundColor = _backgroundColor.Color.ToString();
+                settings.DynamicBackgroundColorEnabled = _dynamicBackgroundColor.IsChecked == true;
+            }
+
             settings.DynamicBorderColorEnabled = _dynamicBorderColor.IsChecked == true;
             settings.DynamicShadowColorEnabled = _dynamicShadowColor.IsChecked == true;
             settings.RevertColorsWhenPaused = _revertColorsWhenPaused.IsChecked == true;
@@ -3079,18 +3985,25 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.DiagnosticLoggingEnabled = _diagnosticLogging.IsChecked == true;
             settings.AlbumColorPollingIntervalSeconds = _albumColorPollingInterval.DoubleValue;
             settings.AlbumColorTransitionSeconds = _albumColorTransition.DoubleValue;
-            settings.GradientEnabled = _gradient.IsChecked == true;
-            settings.GradientEndColor = _gradientEndColor.Color.ToString();
-            settings.GradientDirection = Selected(_gradientDirection, GradientDirection.TopLeftToBottomRight);
-            settings.BackgroundTextureType = _backgroundTextureEnabled.IsChecked == true
-                ? Selected(_backgroundTextureType, BackgroundTexture.None)
-                : BackgroundTexture.None;
-            settings.BackgroundTextureColor = _backgroundTextureColor.Color.ToString();
-            settings.BackgroundTextureSize = _backgroundTextureSize.DoubleValue;
-            settings.BackgroundTextureSpectrumSensitivity = _backgroundTextureSpectrumSensitivity.Value;
-            settings.BackgroundTextureSpectrumBars = (int)Math.Round(_backgroundTextureSpectrumBars.DoubleValue);
-            settings.BackgroundTextureSpectrumMirrored = _backgroundTextureSpectrumMirrored.IsChecked == true;
-            settings.BackgroundTextureSpectrumAutoWidth = _backgroundTextureSpectrumAutoWidth.IsChecked == true;
+            if (!_splitPage)
+            {
+                settings.GradientEnabled = _gradient.IsChecked == true;
+                settings.GradientEndColor = _gradientEndColor.Color.ToString();
+                settings.GradientDirection = Selected(_gradientDirection, GradientDirection.TopLeftToBottomRight);
+            }
+            // 分体页面下「底纹纹理」是分块画笔，不写全局底纹（逐块写入由 CommitTextureToBlocks 负责）。
+            if (!_splitPage)
+            {
+                settings.BackgroundTextureType = _backgroundTextureEnabled.IsChecked == true
+                    ? Selected(_backgroundTextureType, BackgroundTexture.None)
+                    : BackgroundTexture.None;
+                settings.BackgroundTextureColor = _backgroundTextureColor.Color.ToString();
+                settings.BackgroundTextureSize = _backgroundTextureSize.DoubleValue;
+                settings.BackgroundTextureSpectrumSensitivity = _backgroundTextureSpectrumSensitivity.Value;
+                settings.BackgroundTextureSpectrumBars = (int)Math.Round(_backgroundTextureSpectrumBars.DoubleValue);
+                settings.BackgroundTextureSpectrumMirrored = _backgroundTextureSpectrumMirrored.IsChecked == true;
+                settings.BackgroundTextureSpectrumAutoWidth = _backgroundTextureSpectrumAutoWidth.IsChecked == true;
+            }
             settings.ShadowEnabled = _shadow.IsChecked == true;
             settings.ShadowColor = _shadowColor.Color.ToString();
             settings.ShadowBlur = _shadowBlur.DoubleValue;

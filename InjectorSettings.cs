@@ -152,6 +152,24 @@ public sealed class SplitBlockBackgroundSetting
     /// <summary>是否跟随 SMTC 动态取色（块级应用；关闭时用固定 <see cref="Color"/>）。</summary>
     public bool UseDynamicColor { get; set; }
 
+    /// <summary>是否启用该分体块的底纹覆盖（否则继承全局「底纹纹理」配置）。</summary>
+    public bool HasTextureOverride { get; set; }
+
+    /// <summary>分体块底纹图案（仅 <see cref="HasTextureOverride"/> 时生效；动态频谱不可逐块）。</summary>
+    public BackgroundTexture TextureType { get; set; }
+
+    /// <summary>分体块底纹线条颜色（ARGB 字符串）。</summary>
+    public string TextureColor { get; set; } = "#2EFFFFFF";
+
+    /// <summary>分体块底纹单元大小（像素）。</summary>
+    public double TextureSize { get; set; } = 24;
+
+    /// <summary>是否启用该分块的专属背景图（否则保持透明、透出整岛底图）。</summary>
+    public bool HasWallpaperOverride { get; set; }
+
+    /// <summary>专属背景图路径（本地图片，空=无）。</summary>
+    public string WallpaperPath { get; set; } = string.Empty;
+
     public SplitBlockBackgroundSetting Clone() => new()
     {
         Enabled = Enabled,
@@ -159,7 +177,13 @@ public sealed class SplitBlockBackgroundSetting
         GradientEnabled = GradientEnabled,
         GradientEndColor = GradientEndColor,
         GradientDirection = GradientDirection,
-        UseDynamicColor = UseDynamicColor
+        UseDynamicColor = UseDynamicColor,
+        HasTextureOverride = HasTextureOverride,
+        TextureType = TextureType,
+        TextureColor = TextureColor,
+        TextureSize = TextureSize,
+        HasWallpaperOverride = HasWallpaperOverride,
+        WallpaperPath = WallpaperPath
     };
 }
 
