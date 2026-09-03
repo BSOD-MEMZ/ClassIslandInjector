@@ -925,14 +925,21 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
         if (MainWindowStyleInjector.IsSeparatedMode())
         {
-            panel.Children.Add(new InfoBar
+            var splitInfoBar = new InfoBar
             {
-                Severity = InfoBarSeverity.Informational,
-                Title = "分体主界面模式",
-                Message = "已适配分体主界面：底色/边框/阴影、分体块独立配色、底图/视频背景与底纹纹理均可用。",
+                Severity = InfoBarSeverity.Warning,
+                Title = "检测到分体主界面",
+                Message = "本插件虽已适配分体主界面（分体块独立配色 / 底纹 / 背景图），但仍有部分功能未完全适配，不建议在使用本插件时开启分体主界面。",
                 IsOpen = true,
                 IsClosable = false
+            };
+            splitInfoBar.ActionButton = Button("关闭分体主界面", () =>
+            {
+                MainWindowStyleInjector.DisableIslandSeparation();
+                splitInfoBar.IsOpen = false;
+                RefreshSplitBlockList();
             });
+            panel.Children.Add(splitInfoBar);
         }
         if (MainWindowStyleInjector.IsMultiLineMode())
         {
@@ -1131,13 +1138,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Children =
             {
                 new TextBlock { Text = "自定义 FFmpeg 下载源（可选）", FontWeight = FontWeight.SemiBold },
-                new TextBlock
-                {
-                    Text = "安装器默认优先从内置精简源下载（xxtsoft.top/support/injector/…），失败自动回退 GitHub / 代理 / gyan。也可以填写你自己的镜像直链（可选）。",
-                    FontSize = 12,
-                    Opacity = 0.6,
-                    TextWrapping = TextWrapping.Wrap
-                },
                 _customFfmpegUrl
             }
         };
@@ -1401,7 +1401,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         actions.Children.Add(Button("重载样式表", ReloadStyleSheet));
         actions.Children.Add(Button("重启 ClassIsland", RestartClassIsland));
         panel.Children.Add(actions);
-        panel.Children.Add(_status);
 
         // 拖拽 .cizip / .zip 预设包到设置页即可导入安装。
         // 必须先 SetAllowDrop(true)，否则控件不接收拖放（指针显示禁用、DragOver 不触发）。
@@ -1579,12 +1578,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Margin = new Thickness(0, 4, 0, 0)
         };
         section.Children.Add(new IconText { Glyph = "\uE51F", Text = "分体块背景（底色填充画笔）", Margin = new Thickness(0, 4, 0, 0) });
-        section.Children.Add(new TextBlock
-        {
-            Text = "下方「背景 → 底色填充」就是画笔：勾选哪些分块，它就只给哪些分块上色（默认全选＝整体统一）。取消勾选某块＝这轮不动它、保留它的颜色；一个都不勾＝画笔禁用。",
-            TextWrapping = TextWrapping.Wrap,
-            Opacity = 0.8
-        });
 
         // 顶栏：带图标的 CommandBar（替代原先的文字按钮）。
         section.Children.Add(new CommandBar
@@ -4324,6 +4317,11 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         }
 
         var available = FFmpegRuntime.IsAvailable;
+        if (_customFfmpegPanel != null)
+        {
+            // FFmpeg 已就绪时无需自定义下载源，隐藏该区域；缺失时才显示供填写镜像直链。
+            _customFfmpegPanel.IsVisible = !available;
+        }
         _ffmpegInfoBar.IsOpen = !available;
         _ffmpegInfoBar.Severity = available ? InfoBarSeverity.Success : InfoBarSeverity.Warning;
         _ffmpegInfoBar.Title = available ? "FFmpeg 库已就绪" : "缺少 FFmpeg 库";

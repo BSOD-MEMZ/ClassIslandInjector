@@ -4739,6 +4739,52 @@ internal sealed class MainWindowStyleInjector : IDisposable
     }
 
     /// <summary>
+    /// 关闭宿主「分体主界面」（把宿主实时设置 IsIslandSeperated 写为 false）。
+    /// 供设置页警告 InfoBar 的「关闭分体主界面」按钮调用；宿主设置对象带变更通知，写回后即重建主界面为单块整岛。
+    /// 优先写宿主 DI 的 SettingsService.Settings（设置页绑定的实时对象），回退到 App.Settings。
+    /// </summary>
+    public static void DisableIslandSeparation()
+    {
+        object? settings = null;
+        try
+        {
+            var services = IAppHost.Host?.Services;
+            var settingsServiceType = Type.GetType("ClassIsland.Services.SettingsService, ClassIsland");
+            if (settingsServiceType != null)
+            {
+                var service = services?.GetService(settingsServiceType);
+                settings = service?.GetType()
+                    .GetProperty(HostContract.SettingsProperty, BindingFlags.Instance | BindingFlags.Public)?.GetValue(service);
+            }
+        }
+        catch
+        {
+            // 取不到实时对象时回退到 App.Settings。
+        }
+
+        try
+        {
+            if (settings == null)
+            {
+                var app = AppBase.Current;
+                var appType = app?.GetType();
+                settings = appType?.GetProperty(HostContract.SettingsProperty, BindingFlags.Instance | BindingFlags.Public)?.GetValue(app);
+            }
+
+            var prop = settings?.GetType()
+                .GetProperty(HostContract.IsIslandSeperatedProperty, BindingFlags.Instance | BindingFlags.Public);
+            if (prop is { CanWrite: true })
+            {
+                prop.SetValue(settings, false);
+            }
+        }
+        catch
+        {
+            // 宿主结构变化时忽略，保持现状。
+        }
+    }
+
+    /// <summary>
     /// 检测宿主是否处于「多行主界面」模式（主界面包含多行 MainWindowLine）。
     /// 多行模式下本插件仅极少数功能无法生效，插件整体仍可继续正常运行，设置页据此提示用户。
     /// </summary>

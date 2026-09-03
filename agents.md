@@ -163,3 +163,17 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
 - 新设置属性必须同步更新：字段 → 属性 → `CopyFrom` → `ProtectedSettings`（如相关）→ 设置页 `LoadFromSettings`/`SaveAndApply`。
 - 涉及 UI 线程访问必须通过 `Dispatcher.UIThread.Post`。
 - 任何 WinRT 调用都要 try/catch 兜底，异常不能冒泡到宿主。
+
+## 界面改动与检查器结构（2026-09，持续更新）
+
+- 设置页（`Views/InjectorSettingsPage.cs`）已删除的冗余文案/控件：
+  - 页面最底部状态文本 `_status` 已从 `panel.Children` 移除（不再显示）；字段与 `_status.Text = …` 赋值仍保留（纯读字段无 CS0414，仅不渲染）。
+  - 顶部「分体块背景」CommandBar 下方的大段说明 TextBlock 已删（只留标题 IconText）。
+  - 「自定义 FFmpeg 下载源（可选）」卡片的 0.6 透明度说明 TextBlock 已删（保留加粗标题 + 输入框 `_customFfmpegUrl`）。
+- 分体主界面警告：`MainWindowStyleInjector` 新增 `public static void DisableIslandSeparation()`（优先写宿主 DI `SettingsService.Settings` 的 `IsIslandSeperated=false`，回退 App.Settings；try/catch 兜底）。设置页在 `IsSeparatedMode()` 时新建 **Warning InfoBar**（“仍部分未完全适配，不建议使用”）+ ActionButton「关闭分体主界面」→ 调该方法 + 关 InfoBar + `RefreshSplitBlockList()`。
+- FFmpeg 已就绪（`FFmpegRuntime.IsAvailable`）时隐藏自定义下载源区：`RefreshFfmpegAvailability()` 内 `_customFfmpegPanel.IsVisible = !available`（安装器关闭 / 删除库后该函数被调，天然联动）。
+- **底图图层编辑器检查器（`Views/WallpaperLayerEditor.cs`）改为 TabStrip 分段分组**（仿视频编辑器，ClassIsland 原生 `TabStripStyle` + `compact` 类 + `AnimatedIconButton display-role` 图标按钮，选中展开文本）：
+  - 段与分组页：`general`「图层」(名称/SMTC 模式/暂停隐藏/不透明度/显示方式/全屏扩展+九宫格切图/画布图层操作)、`content`「内容」(形状+文本专属行)、`effect`「效果」(投影)、`transform`「变换」(尺寸/旋转/相对定位/重置变换)。画笔/选区仍是工具上下文组，独立于分段。
+  - 字段：`_inspectorSegmented/_inspectorTabs/_inspectorPages/_activeInspectorPage/_noLayerHint/_lastSelectionProfile/_updatingSegments`。构造：`BuildInspector()` 末尾建页并 `BuildInspectorTabStrip()`；辅助：`ActivateInspectorPage/SetPageVisibility/RefreshInspectorSegments`。
+  - 段显隐：内容=全部选中同类型且是 形状/文本；效果=是图片；变换=非 SMTC 默认处理；画笔/选区工具或未选中时整条分段与分组页隐藏，未选中只显示占位提示 `_noLayerHint`。
+  - 默认段：形状/文本**新选中**（选中指纹 `Id:Kind` 排序串变化，`_lastSelectionProfile`）才落到「内容」页；原地编辑（改数值触发 ApplyToSelected→RefreshInspector，指纹不变）不跳页，避免在变换页调旋转/偏移时 Tab 乱跳。教程「换形状类型」的 `#EditorShapeType` 在内容页，新画形状后默认即落内容页 → 教程可正常点到。

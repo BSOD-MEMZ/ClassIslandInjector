@@ -67,13 +67,17 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private Control _anchorItem = null!;
     private Control _offsetXItem = null!;
     private Control _offsetYItem = null!;
-    /// <summary>检查器分组小标题（未选中图层时整体隐藏，避免出现无内容的标题）。</summary>
-    private Control _layerGroupTitle = null!;
-    private Control _appearanceGroupTitle = null!;
-    private Control _effectGroupTitle = null!;
-    private Control _sizeGroupTitle = null!;
-    private Control _rotationGroupTitle = null!;
-    private Control _positionGroupTitle = null!;
+    /// <summary>检查器 TabStrip 分段条与分组页（仿视频编辑器：TabStrip 分段条切换配置分组）。</summary>
+    private TabStrip _inspectorSegmented = null!;
+    private readonly Dictionary<string, TabStripItem> _inspectorTabs = [];
+    private readonly Dictionary<string, StackPanel> _inspectorPages = [];
+    private string _activeInspectorPage = "general";
+    /// <summary>上次分段刷新时的选中指纹（用于识别「新选中」而非原地编辑，避免 Tab 跳变）。</summary>
+    private string _lastSelectionProfile = "";
+    /// <summary>分段条程序化刷新时的重入保护。</summary>
+    private bool _updatingSegments;
+    /// <summary>未选中图层时的占位提示。</summary>
+    private Control _noLayerHint = null!;
     /// <summary>「重置变换」行（未选中图层时隐藏）。</summary>
     private Control _resetTransformItem = null!;
     /// <summary>自定义尺寸的两行（铺满主界面关闭时显示）。</summary>
@@ -145,8 +149,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private Button _rasterizeCanvasButton = null!;
     /// <summary>画笔 / 橡皮擦设置组（画笔工具激活时独占显示）。</summary>
     private Control _brushGroup = null!;
-    /// <summary>图层常规设置组（图层工具时显示；选区/画笔工具时隐藏）。</summary>
-    private Control _layerPanel = null!;
     /// <summary>命令栏滤镜按钮（仅选中图片图层时可用）。</summary>
     private CommandBarButton _hslFilterButton = null!;
     private CommandBarButton _brightnessFilterButton = null!;
@@ -1872,33 +1874,30 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             l.AnchorY = _anchorPicker.AnchorY;
         });
 
-        // 设置项平铺：小标题分组，不包裹卡片（参考弃用可视化编辑器的检查器罗列方式：
-        // 分组小标题 + 每行「标签 | 控件」，统一行高、统一间距，视觉更整齐）。
+        // 检查器布局：仿视频编辑器用 TabStrip 分段（常规 / 内容 / 效果 / 变换）对配置项分组。
+        // 下面按「常规 → 效果 → 内容 → 变换」把行拼进对应分组页；段内行仍由 RefreshInspector
+        // 按选中图层类型逐项显隐，TabStrip 段本身按类型显隐（内容=形状/文本、效果=图片、
+        // 变换=非 SMTC 默认处理），画笔 / 选区是工具上下文组、与分段无关。
         var inspector = new StackPanel { Spacing = 8 };
-        inspector.Children.Add(new TextBlock
-        {
-            Text = "检查器",
-            FontSize = 16,
-            FontWeight = FontWeight.SemiBold,
-            Margin = new Thickness(0, 0, 0, 2)
-        });
-        var layerPanel = new StackPanel { Spacing = 8 };
-        _layerPanel = layerPanel;
-        _layerGroupTitle = GroupSubtitle("\uE9B2", "图层");
-        layerPanel.Children.Add(_layerGroupTitle);
+        var generalPage = new StackPanel { Spacing = 8 };   // 「常规」：图层 + 外观 + 画布图层操作
+        var contentPage = new StackPanel { Spacing = 8 };   // 「内容」：形状 / 文本图层专属
+        var effectPage = new StackPanel { Spacing = 8 };    // 「效果」：投影（图片图层）
+        var transformPage = new StackPanel { Spacing = 8 }; // 「变换」：尺寸 / 旋转 / 相对定位
+        _inspectorPages["general"] = generalPage;
+        _inspectorPages["content"] = contentPage;
+        _inspectorPages["effect"] = effectPage;
+        _inspectorPages["transform"] = transformPage;
+        // 「常规」分组：名称 + SMTC / 不透明度 / 显示方式 + 全屏扩展与九宫格切图（仅图片图层）。
         _nameItem = SettingsRow("名称", _nameBox);
-        layerPanel.Children.Add(_nameItem);
-        _appearanceGroupTitle = GroupSubtitle("\uEC4A", "外观");
-        layerPanel.Children.Add(_appearanceGroupTitle);
+        generalPage.Children.Add(_nameItem);
         _smtcModeItem = SettingsRow("SMTC 模式", _smtcModeBox);
-        layerPanel.Children.Add(_smtcModeItem);
+        generalPage.Children.Add(_smtcModeItem);
         _smtcHidePausedItem = SettingsRow("暂停/停止时隐藏", _smtcHidePausedToggle);
-        layerPanel.Children.Add(_smtcHidePausedItem);
+        generalPage.Children.Add(_smtcHidePausedItem);
         _opacityItem = SettingsRow("不透明度", _opacitySlider);
-        layerPanel.Children.Add(_opacityItem);
+        generalPage.Children.Add(_opacityItem);
         _displayModeItem = SettingsRow("显示方式", _displayModeBox);
-        layerPanel.Children.Add(_displayModeItem);
-        // 全屏扩展 + 九宫格切图（仅图片图层）
+        generalPage.Children.Add(_displayModeItem);
         _fullscreenItem = SettingsRow("扩展到整个显示框架", _fullscreenToggle);
         _sliceItem = SettingsRow("启用九宫格切图", _sliceToggle);
         _editSliceItem = SettingsRow("切图编辑", _editSliceButton);
@@ -1906,30 +1905,28 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _sliceTopItem = SettingsRow("上切边 (px)", _sliceTopSpin);
         _sliceRightItem = SettingsRow("右切边 (px)", _sliceRightSpin);
         _sliceBottomItem = SettingsRow("下切边 (px)", _sliceBottomSpin);
-        layerPanel.Children.Add(_fullscreenItem);
-        layerPanel.Children.Add(_sliceItem);
-        layerPanel.Children.Add(_editSliceItem);
-        layerPanel.Children.Add(_sliceLeftItem);
-        layerPanel.Children.Add(_sliceTopItem);
-        layerPanel.Children.Add(_sliceRightItem);
-        layerPanel.Children.Add(_sliceBottomItem);
-        layerPanel.Children.Add(_fullscreenHint);
-        // 效果（仅图片图层）：投影（高斯模糊 / 色相饱和度 / 亮度对比度改由顶部命令栏的滤镜窗口调整）
-        _effectGroupTitle = GroupSubtitle("\uF42F", "效果");
-        layerPanel.Children.Add(_effectGroupTitle);
+        generalPage.Children.Add(_fullscreenItem);
+        generalPage.Children.Add(_sliceItem);
+        generalPage.Children.Add(_editSliceItem);
+        generalPage.Children.Add(_sliceLeftItem);
+        generalPage.Children.Add(_sliceTopItem);
+        generalPage.Children.Add(_sliceRightItem);
+        generalPage.Children.Add(_sliceBottomItem);
+        generalPage.Children.Add(_fullscreenHint);
+        // 「效果」分组：投影（高斯模糊 / 色相饱和度 / 亮度对比度改由顶部命令栏的滤镜窗口调整）。
         _shadowItem = SettingsRow("投影", _shadowToggle);
         _shadowBlurItem = SettingsRow("投影模糊", _shadowBlurSpin);
         _shadowOffsetXItem = SettingsRow("投影水平偏移", _shadowOffsetXSpin);
         _shadowOffsetYItem = SettingsRow("投影垂直偏移", _shadowOffsetYSpin);
         _shadowColorItem = SettingsRow("投影颜色", _shadowColorPicker);
         _shadowOpacityItem = SettingsRow("投影不透明度", _shadowOpacitySlider);
-        layerPanel.Children.Add(_shadowItem);
-        layerPanel.Children.Add(_shadowBlurItem);
-        layerPanel.Children.Add(_shadowOffsetXItem);
-        layerPanel.Children.Add(_shadowOffsetYItem);
-        layerPanel.Children.Add(_shadowColorItem);
-        layerPanel.Children.Add(_shadowOpacityItem);
-        // 画笔 / 橡皮擦设置（对应工具激活时独占显示，与图层常规设置分开）
+        effectPage.Children.Add(_shadowItem);
+        effectPage.Children.Add(_shadowBlurItem);
+        effectPage.Children.Add(_shadowOffsetXItem);
+        effectPage.Children.Add(_shadowOffsetYItem);
+        effectPage.Children.Add(_shadowColorItem);
+        effectPage.Children.Add(_shadowOpacityItem);
+        // 画笔 / 橡皮擦 / 取色设置（对应工具激活时独占显示，与图层常规设置分开）。
         _brushColorItem = SettingsRow("画笔颜色", _brushColorPicker);
         _brushSizeItem = SettingsRow("画笔大小", _brushSizeSlider);
         _brushTipItem = SettingsRow("笔触", _brushTipBox);
@@ -1949,8 +1946,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 _brushAaItem
             }
         };
-        inspector.Children.Add(_brushGroup);
-        // 形状图层专属（仅选中形状图层时显示）
+        // 「内容」分组：形状图层专属（形状类型 / 填充 / 描边）。
         _shapeTypeItem = SettingsRow("形状类型", _shapeTypeBox);
         _shapeCornerRadiusItem = SettingsRow("圆角半径", _shapeCornerRadiusSpin);
         _shapeStarPointsItem = SettingsRow("星角数", _shapeStarPointsSpin);
@@ -1960,16 +1956,16 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _shapeStrokeItem = SettingsRow("描边色", _shapeStrokePicker);
         _shapeStrokeThemeItem = SettingsRow("描边色跟随主题", _shapeStrokeThemeToggle);
         _shapeStrokeWidthItem = SettingsRow("描边粗细", _shapeStrokeSpin);
-        layerPanel.Children.Add(_shapeTypeItem);
-        layerPanel.Children.Add(_shapeCornerRadiusItem);
-        layerPanel.Children.Add(_shapeStarPointsItem);
-        layerPanel.Children.Add(_shapeStarInsetItem);
-        layerPanel.Children.Add(_shapeFillItem);
-        layerPanel.Children.Add(_shapeFillThemeItem);
-        layerPanel.Children.Add(_shapeStrokeItem);
-        layerPanel.Children.Add(_shapeStrokeThemeItem);
-        layerPanel.Children.Add(_shapeStrokeWidthItem);
-        // 文本图层专属（仅选中文本图层时显示）
+        contentPage.Children.Add(_shapeTypeItem);
+        contentPage.Children.Add(_shapeCornerRadiusItem);
+        contentPage.Children.Add(_shapeStarPointsItem);
+        contentPage.Children.Add(_shapeStarInsetItem);
+        contentPage.Children.Add(_shapeFillItem);
+        contentPage.Children.Add(_shapeFillThemeItem);
+        contentPage.Children.Add(_shapeStrokeItem);
+        contentPage.Children.Add(_shapeStrokeThemeItem);
+        contentPage.Children.Add(_shapeStrokeWidthItem);
+        // 「内容」分组：文本图层专属（内容 / 字体 / 颜色 / 描边 / 对齐）。
         _textItem = SettingsRow("文本内容", _textBox);
         _textFontSizeItem = SettingsRow("字号", _textFontSizeSpin);
         _textFontFamilyItem = SettingsRow("字体", _textFontFamilyBox);
@@ -1981,42 +1977,37 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _textUseSmtcTitleItem = SettingsRow("显示为媒体标题", _textUseSmtcTitleToggle);
         _textBoldItem = SettingsRow("加粗", _textBoldToggle);
         _textAlignItem = SettingsRow("水平对齐", _textAlignBox);
-        layerPanel.Children.Add(_textItem);
-        layerPanel.Children.Add(_textFontSizeItem);
-        layerPanel.Children.Add(_textFontFamilyItem);
-        layerPanel.Children.Add(_textColorItem);
-        layerPanel.Children.Add(_textColorThemeItem);
-        layerPanel.Children.Add(_textStrokeItem);
-        layerPanel.Children.Add(_textStrokeColorItem);
-        layerPanel.Children.Add(_textStrokeThicknessItem);
-        layerPanel.Children.Add(_textUseSmtcTitleItem);
-        layerPanel.Children.Add(_textBoldItem);
-        layerPanel.Children.Add(_textAlignItem);
+        contentPage.Children.Add(_textItem);
+        contentPage.Children.Add(_textFontSizeItem);
+        contentPage.Children.Add(_textFontFamilyItem);
+        contentPage.Children.Add(_textColorItem);
+        contentPage.Children.Add(_textColorThemeItem);
+        contentPage.Children.Add(_textStrokeItem);
+        contentPage.Children.Add(_textStrokeColorItem);
+        contentPage.Children.Add(_textStrokeThicknessItem);
+        contentPage.Children.Add(_textUseSmtcTitleItem);
+        contentPage.Children.Add(_textBoldItem);
+        contentPage.Children.Add(_textAlignItem);
+        // 「变换」分组：尺寸（铺满主界面 / 自定义宽高）+ 旋转 + 相对定位（锚点 / 偏移 / 重置）。
         _widthItem = SettingsRow("宽度 (px)", _widthSpin);
         _heightItem = SettingsRow("高度 (px)", _heightSpin);
-        _sizeGroupTitle = GroupSubtitle("\uE27E", "尺寸");
-        layerPanel.Children.Add(_sizeGroupTitle);
         _fillIslandItem = SettingsRow("铺满主界面", _fillIslandToggle);
-        layerPanel.Children.Add(_fillIslandItem);
-        layerPanel.Children.Add(_widthItem);
-        layerPanel.Children.Add(_heightItem);
-        _rotationGroupTitle = GroupSubtitle("\uEEA5", "旋转");
-        layerPanel.Children.Add(_rotationGroupTitle);
+        transformPage.Children.Add(_fillIslandItem);
+        transformPage.Children.Add(_widthItem);
+        transformPage.Children.Add(_heightItem);
         _rotationItem = SettingsRow("角度 (°)", _rotationSpin);
-        layerPanel.Children.Add(_rotationItem);
-        _positionGroupTitle = GroupSubtitle("\uE113", "相对定位");
-        layerPanel.Children.Add(_positionGroupTitle);
+        transformPage.Children.Add(_rotationItem);
         _anchorItem = SettingsRow("锚点", _anchorPicker);
-        layerPanel.Children.Add(_anchorItem);
+        transformPage.Children.Add(_anchorItem);
         _offsetXItem = SettingsRow("水平偏移 (px)", _offsetXSpin);
-        layerPanel.Children.Add(_offsetXItem);
+        transformPage.Children.Add(_offsetXItem);
         _offsetYItem = SettingsRow("垂直偏移 (px)", _offsetYSpin);
-        layerPanel.Children.Add(_offsetYItem);
-        layerPanel.Children.Add(_relativeHint);
+        transformPage.Children.Add(_offsetYItem);
+        transformPage.Children.Add(_relativeHint);
         _resetTransformItem = SettingsRow("重置变换", Button("重置变换", ResetLayerTransform));
-        layerPanel.Children.Add(_resetTransformItem);
+        transformPage.Children.Add(_resetTransformItem);
 
-        // ---- 像素选区操作（当前图层有选区时显示）----
+        // ---- 像素选区操作（当前图层有选区时显示，与分段无关）----
         _selectionToLayerButton = Button("从选区新建图层", () =>
         {
             _canvas.LayerFromSelection();
@@ -2044,9 +2035,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 }
             }
         };
-        inspector.Children.Add(_selectionGroup);
 
-        // ---- 画布图层操作（选中画布图层时显示）----
+        // ---- 画布图层操作（选中画布图层时显示，归入「常规」分组）----
         _rasterizeCanvasButton = Button("栅格化为图片", () =>
         {
             var layer = _canvas.SelectedLayer;
@@ -2072,9 +2062,163 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 }
             }
         };
-        layerPanel.Children.Add(_canvasGroup);
-        inspector.Children.Add(_layerPanel);
+        generalPage.Children.Add(_canvasGroup);
+
+        // 组装：顶部 TabStrip 分段条 + 未选中占位提示 + 工具上下文组 + 各分组页。
+        // 上下文组（画笔 / 选区）在分段之上（与旧版同序），选中图层后才显示分段条。
+        BuildInspectorTabStrip();
+        _noLayerHint = new TextBlock
+        {
+            Text = "未选中图层。点击画布上的图层，或在左侧图层面板选择。",
+            TextWrapping = TextWrapping.Wrap,
+            Opacity = 0.75,
+            FontSize = 12
+        };
+        inspector.Children.Add(_inspectorSegmented);
+        inspector.Children.Add(_noLayerHint);
+        inspector.Children.Add(_brushGroup);
+        inspector.Children.Add(_selectionGroup);
+        inspector.Children.Add(generalPage);
+        inspector.Children.Add(contentPage);
+        inspector.Children.Add(effectPage);
+        inspector.Children.Add(transformPage);
+        // 初始只激活「常规」页，其余页等选中后由 RefreshInspector 决定。
+        _inspectorSegmented.IsVisible = false;
+        SetPageVisibility("general");
+        _noLayerHint.IsVisible = true;
         return inspector;
+    }
+
+    /// <summary>
+    /// 构建检查器 TabStrip 分段条（仿视频编辑器）：ClassIsland 原生 TabStrip（TabStripStyle + compact），
+    /// 图标 + 文本平时只显示图标、激活（选中）时展开为图标 + 文本。
+    /// </summary>
+    private void BuildInspectorTabStrip()
+    {
+        _inspectorSegmented = new TabStrip { HorizontalAlignment = HorizontalAlignment.Left };
+        if (ThemePalette.FindResource("TabStripStyle") is Avalonia.Styling.ControlTheme tabTheme)
+        {
+            _inspectorSegmented.Theme = tabTheme;
+        }
+
+        _inspectorSegmented.Classes.Add("compact");
+        _inspectorTabs.Clear();
+        foreach (var (key, label, glyph) in new[]
+        {
+            ("general", "图层", "\uE9B2"),
+            ("content", "内容", "\uEA2E"),
+            ("effect", "效果", "\uF42F"),
+            ("transform", "变换", "\uE0EC")
+        })
+        {
+            var item = new TabStripItem();
+            var button = new AnimatedIconButton { Glyph = glyph, Text = label };
+            button.Classes.Add("display-role");
+            item.PropertyChanged += (_, e) =>
+            {
+                if (e.Property == ListBoxItem.IsSelectedProperty)
+                {
+                    button.IsKeepingExpanded = item.IsSelected;
+                }
+            };
+            item.Content = button;
+            _inspectorTabs[key] = item;
+            _inspectorSegmented.Items.Add(item);
+        }
+
+        _inspectorSegmented.SelectionChanged += (_, _) =>
+        {
+            if (_updatingSegments || _inspectorSegmented.SelectedItem is not TabStripItem sel)
+            {
+                return;
+            }
+
+            foreach (var (key, item) in _inspectorTabs)
+            {
+                if (ReferenceEquals(item, sel))
+                {
+                    _activeInspectorPage = key;
+                    SetPageVisibility(key);
+                    break;
+                }
+            }
+        };
+    }
+
+    /// <summary>切换激活的分组页并同步 TabStrip 选中项（SelectionChanged 会兜底再同步一次，无副作用）。</summary>
+    private void ActivateInspectorPage(string key)
+    {
+        _activeInspectorPage = key;
+        SetPageVisibility(key);
+        if (_inspectorTabs.TryGetValue(key, out var item))
+        {
+            _inspectorSegmented.SelectedItem = item;
+        }
+    }
+
+    /// <summary>让分组页只有 key 对应页可见（其余页收起，避免多页叠加）。</summary>
+    private void SetPageVisibility(string key)
+    {
+        foreach (var (k, page) in _inspectorPages)
+        {
+            page.IsVisible = k == key;
+        }
+    }
+
+    /// <summary>
+    /// 按工具上下文与选中图层类型刷新检查器分段：内容段仅形状/文本、效果段仅图片、
+    /// 变换段在 SMTC 默认处理时隐藏；画笔 / 选区工具或无选中图层时隐藏整个分段与分组页。
+    /// 形状 / 文本「新选中」（profileChanged）时默认落到「内容」段（教程 #EditorShapeType 需可见）；
+    /// 原地编辑（拖动数值等）不跳段，避免在变换页改旋转 / 偏移时 Tab 乱跳。
+    /// </summary>
+    private void RefreshInspectorSegments(bool hasLayer, bool brushTool, bool selectionTool, bool isShape, bool isText, bool isImage, bool smtcDefault, bool profileChanged)
+    {
+        if (_inspectorPages.Count == 0)
+        {
+            return;
+        }
+
+        var showTabs = hasLayer && !brushTool && !selectionTool;
+        _inspectorSegmented.IsVisible = showTabs;
+        // 无选中图层且不在画笔 / 选区工具时显示占位提示。
+        _noLayerHint.IsVisible = !hasLayer && !brushTool && !selectionTool;
+        var showContent = showTabs && (isShape || isText);
+        var showEffect = showTabs && isImage;
+        var showTransform = showTabs && !smtcDefault;
+        _updatingSegments = true;
+        _inspectorTabs["content"].IsVisible = showContent;
+        _inspectorTabs["effect"].IsVisible = showEffect;
+        _inspectorTabs["transform"].IsVisible = showTransform;
+        _updatingSegments = false;
+        if (!showTabs)
+        {
+            // 隐藏所有分组页，避免与画笔 / 选区上下文组叠加。
+            foreach (var (_, page) in _inspectorPages)
+            {
+                page.IsVisible = false;
+            }
+
+            return;
+        }
+
+        var active = _activeInspectorPage;
+        var activeOk = active == "general"
+            || (active == "content" && showContent)
+            || (active == "effect" && showEffect)
+            || (active == "transform" && showTransform);
+        // 形状 / 文本「新选中」→ 默认「内容」段（加完形状马上换类型、加完文字马上改字；
+        // 教程「换形状类型」的 #EditorShapeType 也在内容段，必须可见）。
+        // 若用户正在其它可用段原地编辑（profileChanged=false）则保留当前段不跳转。
+        if ((isShape || isText) && showContent && (profileChanged || !activeOk))
+        {
+            active = "content";
+        }
+        else if (!activeOk)
+        {
+            active = "general";
+        }
+
+        ActivateInspectorPage(active);
     }
 
     /// <summary>设置分组小标题（不包裹卡片）。</summary>
@@ -3035,7 +3179,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             _selectionToLayerButton.IsEnabled = hasSelection;
             _clearSelectionButton.IsEnabled = hasSelection;
             _brushGroup.IsVisible = brushTool;
-            _layerPanel.IsVisible = !selectionTool && !brushTool;
             // 工具内细节：橡皮擦不显示「画笔」字样与颜色（只留大小 + 笔触）；吸管只显示取到的颜色。
             var isEraser = _canvas.Tool == WallpaperEditorTool.Eraser;
             var isEyedropper = _canvas.Tool == WallpaperEditorTool.Eyedropper;
@@ -3082,13 +3225,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 _offsetXItem.IsVisible = false;
                 _offsetYItem.IsVisible = false;
                 _anchorItem.IsVisible = false;
-                // 分组标题与「重置变换」行一并隐藏，避免残留无内容的标题。
-                _layerGroupTitle.IsVisible = false;
-                _appearanceGroupTitle.IsVisible = false;
-                _effectGroupTitle.IsVisible = false;
-                _sizeGroupTitle.IsVisible = false;
-                _rotationGroupTitle.IsVisible = false;
-                _positionGroupTitle.IsVisible = false;
                 _resetTransformItem.IsVisible = false;
                 _shapeTypeItem.IsVisible = false;
                 _shapeCornerRadiusItem.IsVisible = false;
@@ -3112,6 +3248,9 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 _textAlignItem.IsVisible = false;
                 _relativeHint.Text = "未选中图层。点击画布上的图层，或在左侧图层面板选择。";
                 RefreshCustomSizePanel();
+                // 无选中图层：隐藏 TabStrip 与分组页，仅保留占位提示（画笔 / 选区工具时连提示也隐藏）。
+                _lastSelectionProfile = string.Empty;
+                RefreshInspectorSegments(false, brushTool, selectionTool, false, false, false, false, false);
                 return;
             }
 
@@ -3122,6 +3261,10 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             var smtcDefault = IsSmtcDefaultMode(layer);
             var isShape = allSameKind && layer.Kind == WallpaperLayerKind.Shape;
             var isText = allSameKind && layer.Kind == WallpaperLayerKind.Text;
+            // 名称 / 不透明度是通用属性，任何图层选中都显示（此前只在无选中分支设 false，
+            // 选中分支从未设 true → 形状/文本的「图层」页因只剩图片专属行而显得空白）。
+            _nameItem.IsVisible = true;
+            _opacityItem.IsVisible = true;
             _nameBox.IsEnabled = true;
             _opacitySlider.IsEnabled = true;
             _displayModeBox.IsEnabled = layer.Kind == WallpaperLayerKind.Image;
@@ -3144,13 +3287,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 : string.Empty;
             // 效果仅图片图层显示；投影子项仅在启用投影后展开。
             var isImage = allSameKind && layer.Kind == WallpaperLayerKind.Image;
-            // 分组标题随内容显隐，避免出现无内容的标题（类型不适用 / SMTC 默认模式时）。
-            _layerGroupTitle.IsVisible = true;
-            _appearanceGroupTitle.IsVisible = true;
-            _effectGroupTitle.IsVisible = isImage;
-            _sizeGroupTitle.IsVisible = true;
-            _rotationGroupTitle.IsVisible = !smtcDefault;
-            _positionGroupTitle.IsVisible = !smtcDefault;
             _resetTransformItem.IsVisible = true;
             _shadowItem.IsVisible = isImage;
             _shadowBlurItem.IsVisible = isImage && layer.ShadowEnabled;
@@ -3249,6 +3385,14 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 _widthItem.IsVisible = false;
                 _heightItem.IsVisible = false;
             }
+            // TabStrip 分段与分组页显隐：按工具上下文与选中图层类型刷新
+            // （内容=形状/文本、效果=图片、变换=非 SMTC 默认处理）。
+            var profile = string.Join(",", selected
+                .OrderBy(l => l.Id, StringComparer.Ordinal)
+                .Select(l => l.Id + ":" + (int)l.Kind));
+            var profileChanged = !string.Equals(profile, _lastSelectionProfile, StringComparison.Ordinal);
+            _lastSelectionProfile = profile;
+            RefreshInspectorSegments(true, brushTool, selectionTool, isShape, isText, isImage, smtcDefault, profileChanged);
         }
         finally
         {

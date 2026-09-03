@@ -1497,10 +1497,10 @@ internal sealed class VideoEditorWindow : MyWindow
             }
         };
         _overlayTextRow = InspectorRow("内容", _overlayText);
-        _overlayColorRow = InspectorRow("填充颜色 #AARRGGBB", _overlayColor);
+        _overlayColorRow = InspectorRow("填充颜色", _overlayColor);
         _overlayShapeRow = InspectorRow("形状", _overlayShape);
         _strokeWidthRow = InspectorRow("描边宽度", _strokeWidthSpin);
-        _strokeColorRow = InspectorRow("描边颜色 #AARRGGBB", _strokeColorBox);
+        _strokeColorRow = InspectorRow("描边颜色", _strokeColorBox);
         _overlayPanel.Children.Add(_overlayTextRow);
         _overlayPanel.Children.Add(_overlayColorRow);
         _overlayPanel.Children.Add(_overlayShapeRow);

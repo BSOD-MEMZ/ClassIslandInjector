@@ -3722,7 +3722,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
             Kind = WallpaperLayerKind.Text,
             Source = WallpaperSource.None,
             SizeMode = WallpaperLayerSizeMode.Custom,
-            Text = "双击修改文本",
+            Text = "请多关照！",
             TextColor = ActiveColor.ToString(),
             TextFontSize = 16,
             AnchorX = WallpaperLayerAnchorX.Center,
