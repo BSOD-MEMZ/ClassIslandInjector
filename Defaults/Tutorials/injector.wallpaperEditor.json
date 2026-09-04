@@ -132,8 +132,8 @@
           "InitializeActions": [],
           "Content": [
             {
-              "Title": "添加图片",
-              "Content": "先点「添加图片图层」，选一张你喜欢的图片。如果手头没有，就选对话框里的「使用示例图片」，我们给你准备了一张！",
+              "Title": "添加背景图",
+              "Content": "第一步：点「添加图片图层」，选一张图片当背景。没有自己的图？直接点对话框里的「使用示例图片」——它会自动铺满整个主界面。",
               "IconExpression": "bitmap({stickerUri}/miku_thumbup.png)",
               "TargetSelector": "#EditorAddImage",
               "HighlightTarget": true,
@@ -147,8 +147,35 @@
               "LeftButtonText": ""
             },
             {
-              "Title": "摆位置",
-              "Content": "图片加好了。用鼠标拖住它，放到你觉得合适的位置。",
+              "Title": "背景铺满了",
+              "Content": "看，背景图已经自动铺满整个主界面了。它是「铺满主界面」的尺寸，主界面怎么变它都会跟着铺满，不用手动摆。",
+              "IconExpression": "bitmap({stickerUri}/Airi_04.png)",
+              "TargetSelector": "#EditorCanvas",
+              "HighlightTarget": true,
+              "PlacementMode": 1,
+              "PointToTarget": true,
+              "UseLightDismiss": false,
+              "RightButtonText": "下一步",
+              "LeftButtonText": ""
+            },
+            {
+              "Title": "再加一张图",
+              "Content": "再点一次「添加图片图层」，插入第二张图（比如 Airi 的贴纸当主角）。同样可以选自己的图，或点对话框里的「使用示例图片」。",
+              "IconExpression": "bitmap({stickerUri}/Airi_08.png)",
+              "TargetSelector": "#EditorAddImage",
+              "HighlightTarget": true,
+              "ModalTarget": true,
+              "PlacementMode": 1,
+              "PointToTarget": true,
+              "WaitForNextCommand": true,
+              "UseLightDismiss": false,
+              "Tag": "add-image-2",
+              "RightButtonText": "",
+              "LeftButtonText": ""
+            },
+            {
+              "Title": "缩放它",
+              "Content": "第二张图加好了，现在它还是中间那一块。拖动它四角和边缘的圆点手柄，把它缩放到你觉得合适的大小（缩完随意拖到中间放着就行）。",
               "IconExpression": "bitmap({stickerUri}/miku_happy.png)",
               "TargetSelector": "#EditorCanvas",
               "HighlightTarget": true,
@@ -157,7 +184,22 @@
               "PointToTarget": true,
               "WaitForNextCommand": true,
               "UseLightDismiss": false,
-              "Tag": "move",
+              "Tag": "scale",
+              "RightButtonText": "",
+              "LeftButtonText": ""
+            },
+            {
+              "Title": "靠右对齐",
+              "Content": "最后让它贴住右边。在右侧检查器切到「变换」，找到九宫格的「锚点」，点最右列正中间那个点（右）。这样主界面变宽时，这张图会一直贴右边走。",
+              "IconExpression": "bitmap({stickerUri}/Airi_11.png)",
+              "TargetSelector": "#EditorAnchorPicker",
+              "HighlightTarget": true,
+              "ModalTarget": true,
+              "PlacementMode": 2,
+              "PointToTarget": true,
+              "WaitForNextCommand": true,
+              "UseLightDismiss": false,
+              "Tag": "anchor-right",
               "RightButtonText": "",
               "LeftButtonText": ""
             },

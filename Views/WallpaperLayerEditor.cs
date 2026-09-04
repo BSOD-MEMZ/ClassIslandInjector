@@ -50,7 +50,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private readonly EditorSpin _rotationSpin = new(-360, 360, 1, "0");
     private readonly EditorSpin _offsetXSpin = new(-2000, 2000, 1, "0");
     private readonly EditorSpin _offsetYSpin = new(-2000, 2000, 1, "0");
-    private readonly AnchorGridPicker _anchorPicker = new();
+    private readonly AnchorGridPicker _anchorPicker = new() { Name = "EditorAnchorPicker" };
     /// <summary>相对位置说明。</summary>
     private readonly TextBlock _relativeHint = new()
     {
@@ -136,8 +136,11 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private Control _brushTaperItem = null!;
     private Control _brushAaItem = null!;
     private IconText _brushGroupTitle = null!;
-    /// <summary>逻辑运算按钮弹出的运算选择面板。</summary>
-    private Popup _booleanPopup = null!;
+    /// <summary>逻辑运算按钮弹出的原生菜单（FAMenuFlyout，菜单项带图标）。</summary>
+    private FAMenuFlyout _booleanMenu = null!;
+    /// <summary>教学「缩放」等待句：记录第二张示例图插入时的图层 Id 与初始尺寸（拖动角落缩放到尺寸变化才算完成）。</summary>
+    private string? _tutorialScaleLayerId;
+    private (double W, double H)? _tutorialScaleBaseline;
     private string _lastReminder = string.Empty;
     private DateTime _lastReminderAt;
     /// <summary>像素选区操作组（当前图层有选区时显示）。</summary>
@@ -408,6 +411,32 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         HostTutorial.PushToNextSentenceByTag(tag);
     }
 
+    /// <summary>画布被编辑（移动/缩放等）后推进教程：缩放等待句仅在第二张示例图尺寸真的变化时前进。</summary>
+    private void AdvanceTutorialOnEdit()
+    {
+        var tag = HostTutorial.GetCurrentSentenceTag();
+        if (tag == "scale" && _tutorialScaleLayerId != null && _canvas.SelectedLayer is { } l &&
+            l.Id == _tutorialScaleLayerId)
+        {
+            var (bw, bh) = _tutorialScaleBaseline ?? (0, 0);
+            if (Math.Abs(l.Width - bw) > 0.5 || Math.Abs(l.Height - bh) > 0.5)
+            {
+                TutorialServicePush("scale");
+                return;
+            }
+        }
+
+        // 旧的「拖动摆位」等待句仍在旧版工程里出现过，保留推进不碍事。
+        TutorialServicePush("move");
+    }
+
+    /// <summary>教程插入第二张图（非背景、可缩放靠右对齐）时记录其缩放基线。</summary>
+    private void RecordTutorialScaleBaseline(WallpaperLayerItem layer)
+    {
+        _tutorialScaleLayerId = layer.Id;
+        _tutorialScaleBaseline = (layer.Width, layer.Height);
+    }
+
     private void WireCanvas()
     {
         _canvas.EditStarted += () =>
@@ -420,8 +449,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             RefreshLayerList();
             RefreshInspector();
             UpdateStatus();
-            // 推进教程的「拖动手柄调整位置」等待句（非该句时自动忽略）。
-            TutorialServicePush("move");
+            // 推进教程的「移动/缩放」等待句：缩放句要等第二张示例图尺寸真的变化才前进。
+            AdvanceTutorialOnEdit();
         };
         _canvas.ShapeCreated += () => TutorialServicePush("shape");
         _canvas.TextCreated += () => TutorialServicePush("text");
@@ -1210,11 +1239,12 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         panel.Children.Add(new Separator { Margin = new Thickness(2, 5) });
         panel.Children.Add(ToolActionButton("\uEBCA", "添加 SMTC 图层", "把当前播放的专辑封面作为新的底图图层（无播放时显示占位封面）", AddSmtcLayer));
         panel.Children.Add(ToolActionButton("\uE7DC", "添加贴纸", "在线获取 Project Sekai 角色贴纸，插入为新的底图图层", OpenStickerPicker));
-        // 逻辑运算按钮：对选中的多个矢量形状做布尔运算（点击弹出运算选择面板）。
-        var booleanButton = ToolActionButton("\uE92F", "逻辑运算",
+        // 逻辑运算按钮：对选中的多个矢量形状做布尔运算（点击弹出原生菜单，菜单项带图标）。
+        Button booleanButton = null!;
+        booleanButton = ToolActionButton("\uE92F", "逻辑运算",
             "对选中的多个矢量形状做布尔运算：结合（并集 A ∪ B）/ 组合（排除重叠 A ⊕ B）/ 拆分 / 相交（A ∩ B）/ 减除（A − B）",
-            ToggleBooleanMenu);
-        _booleanPopup = BuildBooleanPopup(booleanButton);
+            () => _booleanMenu.ShowAt(booleanButton));
+        _booleanMenu = BuildBooleanMenu();
         panel.Children.Add(booleanButton);
 
         // 选中高亮滑块：独立圆角块，切换工具时滑动到新位置（位于按钮面板之下，按钮透明露出）。
@@ -1230,8 +1260,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         };
         // 宿主 Grid：高亮块在前（底层），按钮面板在后（顶层，按钮透明底露出高亮）。
         var host = new Grid { Children = { _toolHighlight, panel } };
-        // 逻辑运算弹出面板加入宿主 Grid：关闭时零尺寸不占布局，打开时由 PlacementTarget 锚定。
-        host.Children.Add(_booleanPopup);
         _toolHighlightHost = host;
         // 首次布局完成后定位高亮（此前 Bounds 未测量）。
         host.SizeChanged += (_, _) =>
@@ -1318,8 +1346,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         return button;
     }
 
-    /// <summary>打开 / 关闭逻辑运算面板。</summary>
-    private void ToggleBooleanMenu() => _booleanPopup.IsOpen = !_booleanPopup.IsOpen;
+
 
     /// <summary>右上角 Toast 展示一条操作提醒（自动消失）；同一提醒 5 秒内不重复（防刷屏）。
     /// 每次新建一个 Toast 窗口：复用窗口在隐藏后重显示时高度会坍缩。</summary>
@@ -1336,46 +1363,28 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         new ReminderToastWindow().ShowFor(this, message);
     }
 
-    /// <summary>构建逻辑运算选择面板（按钮下方弹出，5 种布尔运算）。</summary>
-    private Popup BuildBooleanPopup(Control target)
+    /// <summary>构建逻辑运算菜单（FAMenuFlyout + 带图标的 MenuFlyoutItem，5 种布尔运算）。
+    /// 用 FAUI 自带的原生菜单控件，替换早期手写 Popup 面板（外观原生、菜单项带图标）。</summary>
+    private FAMenuFlyout BuildBooleanMenu()
     {
-        var panel = new StackPanel { Spacing = 2 };
-        AddBooleanOpButton(panel, "结合（并集 A ∪ B）", WallpaperBooleanOp.Union);
-        AddBooleanOpButton(panel, "组合（排除重叠 A ⊕ B）", WallpaperBooleanOp.Exclude);
-        AddBooleanOpButton(panel, "拆分（结合后拆成独立块）", WallpaperBooleanOp.Split);
-        AddBooleanOpButton(panel, "相交（交集 A ∩ B）", WallpaperBooleanOp.Intersect);
-        AddBooleanOpButton(panel, "减除（差集 A − B）", WallpaperBooleanOp.Subtract);
-        // StackPanel 无 Padding / Background，外包一层 Border。
-        var host = new Border
-        {
-            Padding = new Thickness(8),
-            Background = ThemePalette.PanelBackground(),
-            Child = panel
-        };
-        return new Popup
-        {
-            PlacementTarget = target,
-            Placement = PlacementMode.Bottom,
-            IsLightDismissEnabled = true,
-            Child = host
-        };
+        var menu = new FAMenuFlyout();
+        AddBooleanOpItem(menu, "\uEF35", "结合（并集 A ∪ B）", WallpaperBooleanOp.Union);
+        AddBooleanOpItem(menu, "\uEF2D", "组合（排除重叠 A ⊕ B）", WallpaperBooleanOp.Exclude);
+        AddBooleanOpItem(menu, "\uE5C9", "拆分（结合后拆成独立块）", WallpaperBooleanOp.Split);
+        AddBooleanOpItem(menu, "\uEF2F", "相交（交集 A ∩ B）", WallpaperBooleanOp.Intersect);
+        AddBooleanOpItem(menu, "\uEF33", "减除（差集 A − B）", WallpaperBooleanOp.Subtract);
+        return menu;
     }
 
-    private void AddBooleanOpButton(StackPanel panel, string label, WallpaperBooleanOp op)
+    private void AddBooleanOpItem(FAMenuFlyout menu, string glyph, string label, WallpaperBooleanOp op)
     {
-        var button = new Button
+        var item = new MenuFlyoutItem
         {
-            Content = new TextBlock { Text = label },
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            HorizontalContentAlignment = HorizontalAlignment.Left,
-            Padding = new Thickness(10, 6)
+            IconSource = new FluentIconSource(glyph),
+            Text = label
         };
-        button.Click += (_, _) =>
-        {
-            _booleanPopup.IsOpen = false;
-            _canvas.ApplyBooleanOp(op);
-        };
-        panel.Children.Add(button);
+        item.Click += (_, _) => _canvas.ApplyBooleanOp(op);
+        menu.Items.Add(item);
     }
 
     /// <summary>按当前工具刷新工具栏按钮状态：选中态由高亮滑块表达（按钮透明露底），
@@ -1868,11 +1877,21 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _rotationSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) ApplyToSelected(l => l.Rotation = _rotationSpin.DoubleValue); };
         _offsetXSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) ApplyToSelected(l => l.OffsetX = _offsetXSpin.DoubleValue); };
         _offsetYSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) ApplyToSelected(l => l.OffsetY = _offsetYSpin.DoubleValue); };
-        _anchorPicker.Changed += () => ApplyToSelected(l =>
+        _anchorPicker.Changed += () =>
         {
-            l.AnchorX = _anchorPicker.AnchorX;
-            l.AnchorY = _anchorPicker.AnchorY;
-        });
+            ApplyToSelected(l =>
+            {
+                l.AnchorX = _anchorPicker.AnchorX;
+                l.AnchorY = _anchorPicker.AnchorY;
+            });
+            // 推进教程的「右对齐」等待句：第二张图锚点必须改成「右中」（水平靠右 + 垂直居中）才前进。
+            if (HostTutorial.GetCurrentSentenceTag() == "anchor-right" &&
+                _anchorPicker.AnchorX == WallpaperLayerAnchorX.Right &&
+                _anchorPicker.AnchorY == WallpaperLayerAnchorY.Center)
+            {
+                TutorialServicePush("anchor-right");
+            }
+        };
 
         // 检查器布局：仿视频编辑器用 TabStrip 分段（常规 / 内容 / 效果 / 变换）对配置项分组。
         // 下面按「常规 → 效果 → 内容 → 变换」把行拼进对应分组页；段内行仍由 RefreshInspector
@@ -2449,19 +2468,26 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
 
     private async void AddImageLayer()
     {
-        // 仅在教学引导（教程正停在「添加图片」句）时询问图片来源（从文件 / 示例图）；
+        // 仅在教学引导（教程正停在「加背景图 / 加第二张图」句）时询问图片来源（从文件 / 示例图）；
         // 平时与以前一样，直接打开文件选择器。
-        if (HostTutorial.GetCurrentSentenceTag() == "add-image")
+        var tag = HostTutorial.GetCurrentSentenceTag();
+        if (tag is "add-image" or "add-image-2")
         {
-            await AskImageSourceAsync();
+            await AskImageSourceAsync(tag);
             return;
         }
 
         await PickImageFromFileAsync(TopLevel.GetTopLevel(this));
     }
 
-    /// <summary>教学引导中：让用户选择图片来源（从文件选择 / 使用示例图片 / 取消）。</summary>
-    private async Task AskImageSourceAsync()
+    /// <summary>教学句对应的内置示例图：加背景图 → 默认背景图；加第二张图 → Airi 贴纸。</summary>
+    private string TutorialSamplePath(string tag) => tag == "add-image-2"
+        ? Path.Combine(InjectorRuntime.PluginDirectory, "Assets", "Stickers", "Airi_01.png")
+        : Path.Combine(InjectorRuntime.PluginDirectory, "Assets", "editorbackground.jpg");
+
+    /// <summary>教学引导中：让用户选择图片来源（从文件选择 / 使用示例图片 / 取消）。
+    /// tag=add-image → 背景图（铺满主界面）；tag=add-image-2 → 第二张图（自定义尺寸，可缩放/右对齐）。</summary>
+    private async Task AskImageSourceAsync(string tag)
     {
         var topLevel = TopLevel.GetTopLevel(this);
         if (topLevel == null)
@@ -2469,11 +2495,14 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             return;
         }
 
+        var isSecond = tag == "add-image-2";
         // 让用户明确选择图片来源：从文件选择，或使用内置示例图片（取消则不添加）。
         var dialog = new ContentDialog
         {
-            Title = "添加图片图层",
-            Content = "选择一张图片文件作为新的底图图层，或使用一张内置的示例图片。",
+            Title = isSecond ? "添加第二张图片" : "添加背景图片",
+            Content = isSecond
+                ? "再插入一张图片：从文件选择，或使用内置示例图（Airi 的贴纸）。加好后再把它缩放并靠右对齐。"
+                : "先添加一张背景图：从文件选择，或使用内置示例图（插入后会自动铺满整个主界面）。",
             PrimaryButtonText = "从文件选择",
             SecondaryButtonText = "使用示例图片",
             CloseButtonText = "取消",
@@ -2483,17 +2512,69 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         switch (result)
         {
             case ContentDialogResult.Primary:
-                await PickImageFromFileAsync(topLevel);
+                await PickImageFromFileAsync(topLevel, p => AddTutorialImage(p, tag));
                 break;
             case ContentDialogResult.Secondary:
-                AddLayerFromPath(Path.Combine(InjectorRuntime.PluginDirectory, "Assets", "editorbackground.jpg"));
+                AddTutorialImage(TutorialSamplePath(tag), tag);
                 break;
             // None（取消）：不添加。
         }
     }
 
+    /// <summary>教程插入图片的公共入口：add-image = 背景（铺满，推 add-image 句）；
+    /// add-image-2 = 第二张自定义尺寸图（推 add-image-2 句）。</summary>
+    private void AddTutorialImage(string path, string tag)
+    {
+        if (tag == "add-image-2")
+        {
+            AddSecondImageTutorialLayer(path);
+        }
+        else
+        {
+            AddLayerFromPath(path);
+        }
+    }
+
+    /// <summary>第二张教学图片：自定义尺寸（高 ≈ 主界面 0.55，宽按图片比例）、垂直水平居中，供用户缩放后右对齐。</summary>
+    private void AddSecondImageTutorialLayer(string path)
+    {
+        PushUndo();
+        var layer = new WallpaperLayerItem
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            Name = $"底图图层 {_layers.Count + 1}",
+            Source = WallpaperSource.LocalImage,
+            Path = path,
+            SizeMode = WallpaperLayerSizeMode.Custom,
+            DisplayMode = WallpaperDisplayMode.Fit,
+            AnchorX = WallpaperLayerAnchorX.Center,
+            AnchorY = WallpaperLayerAnchorY.Center
+        };
+        _layers.Add(layer);
+        _dirty = true;
+        _canvas.Layers = _layers; // 触发 RefreshImages 加载位图
+        // 按图片宽高比设定初始尺寸（高 = 主界面 0.55，宽按比例），并居中放置。
+        if (_canvas.GetThumbnail(layer.Id) is { } bitmap && bitmap.PixelSize.Height > 0)
+        {
+            var aspect = bitmap.PixelSize.Width / (double)bitmap.PixelSize.Height;
+            var h = _canvas.IslandHeight * 0.55;
+            layer.Width = Math.Max(1, h * aspect);
+            layer.Height = h;
+            _canvas.Refresh();
+        }
+
+        _canvas.Select(layer.Id);
+        RefreshLayerList();
+        RefreshInspector();
+        UpdateStatus();
+        // 记录缩放基线，供「缩放」等待句判断尺寸真的变化。
+        RecordTutorialScaleBaseline(layer);
+        // 向前推动教程的「加第二张图」等待句。
+        TutorialServicePush("add-image-2");
+    }
+
     /// <summary>打开系统文件选择器挑选底图图片；取消则不添加。</summary>
-    private async Task PickImageFromFileAsync(TopLevel? topLevel)
+    private async Task PickImageFromFileAsync(TopLevel? topLevel, Action<string>? onPick = null)
     {
         if (topLevel?.StorageProvider is not { } provider)
         {
@@ -2511,7 +2592,16 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             ]
         });
         var path = files.Count > 0 ? files[0].TryGetLocalPath() : null;
-        if (!string.IsNullOrEmpty(path))
+        if (string.IsNullOrEmpty(path))
+        {
+            return;
+        }
+
+        if (onPick != null)
+        {
+            onPick(path);
+        }
+        else
         {
             AddLayerFromPath(path);
         }

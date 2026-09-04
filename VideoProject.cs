@@ -84,6 +84,12 @@ public sealed class VideoClip
     public string Text { get; set; } = "文本";
     /// <summary>文本/形状颜色（#AARRGGBB，支持透明度）。</summary>
     public string Color { get; set; } = "#FFFFFFFF";
+    /// <summary>文本字体族（Kind=Text；空 = 微软雅黑）。</summary>
+    public string TextFontFamily { get; set; } = "";
+    /// <summary>文本字号系数（相对输出高度，0.32 = 默认字号）。</summary>
+    public double TextFontSize { get; set; } = 0.32;
+    /// <summary>文本是否加粗。</summary>
+    public bool TextBold { get; set; } = true;
     /// <summary>形状描边颜色（#AARRGGBB；描边宽度 &gt; 0 时生效）。</summary>
     public string StrokeColor { get; set; } = "#FF000000";
     /// <summary>形状描边宽度（相对输出高的比例，0 = 无描边）。</summary>

@@ -80,13 +80,7 @@ internal abstract class LayerFilterWindowBase : MyWindow
     private void BuildWindowContent()
     {
         var panel = new StackPanel { Spacing = 8, Margin = new Thickness(12) };
-        panel.Children.Add(new TextBlock
-        {
-            Text = Title,
-            FontSize = 16,
-            FontWeight = FontWeight.SemiBold,
-            Margin = new Thickness(0, 0, 0, 2)
-        });
+        // 不再在窗口内容顶部重复显示标题（窗口标题栏已显示 Title）。
         BuildContentRows(panel);
         var previewRow = new Grid
         {

@@ -147,7 +147,11 @@ internal static class OverlayFrameGenerator
             var color = ParseColor(clip.Color);
             if (clip.Kind == "Text")
             {
-                var fontSize = Math.Max(8f, h * 0.32f);
+                // 字号 = 输出高 × 字号系数（默认 0.32，保持旧行为）；字体族/加粗按片段属性。
+                var sizeFactor = clip.TextFontSize > 0 ? (float)clip.TextFontSize : 0.32f;
+                var fontSize = Math.Max(8f, h * sizeFactor);
+                var familyName = string.IsNullOrWhiteSpace(clip.TextFontFamily) ? "Microsoft YaHei" : clip.TextFontFamily;
+                var fontStyle = clip.TextBold ? FontStyle.Bold : FontStyle.Regular;
                 var rect = new RectangleF(0, 0, w, h);
                 using var brush = new SolidBrush(color);
                 using var format = new StringFormat
@@ -160,15 +164,15 @@ internal static class OverlayFrameGenerator
                 {
                     var penWidth = (float)Math.Max(1, clip.StrokeWidth * h);
                     using var path = new GraphicsPath();
-                    path.AddString(clip.Text, new FontFamily("Microsoft YaHei"),
-                        (int)FontStyle.Bold, fontSize, rect, format);
+                    path.AddString(clip.Text, new FontFamily(familyName),
+                        (int)fontStyle, fontSize, rect, format);
                     using var pen = new Pen(ParseColor(clip.StrokeColor), penWidth) { LineJoin = LineJoin.Round };
                     g.DrawPath(pen, path);
                     g.FillPath(brush, path);
                 }
                 else
                 {
-                    using var font = new Font("Microsoft YaHei", fontSize, FontStyle.Bold, GraphicsUnit.Pixel);
+                    using var font = new Font(familyName, fontSize, fontStyle, GraphicsUnit.Pixel);
                     g.DrawString(clip.Text, font, brush, rect, format);
                 }
             }

@@ -8,6 +8,7 @@ using Avalonia.Platform;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using ClassIsland.Core.Controls;
+using Ellipse = Avalonia.Controls.Shapes.Ellipse;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -316,7 +317,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
             }
         };
 
-        // 八向缩放手柄
+        // 八向缩放手柄（视频编辑器同款外观：白底圆点 + 强调色描边）
         foreach (var (name, dir, cursor) in new[]
                  {
                      ("nw", (Dx: -1, Dy: -1), StandardCursorType.TopLeftCorner),
@@ -329,11 +330,12 @@ internal sealed class WallpaperLayerCanvas : UserControl
                      ("w", (Dx: -1, Dy: 0), StandardCursorType.LeftSide)
                  })
         {
-            var handle = Handle(11, new SolidColorBrush(Color.FromRgb(0, 120, 212)), cursor);
+            var handle = VideoStyleResizeHandle(cursor);
             handle.Name = name;
             handle.PointerPressed += (s, e) => SafePointer(() => ResizeHandleOnPointerPressed(handle, e));
             handle.PointerMoved += (s, e) => SafePointer(() => ResizeHandleOnPointerMoved(handle, e));
             handle.PointerReleased += (s, e) => SafePointer(() => ResizeHandleOnPointerReleased(handle, e));
+            handle.PointerCaptureLost += (_, _) => SetResizeHandlePressed(handle, false);
             _resizeHandles.Add(handle);
             _handleDirs[handle] = dir;
             _stage.Children.Add(handle);
@@ -1910,6 +1912,55 @@ internal sealed class WallpaperLayerCanvas : UserControl
                 VerticalAlignment = VerticalAlignment.Center
             }
         };
+    }
+
+    /// <summary>八向缩放手柄（视频编辑器同款外观：16px 白色圆点 + 2px 强调色描边；按下拖动变实心强调色）。
+    /// 外层 24px 透明命中区；内层 Ellipse 存于 Tag 供按下/释放切换外观。</summary>
+    private static Border VideoStyleResizeHandle(StandardCursorType cursor)
+    {
+        const double hitSize = 24;
+        var dot = new Ellipse
+        {
+            Width = 16,
+            Height = 16,
+            Fill = Brushes.White,
+            Stroke = new SolidColorBrush(ThemePalette.AccentColor()),
+            StrokeThickness = 2,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsHitTestVisible = false
+        };
+        return new Border
+        {
+            Width = hitSize,
+            Height = hitSize,
+            Background = Brushes.Transparent,
+            Cursor = new Cursor(cursor),
+            IsVisible = false,
+            Tag = dot,
+            Child = dot
+        };
+    }
+
+    /// <summary>缩放手柄按下/恢复的外观切换（默认 = 白底圆点 + 强调色描边；按下 = 实心强调色）。</summary>
+    private static void SetResizeHandlePressed(Border handle, bool pressed)
+    {
+        if (handle.Tag is not Ellipse dot)
+        {
+            return;
+        }
+
+        if (pressed)
+        {
+            dot.Fill = new SolidColorBrush(ThemePalette.AccentColor());
+            dot.Stroke = null;
+        }
+        else
+        {
+            dot.Fill = Brushes.White;
+            dot.Stroke = new SolidColorBrush(ThemePalette.AccentColor());
+            dot.StrokeThickness = 2;
+        }
     }
 
     // ============ 交互：选中框与手柄定位 ============
@@ -3992,6 +4043,9 @@ internal sealed class WallpaperLayerCanvas : UserControl
             return;
         }
 
+        // 按下 = 实心强调色（视频编辑器同款手柄的按下反馈）。
+        SetResizeHandlePressed(handle, true);
+
         // 仅当按下会立即修改（FillIsland→自定义切换）时才立即压撤销；
         // 普通缩放延迟到 UpdateResize 首次实际缩放时压，避免空操作污染撤销栈。
         var modifiedOnPress = layer.SizeMode == WallpaperLayerSizeMode.FillIsland;
@@ -4044,6 +4098,7 @@ internal sealed class WallpaperLayerCanvas : UserControl
         }
 
         _drag = null;
+        SetResizeHandlePressed(handle, false);
         e.Pointer.Capture(null);
         _guideOverlay.Clear();
         Edited?.Invoke();
