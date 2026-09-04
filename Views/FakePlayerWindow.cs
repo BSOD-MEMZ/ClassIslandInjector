@@ -164,8 +164,8 @@ internal sealed class FakePlayerWindow : MyWindow
         };
 
         // 播放控制行：上一首 / 播放暂停 / 下一首 / 静音标记 / 状态。
-        var prevButton = IconButton("\uEE02", "上一首（切歌时颜色跟着变）", () => PreviousSong()); // ic_fluent_previous
-        var playPauseButton = IconButton("\uEDB8", "播放/暂停（可演示暂停恢复原色）", () =>
+        var prevButton = IconButton("\uEE02", "上一首", () => PreviousSong()); // ic_fluent_previous
+        var playPauseButton = IconButton("\uEDB8", "播放/暂停", () =>
         {
             var player = _player;
             if (player == null)

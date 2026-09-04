@@ -388,11 +388,11 @@ internal sealed class StickerPickerWindow : MyWindow
         var cached = LoadListCache("folders.json");
         if (cached.Count > 0)
         {
-            ApplyFolders(cached, "GitHub 接口暂不可用（可能限流），已使用本地缓存列表。");
+            ApplyFolders(cached, "GitHub 接口暂不可用，已使用本地缓存列表。");
         }
         else
         {
-            ApplyFolders(KnownFolders.ToList(), "GitHub 接口暂不可用（可能限流），已使用内置列表。");
+            ApplyFolders(KnownFolders.ToList(), "GitHub 接口暂不可用，已使用内置列表。");
         }
     }
 
@@ -402,7 +402,7 @@ internal sealed class StickerPickerWindow : MyWindow
         _folderBox.SelectedItem = folders.FirstOrDefault();
         if (folders.Count == 0)
         {
-            _status.Text = "贴纸库中没有文件夹，可能网络不可用或仓库结构已变化。";
+            _status.Text = "贴纸库中没有文件夹。";
         }
         else
         {
@@ -415,7 +415,7 @@ internal sealed class StickerPickerWindow : MyWindow
     {
         var token = ++_loadToken;
         ClearGrid();
-        _status.Text = "正在加载贴纸列表…";
+        _status.Text = "正在从 GitHub 加载贴纸列表…";
 
         var cacheKey = $"{folder}.json";
         // 仓库已归档且只读，本地缓存永远有效：命中即直接用，不访问网络。
@@ -431,7 +431,7 @@ internal sealed class StickerPickerWindow : MyWindow
 
         if (files is not { Count: > 0 })
         {
-            _status.Text = "该文件夹没有图片（或网络不可用）。";
+            _status.Text = "该文件夹没有图片或网络不可用。";
             return;
         }
 
@@ -546,7 +546,7 @@ internal sealed class StickerPickerWindow : MyWindow
         await Task.WhenAll(tasks);
         if (token == _loadToken)
         {
-            _status.Text = $"共 {files.Count} 张贴纸，点击任意一张即可插入图层。";
+            _status.Text = $"共 {files.Count} 张贴纸。";
         }
     }
 

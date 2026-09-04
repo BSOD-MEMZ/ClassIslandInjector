@@ -263,7 +263,7 @@ public static class FFmpegRuntime
             $"已删除 {deleted} 个文件；{locked.Count} 个文件正被当前进程占用（{string.Join("、", locked)}）。\n" +
             (markerWritten
                 ? "重启 ClassIsland 后剩余文件会自动彻底清除。"
-                : "请重启 ClassIsland 后再删除（重启后这些文件不再被占用）。"));
+                : "请重启 ClassIsland 后再删除。"));
     }
 
     /// <summary>
@@ -441,14 +441,14 @@ public static class FFmpegRuntime
                         Refresh();
                         if (IsAvailable)
                         {
-                            Report(progress, "安装完成", indeterminate: true, log: $"✓ 已安装 {packageTitle}（{installed.Count} 个文件）");
+                            Report(progress, "安装完成", indeterminate: true, log: $"已安装 {packageTitle}（{installed.Count} 个文件）");
                             return (true, $"FFmpeg {packageTitle} 安装完成（{installed.Count} 个文件）。");
                         }
                     }
                     else
                     {
                         Report(progress, "版本不匹配，尝试下一源…", indeterminate: true,
-                            log: "✗ 包内不包含所需版本的解码库");
+                            log: "包内不包含所需版本的解码库");
                     }
                 }
                 catch (OperationCanceledException)

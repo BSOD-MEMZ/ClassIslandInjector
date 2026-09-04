@@ -89,28 +89,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private Control _smtcHidePausedItem = null!;
     /// <summary>显示方式行（仅位图图层显示）。</summary>
     private Control _displayModeItem = null!;
-    // 全屏扩展 / 九宫格切图（仅图片图层）
-    private readonly ToggleSwitch _fullscreenToggle = new() { OnContent = "开", OffContent = "关" };
-    private readonly ToggleSwitch _sliceToggle = new() { OnContent = "开", OffContent = "关" };
-    private readonly EditorSpin _sliceLeftSpin = new(0, 5000, 1, "0");
-    private readonly EditorSpin _sliceTopSpin = new(0, 5000, 1, "0");
-    private readonly EditorSpin _sliceRightSpin = new(0, 5000, 1, "0");
-    private readonly EditorSpin _sliceBottomSpin = new(0, 5000, 1, "0");
-    private readonly Button _editSliceButton = new() { Content = "编辑切图" };
-    private Control _fullscreenItem = null!;
-    private Control _sliceItem = null!;
-    private Control _editSliceItem = null!;
-    private Control _sliceLeftItem = null!;
-    private Control _sliceTopItem = null!;
-    private Control _sliceRightItem = null!;
-    private Control _sliceBottomItem = null!;
-    /// <summary>全屏扩展说明。</summary>
-    private readonly TextBlock _fullscreenHint = new()
-    {
-        TextWrapping = TextWrapping.Wrap,
-        Opacity = 0.75,
-        FontSize = 12
-    };
     // 效果（仅图片图层）：投影（高斯模糊 / 色相饱和度等改由顶部命令栏的滤镜窗口调整）
     private readonly ToggleSwitch _shadowToggle = new() { OnContent = "开", OffContent = "关" };
     private readonly EditorSpin _shadowBlurSpin = new(0, 100, 0.5, "0.##");
@@ -1207,18 +1185,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         await dialog.ShowAsync(topLevel);
     }
 
-    /// <summary>打开九宫格切图编辑器（在图片上框选切边，实时预览拉伸效果）。</summary>
-    private void OpenSliceEditor()
-    {
-        var layer = _canvas.SelectedLayer;
-        if (layer == null || _canvas.GetThumbnail(layer.Id) is not { } bitmap)
-        {
-            return;
-        }
-
-        new SliceEditorWindow(layer, bitmap).Show();
-    }
-
     /// <summary>构建左侧纵向工具栏：移动 / 选择 / 缩放 / 形状 / 文本。</summary>
     private Control BuildToolBar()
     {
@@ -1518,63 +1484,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _nameBox.TextChanged += (_, _) => ApplyToSelected(l => l.Name = _nameBox.Text ?? "底图图层");
         _opacitySlider.ValueChanged += (_, _) => ApplyToSelected(l => l.Opacity = _opacitySlider.Value);
         _displayModeBox.SelectionChanged += (_, _) => ApplyToSelected(l => l.DisplayMode = Selected(_displayModeBox, WallpaperDisplayMode.Fill));
-        _fullscreenToggle.PropertyChanged += async (_, e) =>
-        {
-            if (_updatingInspector || e.Property != ToggleSwitch.IsCheckedProperty)
-            {
-                return;
-            }
-
-            if (_fullscreenToggle.IsChecked == true)
-            {
-                // 实验性功能：启用前弹窗警告。
-                var topLevel = TopLevel.GetTopLevel(this);
-                if (topLevel != null)
-                {
-                    var dialog = new ContentDialog
-                    {
-                        Title = "实验性功能警告",
-                        Content = "「扩展到整个显示框架」是实验性功能：启用后该图片会铺满整个 ClassIsland 主界面，并临时隐藏底色、边框与阴影。\n\n若图片比例与主界面不一致，请务必开启「九宫格切图」并对图片进行切图，防止拉伸变形。确定要启用吗？",
-                        PrimaryButtonText = "我已知晓并启用",
-                        CloseButtonText = "取消",
-                        DefaultButton = ContentDialogButton.Close
-                    };
-                    var result = await dialog.ShowAsync(topLevel);
-                    if (result != ContentDialogResult.Primary)
-                    {
-                        _fullscreenToggle.IsChecked = false;
-                        return;
-                    }
-                }
-
-                ApplyToSelected(l => { if (l.Kind == WallpaperLayerKind.Image) l.FullscreenExtend = true; });
-            }
-            else
-            {
-                ApplyToSelected(l => { if (l.Kind == WallpaperLayerKind.Image) l.FullscreenExtend = false; });
-            }
-
-            // 全屏扩展会切换画布渲染控件（普通 Image ↔ 九宫格），重新赋列表触发控件重建。
-            _canvas.Layers = _layers;
-        };
-        _sliceToggle.PropertyChanged += (_, e) =>
-        {
-            if (!_updatingInspector && e.Property == ToggleSwitch.IsCheckedProperty)
-            {
-                ApplyToSelected(l =>
-                {
-                    if (l.Kind == WallpaperLayerKind.Image)
-                    {
-                        l.SliceEnabled = _sliceToggle.IsChecked == true;
-                    }
-                });
-            }
-        };
-        _sliceLeftSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) ApplyToSelected(l => l.SliceLeft = _sliceLeftSpin.DoubleValue); };
-        _sliceTopSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) ApplyToSelected(l => l.SliceTop = _sliceTopSpin.DoubleValue); };
-        _sliceRightSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) ApplyToSelected(l => l.SliceRight = _sliceRightSpin.DoubleValue); };
-        _sliceBottomSpin.PropertyChanged += (_, e) => { if (!_updatingInspector && e.Property == NumericUpDown.ValueProperty) ApplyToSelected(l => l.SliceBottom = _sliceBottomSpin.DoubleValue); };
-        _editSliceButton.Click += (_, _) => OpenSliceEditor();
         _shadowToggle.PropertyChanged += (_, e) =>
         {
             if (!_updatingInspector && e.Property == ToggleSwitch.IsCheckedProperty)
@@ -1906,7 +1815,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _inspectorPages["content"] = contentPage;
         _inspectorPages["effect"] = effectPage;
         _inspectorPages["transform"] = transformPage;
-        // 「常规」分组：名称 + SMTC / 不透明度 / 显示方式 + 全屏扩展与九宫格切图（仅图片图层）。
+        // 「常规」分组：名称 + SMTC / 不透明度 / 显示方式。
         _nameItem = SettingsRow("名称", _nameBox);
         generalPage.Children.Add(_nameItem);
         _smtcModeItem = SettingsRow("SMTC 模式", _smtcModeBox);
@@ -1917,21 +1826,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         generalPage.Children.Add(_opacityItem);
         _displayModeItem = SettingsRow("显示方式", _displayModeBox);
         generalPage.Children.Add(_displayModeItem);
-        _fullscreenItem = SettingsRow("扩展到整个显示框架", _fullscreenToggle);
-        _sliceItem = SettingsRow("启用九宫格切图", _sliceToggle);
-        _editSliceItem = SettingsRow("切图编辑", _editSliceButton);
-        _sliceLeftItem = SettingsRow("左切边 (px)", _sliceLeftSpin);
-        _sliceTopItem = SettingsRow("上切边 (px)", _sliceTopSpin);
-        _sliceRightItem = SettingsRow("右切边 (px)", _sliceRightSpin);
-        _sliceBottomItem = SettingsRow("下切边 (px)", _sliceBottomSpin);
-        generalPage.Children.Add(_fullscreenItem);
-        generalPage.Children.Add(_sliceItem);
-        generalPage.Children.Add(_editSliceItem);
-        generalPage.Children.Add(_sliceLeftItem);
-        generalPage.Children.Add(_sliceTopItem);
-        generalPage.Children.Add(_sliceRightItem);
-        generalPage.Children.Add(_sliceBottomItem);
-        generalPage.Children.Add(_fullscreenHint);
         // 「效果」分组：投影（高斯模糊 / 色相饱和度 / 亮度对比度改由顶部命令栏的滤镜窗口调整）。
         _shadowItem = SettingsRow("投影", _shadowToggle);
         _shadowBlurItem = SettingsRow("投影模糊", _shadowBlurSpin);
@@ -3294,14 +3188,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 _displayModeItem.IsVisible = false;
                 _smtcModeItem.IsVisible = false;
                 _smtcHidePausedItem.IsVisible = false;
-                _fullscreenItem.IsVisible = false;
-                _sliceItem.IsVisible = false;
-                _editSliceItem.IsVisible = false;
-                _sliceLeftItem.IsVisible = false;
-                _sliceTopItem.IsVisible = false;
-                _sliceRightItem.IsVisible = false;
-                _sliceBottomItem.IsVisible = false;
-                _fullscreenHint.IsVisible = false;
                 _shadowItem.IsVisible = false;
                 _shadowBlurItem.IsVisible = false;
                 _shadowOffsetXItem.IsVisible = false;
@@ -3363,18 +3249,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             _smtcHidePausedItem.IsVisible = layer.Source == WallpaperSource.SmtcAlbum;
             _smtcHidePausedToggle.IsChecked = layer.SmtcHideWhenPaused;
             _displayModeItem.IsVisible = layer.Kind == WallpaperLayerKind.Image;
-            var isFullscreen = layer.Kind == WallpaperLayerKind.Image && layer.FullscreenExtend;
-            _fullscreenItem.IsVisible = layer.Kind == WallpaperLayerKind.Image;
-            _sliceItem.IsVisible = isFullscreen;
-            _editSliceItem.IsVisible = isFullscreen && layer.SliceEnabled;
-            _sliceLeftItem.IsVisible = isFullscreen && layer.SliceEnabled;
-            _sliceTopItem.IsVisible = isFullscreen && layer.SliceEnabled;
-            _sliceRightItem.IsVisible = isFullscreen && layer.SliceEnabled;
-            _sliceBottomItem.IsVisible = isFullscreen && layer.SliceEnabled;
-            _fullscreenHint.IsVisible = isFullscreen;
-            _fullscreenHint.Text = isFullscreen
-                ? "该图片将铺满整个 ClassIsland 显示框架，运行时隐藏底色、边框与阴影。开启「九宫格切图」后点击「编辑切图」，可在图片上直接框选四条切边防止四角拉伸变形。"
-                : string.Empty;
             // 效果仅图片图层显示；投影子项仅在启用投影后展开。
             var isImage = allSameKind && layer.Kind == WallpaperLayerKind.Image;
             _resetTransformItem.IsVisible = true;
@@ -3421,12 +3295,6 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             _nameBox.Text = layer.Name;
             _opacitySlider.Value = layer.Opacity;
             _displayModeBox.SelectedItem = DisplayModeChoices.FirstOrDefault(c => c.Value == layer.DisplayMode) ?? DisplayModeChoices[0];
-            _fullscreenToggle.IsChecked = layer.FullscreenExtend;
-            _sliceToggle.IsChecked = layer.SliceEnabled;
-            _sliceLeftSpin.DoubleValue = layer.SliceLeft;
-            _sliceTopSpin.DoubleValue = layer.SliceTop;
-            _sliceRightSpin.DoubleValue = layer.SliceRight;
-            _sliceBottomSpin.DoubleValue = layer.SliceBottom;
             _smtcModeBox.SelectedItem = SmtcModeChoices.FirstOrDefault(c => c.Value == layer.SmtcMode) ?? SmtcModeChoices[0];
             _shapeTypeBox.SelectedItem = ShapeTypeChoices.FirstOrDefault(c => c.Value == layer.ShapeType) ?? ShapeTypeChoices[0];
             _shapeCornerRadiusSpin.DoubleValue = layer.ShapeCornerRadius;

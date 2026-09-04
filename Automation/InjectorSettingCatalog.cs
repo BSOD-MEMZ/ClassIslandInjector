@@ -116,11 +116,11 @@ public static class InjectorSettingCatalog
                 Spec("OffsetY", "垂直偏移", "\uE113", SettingValueKind.Double, -2000, 2000, "0",
                     "向上或向下移动主界面。"),
                 Spec("Shape", "形状", "\uE113", SettingValueKind.Enum,
-                    "主界面的整体形状（圆角半径、背景裁切等）。", typeof(IslandShape),
+                    "主界面的整体形状。", typeof(IslandShape),
                     [KV(IslandShape.HostDefault, "跟随 ClassIsland"), KV(IslandShape.Rectangle, "矩形"),
                      KV(IslandShape.RoundedRectangle, "圆角矩形"), KV(IslandShape.Capsule, "胶囊")]),
                 Spec("CornerRadius", "圆角半径", "\uE113", SettingValueKind.Double, 0, 20, "0",
-                    "控制主界面边角的圆润程度（0-20，20 为半圆）。"),
+                    "控制主界面边角的圆润程度。"),
             ]
         },
         new()

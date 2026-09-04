@@ -929,7 +929,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             {
                 Severity = InfoBarSeverity.Warning,
                 Title = "检测到分体主界面",
-                Message = "本插件虽已适配分体主界面（分体块独立配色 / 底纹 / 背景图），但仍有部分功能未完全适配，不建议在使用本插件时开启分体主界面。",
+                Message = "本插件虽已适配分体主界面，但仍有部分功能未完全适配。",
                 IsOpen = true,
                 IsClosable = false
             };

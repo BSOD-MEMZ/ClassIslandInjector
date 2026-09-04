@@ -132,6 +132,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private DropShadowEffect? _shadowEffect;
     /// <summary>上次记录到的分体背景 Border 数量（诊断日志节流，变化时才写日志）。</summary>
     private int _lastSplitBackgroundLogCount = -1;
+    /// <summary>OnStateTick 空闲分支是否已记录过日志（只记一次，避免禁用注入时每 50ms 刷一条日志）。</summary>
+    private bool _stateTickIdleReported;
     /// <summary>分体状态签名：上次 OnStateTick 统计到的分体背景 Border 数量（变化时重应用装饰）。</summary>
     private int _lastSplitCountForStateTick = -1;
     /// <summary>上次因分体背景 Border 失效（stale）而重应用装饰的时间（节流防死循环）。</summary>
@@ -207,17 +209,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private string _smtcTitle = string.Empty;
     /// <summary>当前 SMTC 是否正在播放。</summary>
     private bool _smtcPlaying;
-    /// <summary>「扩展到整个显示框架」的全屏宿主画布（覆盖整个 GridRoot，跨所有行）。</summary>
-    private Canvas? _fullscreenCanvas;
-    /// <summary>全屏图层对应的九宫格渲染控件（键为图层 Id）。</summary>
-    private readonly Dictionary<string, WallpaperNineSliceVisual> _fullscreenVisuals = [];
-    /// <summary>全屏图层位图缓存（键为图层 Id）。</summary>
-    private readonly Dictionary<string, Bitmap> _fullscreenBitmaps = [];
-    /// <summary>全屏图层位图签名（来源|路径，去重避免重复解码）。</summary>
-    private readonly Dictionary<string, string> _fullscreenSignatures = [];
-    /// <summary>全屏图层逐像素（色相/饱和度/明度）处理后的位图缓存（键为图层 Id）。</summary>
-    private readonly Dictionary<string, (string Signature, Bitmap Bitmap)> _fullscreenProcessed = [];
-
     /// <summary>底图宿主的渲染模式。</summary>
     private enum WallpaperHostMode
     {
@@ -735,9 +726,17 @@ internal sealed class MainWindowStyleInjector : IDisposable
                 RemoveBlockWallpaperHosts();
             }
 
-            DebugLog($"OnStateTick 提前返回: enabled={_settings.Enabled}, mainWindow={_mainWindow != null}, islandRoot={_islandRoot != null}");
+            // 只在进入空闲（停用 / 无主窗口）时记录一次，避免每 50ms 轮询刷一条日志。
+            if (!_stateTickIdleReported)
+            {
+                _stateTickIdleReported = true;
+                DebugLog($"OnStateTick 提前返回: enabled={_settings.Enabled}, mainWindow={_mainWindow != null}, islandRoot={_islandRoot != null}");
+            }
+
             return;
         }
+
+        _stateTickIdleReported = false;
 
         // 一次全树遍历同时服务底图边界与 MainWindowLine 发现，避免每 tick 遍历两次。
         var descendants = _mainWindow.GetVisualDescendants().OfType<Control>().ToArray();
@@ -1747,7 +1746,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
         UpdateWallpaperTimer();
         ReloadWallpaperLayerImages();
         LayoutWallpaperLayers();
-        UpdateFullscreenLayers();
     }
 
     private void EnsureWallpaperHost()
@@ -2398,7 +2396,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _wallpaperHostMode = WallpaperHostMode.None;
         _wallpaperCanvas = null;
         DisposeWallpaperLayerViews();
-        DisposeFullscreenHost();
     }
 
     // ============ 动态视频填充（FFmpeg，专家模式）============
@@ -2871,10 +2868,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         // 位图图层需要来源；形状 / 文本图层（Kind != Image）始终参与渲染；
-        // 「扩展到整个显示框架」的图层由独立全屏宿主渲染，不参与主界面画布；
         // 画布图层（IsCanvasLayer）是编辑器内的自由绘制层，栅格化前不显示在主界面上。
         var wanted = _settings.WallpaperLayers
-            .Where(l => l.Visible && !l.FullscreenExtend && !l.IsCanvasLayer &&
+            .Where(l => l.Visible && !l.IsCanvasLayer &&
                         (l.Kind != WallpaperLayerKind.Image || l.Source != WallpaperSource.None))
             .ToList();
         var wantedIds = wanted.Select(l => l.Id).ToHashSet();
@@ -3221,204 +3217,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
             image.Source = null;
         }
     }
-
-    // ============ 全屏底图扩展（整个 ClassIsland 显示框架）============
-
-    /// <summary>是否有启用「扩展到整个显示框架」的可见图片图层。</summary>
-    private bool HasFullscreenLayer() =>
-        _settings.WallpaperLayers.Any(l => l.FullscreenExtend && l.Visible && l.Kind == WallpaperLayerKind.Image);
-
-    /// <summary>
-    /// 同步全屏底图宿主：为每个「全屏扩展」图层建立覆盖整个 GridRoot 的九宫格渲染控件，
-    /// 无此类图层时销毁宿主。
-    /// </summary>
-    private void UpdateFullscreenLayers()
-    {
-        var wanted = _settings.WallpaperLayers
-            .Where(l => l.FullscreenExtend && l.Visible && l.Kind == WallpaperLayerKind.Image)
-            .ToList();
-        if (wanted.Count == 0)
-        {
-            DisposeFullscreenHost();
-            return;
-        }
-
-        var islandGrid = _mainWindow?.FindControl<Grid>(HostContract.GridRoot);
-        if (islandGrid == null)
-        {
-            return;
-        }
-
-        if (_fullscreenCanvas == null)
-        {
-            _fullscreenCanvas = new Canvas
-            {
-                IsHitTestVisible = false,
-                ClipToBounds = true,
-                VerticalAlignment = VerticalAlignment.Stretch,
-                HorizontalAlignment = HorizontalAlignment.Stretch
-            };
-            // 插到最底（索引 0），跨所有行列铺满整个显示框架。
-            islandGrid.Children.Insert(0, _fullscreenCanvas);
-            Grid.SetRow(_fullscreenCanvas, 0);
-            Grid.SetRowSpan(_fullscreenCanvas, Math.Max(1, islandGrid.RowDefinitions.Count));
-            Grid.SetColumn(_fullscreenCanvas, 0);
-            Grid.SetColumnSpan(_fullscreenCanvas, Math.Max(1, islandGrid.ColumnDefinitions.Count));
-            _fullscreenCanvas.SizeChanged += (_, _) => LayoutFullscreenLayers();
-        }
-
-        // 同步九宫格渲染控件。
-        foreach (var stale in _fullscreenVisuals.Keys.Where(id => wanted.All(l => l.Id != id)).ToArray())
-        {
-            _fullscreenCanvas.Children.Remove(_fullscreenVisuals[stale]);
-            _fullscreenVisuals.Remove(stale);
-        }
-
-        foreach (var layer in wanted)
-        {
-            if (!_fullscreenVisuals.TryGetValue(layer.Id, out var visual))
-            {
-                visual = new WallpaperNineSliceVisual();
-                _fullscreenVisuals[layer.Id] = visual;
-                _fullscreenCanvas.Children.Add(visual);
-            }
-
-            visual.Bitmap = DisplayFullscreenBitmap(layer);
-            visual.SliceEnabled = layer.SliceEnabled;
-            visual.SliceLeft = layer.SliceLeft;
-            visual.SliceTop = layer.SliceTop;
-            visual.SliceRight = layer.SliceRight;
-            visual.SliceBottom = layer.SliceBottom;
-            visual.Opacity = layer.Opacity;
-            // 全屏图层只应用高斯模糊（投影在铺满整屏时无意义）。
-            visual.Effect = WallpaperLayerEffects.BuildBlur(layer);
-        }
-
-        LayoutFullscreenLayers();
-    }
-
-    /// <summary>加载（并缓存）全屏图层的位图，签名去重避免重复解码。</summary>
-    private Bitmap? GetFullscreenBitmap(WallpaperLayerItem layer)
-    {
-        var signature = $"{layer.Source}|{layer.Path}";
-        if (_fullscreenSignatures.TryGetValue(layer.Id, out var loaded) && loaded == signature &&
-            _fullscreenBitmaps.TryGetValue(layer.Id, out var cached))
-        {
-            return cached;
-        }
-
-        _fullscreenSignatures[layer.Id] = signature;
-        if (_fullscreenBitmaps.TryGetValue(layer.Id, out var old))
-        {
-            old.Dispose();
-            _fullscreenBitmaps.Remove(layer.Id);
-        }
-
-        if (layer.Source != WallpaperSource.LocalImage || string.IsNullOrWhiteSpace(layer.Path) || !File.Exists(layer.Path))
-        {
-            return null;
-        }
-
-        try
-        {
-            var bm = new Bitmap(layer.Path);
-            _fullscreenBitmaps[layer.Id] = bm;
-            return bm;
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// 取全屏图层当前应显示的位图：启用裁剪 / 颜色调整时返回处理后的缓存图，
-    /// 否则返回原图（并清理残留的处理缓存）。按「原图路径 + 全部处理参数」签名去重。
-    /// </summary>
-    private Bitmap? DisplayFullscreenBitmap(WallpaperLayerItem layer)
-    {
-        var raw = GetFullscreenBitmap(layer);
-        if (raw == null)
-        {
-            return null;
-        }
-
-        if (!WallpaperLayerEffects.HasAdjustment(layer) && !WallpaperLayerEffects.HasCrop(layer))
-        {
-            if (_fullscreenProcessed.Remove(layer.Id, out var stale))
-            {
-                stale.Bitmap.Dispose();
-            }
-
-            return raw;
-        }
-
-        var signature = ProcessSignature(layer);
-        if (_fullscreenProcessed.TryGetValue(layer.Id, out var cached) && cached.Signature == signature)
-        {
-            return cached.Bitmap;
-        }
-
-        // 注意：cached 是值类型元组，缓存未命中时为 default（Bitmap 为 null），
-        // 不能对元组本身用 `is { }` 判空（值类型恒真），必须对 Bitmap 成员判空。
-        if (cached.Bitmap is { } oldBitmap)
-        {
-            oldBitmap.Dispose();
-        }
-
-        var processed = WallpaperLayerEffects.Process(raw, layer);
-        _fullscreenProcessed[layer.Id] = (signature, processed ?? raw);
-        return processed ?? raw;
-    }
-
-    /// <summary>让全屏渲染控件铺满宿主画布（宿主尺寸变化时由 SizeChanged 触发）。</summary>
-    private void LayoutFullscreenLayers()
-    {
-        if (_fullscreenCanvas == null)
-        {
-            return;
-        }
-
-        var w = _fullscreenCanvas.Bounds.Width;
-        var h = _fullscreenCanvas.Bounds.Height;
-        if (w <= 0 || h <= 0)
-        {
-            return;
-        }
-
-        foreach (var visual in _fullscreenVisuals.Values)
-        {
-            visual.Width = w;
-            visual.Height = h;
-            Canvas.SetLeft(visual, 0);
-            Canvas.SetTop(visual, 0);
-        }
-    }
-
-    /// <summary>销毁全屏宿主并释放其位图。</summary>
-    private void DisposeFullscreenHost()
-    {
-        foreach (var bm in _fullscreenBitmaps.Values)
-        {
-            bm.Dispose();
-        }
-
-        _fullscreenBitmaps.Clear();
-        _fullscreenSignatures.Clear();
-        foreach (var processed in _fullscreenProcessed.Values)
-        {
-            processed.Bitmap.Dispose();
-        }
-
-        _fullscreenProcessed.Clear();
-        _fullscreenVisuals.Clear();
-        if (_fullscreenCanvas != null)
-        {
-            (_fullscreenCanvas.Parent as Grid)?.Children.Remove(_fullscreenCanvas);
-            _fullscreenCanvas = null;
-        }
-    }
-
 
     private void DisposeWallpaperLayerViews()
     {
@@ -5232,8 +5030,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
         var shadow = _settings.DynamicShadowColorEnabled
             ? _dynamicShadowColor
             : ParseColorOrDefault(_settings.ShadowColor, _dynamicShadowColor);
-        // 全屏底图模式：删除底色、边框与阴影，让全屏图片完全接管背景。
-        var fullscreenActive = HasFullscreenLayer();
         var splitBackgroundCount = 0;
 
         foreach (var borderControl in _mainWindow.GetVisualDescendants().OfType<Border>()
@@ -5280,41 +5076,29 @@ internal sealed class MainWindowStyleInjector : IDisposable
             var blockUseDynamic = false;
             if (isBackground)
             {
-                if (fullscreenActive)
+                // 分体块级背景优先：块有独立配置且启用时不依赖全局「底色填充」开关
+                // （用户显式应用了块配色就应当生效）。
+                if (borderControl.Name != HostContract.BackgroundBorder &&
+                    GetSplitBlockComponentId(borderControl) is { } id &&
+                    _settings.SplitBlockBackgrounds.TryGetValue(id, out var block) &&
+                    block.Enabled)
                 {
-                    borderControl.Background = Brushes.Transparent;
+                    blockId = id;
+                    blockUseDynamic = block.UseDynamicColor;
+                    backgroundBrush = BuildBlockBackgroundBrush(block, background);
+                    borderControl.Background = backgroundBrush;
                 }
-                else
+                else if (_settings.CustomBackgroundEnabled)
                 {
-                    // 分体块级背景优先：块有独立配置且启用时不依赖全局「底色填充」开关
-                    // （用户显式应用了块配色就应当生效）。
-                    if (borderControl.Name != HostContract.BackgroundBorder &&
-                        GetSplitBlockComponentId(borderControl) is { } id &&
-                        _settings.SplitBlockBackgrounds.TryGetValue(id, out var block) &&
-                        block.Enabled)
-                    {
-                        blockId = id;
-                        blockUseDynamic = block.UseDynamicColor;
-                        backgroundBrush = BuildBlockBackgroundBrush(block, background);
-                        borderControl.Background = backgroundBrush;
-                    }
-                    else if (_settings.CustomBackgroundEnabled)
-                    {
-                        backgroundBrush = _settings.GradientEnabled && TryParseColor(_settings.GradientEndColor, out var endColor)
-                            ? BuildGradientBrush(background, endColor)
-                            : new SolidColorBrush(background);
-                        borderControl.Background = backgroundBrush;
-                    }
+                    backgroundBrush = _settings.GradientEnabled && TryParseColor(_settings.GradientEndColor, out var endColor)
+                        ? BuildGradientBrush(background, endColor)
+                        : new SolidColorBrush(background);
+                    borderControl.Background = backgroundBrush;
                 }
             }
 
             IBrush? borderBrush = null;
-            if (fullscreenActive)
-            {
-                borderControl.BorderBrush = Brushes.Transparent;
-                borderControl.BorderThickness = new Thickness(0);
-            }
-            else if (_settings.BorderEnabled && isBackground)
+            if (_settings.BorderEnabled && isBackground)
             {
                 // 边框只作用于背景 Border（非分体 BackgroundBorder / 分体根组件背景 Border）。
                 // OverlayMask / BackgroundBorderOverlayMask 是整行尺寸的通知遮罩，给它们加边框
@@ -5355,7 +5139,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
             }
         }
 
-        if (!_settings.ShadowEnabled || fullscreenActive)
+        if (!_settings.ShadowEnabled)
         {
             return;
         }
@@ -5650,7 +5434,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _dynamicColorsInitialized = false;
         RemoveWallpaper();
         RemoveVideoFill();
-        DisposeFullscreenHost();
         StopSpectrum();
         RevertDynamicThemeColor();
         RestoreMouseHoverKeepVisible();

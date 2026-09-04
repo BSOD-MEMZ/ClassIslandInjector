@@ -377,7 +377,7 @@ internal sealed class FfmpegInstallWindow : MyWindow
             Title = "彻底删除 FFmpeg 解码库",
             Content = new TextBlock
             {
-                Text = "将删除已安装的 FFmpeg 解码库（约 7~50 MB）。删除后动态视频背景、视频编辑器预览与渲染均不可用，需要时重新下载安装即可。\n确定要彻底删除吗？",
+                Text = "将删除已安装的 FFmpeg 解码库。删除后动态视频背景、视频编辑器预览与渲染均不可用，需要时重新下载安装即可。\n确定要彻底删除吗？",
                 TextWrapping = TextWrapping.Wrap
             },
             PrimaryButtonText = "彻底删除",

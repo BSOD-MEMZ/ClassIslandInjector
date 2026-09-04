@@ -212,9 +212,11 @@ internal sealed class VideoEditorWindow : MyWindow
     private double _resizeBaseW;
     private double _resizeBaseH;
     private VideoClip? _resizeClip;
-    /// <summary>旋转手柄（选中框顶部上方，紫色圆点，与底图图层编辑器旋转手柄同款）与旋转臂。</summary>
+    /// <summary>旋转手柄（选中框顶部上方，与八向缩放手柄同款：白底圆点 + 强调色描边）与旋转臂。</summary>
     private Border _rotateHandle = null!;
     private Avalonia.Controls.Shapes.Line _rotateArm = null!;
+    /// <summary>旋转手柄内层圆点（按下切换实心强调色，与八向缩放手柄一致）。</summary>
+    private Ellipse _rotateDot = null!;
     /// <summary>是否正在拖动旋转手柄。</summary>
     private bool _rotating;
     /// <summary>旋转拖动起始：按下指针 / 基准显示矩形 / 起始旋转角。</summary>
@@ -330,10 +332,12 @@ internal sealed class VideoEditorWindow : MyWindow
 
     // ---- 文本/形状覆盖层属性 ----
     private readonly TextBox _overlayText = new() { MinWidth = 140, Watermark = "文本内容" };
-    private readonly TextBox _overlayColor = new() { MinWidth = 100, Watermark = "#AARRGGBB" };
+    // 填充 / 描边颜色不再手填 HEX：直接内嵌 FAUI ColorPicker（与设置页 / 图层编辑器同款），
+    // 点击色块即可打开专门的调色板选色。
+    private readonly ColorPicker _overlayColor = new() { VerticalAlignment = VerticalAlignment.Center };
     private readonly ComboBox _overlayShape = new() { MinWidth = 110 };
     private readonly EditorSpin _strokeWidthSpin = new(0, 0.2, 0.005, "0.###");
-    private readonly TextBox _strokeColorBox = new() { MinWidth = 100, Watermark = "#AARRGGBB" };
+    private readonly ColorPicker _strokeColor = new() { VerticalAlignment = VerticalAlignment.Center };
     // 文本样式（仅 Text）：字体下拉（枚举系统字体，非写死）/ 字号系数 / 加粗。
     private readonly ComboBox _overlayFontBox = new() { MinWidth = 140, MaxDropDownHeight = 360 };
     private readonly EditorSpin _textSizeSpin = new(0.05, 1.2, 0.01, "0.##");
@@ -352,7 +356,15 @@ internal sealed class VideoEditorWindow : MyWindow
     private Control? _textBoldRow;
     // ---- 滤镜片段属性 ----
     private readonly ComboBox _filterCombo = new() { MinWidth = 110 };
-    private readonly EditorSpin _filterIntensitySpin = new(0, 1, 0.01, "0.##");
+    /// <summary>滤镜强度滑动条（比 spinbox 更直观地调节特效强度）。</summary>
+    private readonly Slider _filterIntensitySlider = new()
+    {
+        Minimum = 0,
+        Maximum = 1,
+        Value = 1,
+        VerticalAlignment = VerticalAlignment.Center,
+        IsSnapToTickEnabled = false
+    };
     private readonly StackPanel _filterPanel = new() { Spacing = 4 };
     /// <summary>检查器分段条（变换/覆盖层/滤镜；ClassIsland 原生 TabStrip + compact 类，规则集同款）。</summary>
     private TabStrip _inspectorSegmented = null!;
@@ -1571,7 +1583,7 @@ internal sealed class VideoEditorWindow : MyWindow
         };
         _overlayColor.PropertyChanged += (_, e) =>
         {
-            if (e.Property == TextBox.TextProperty)
+            if (e.Property == ColorPicker.ColorProperty)
             {
                 ApplyOverlayEdits();
             }
@@ -1584,9 +1596,9 @@ internal sealed class VideoEditorWindow : MyWindow
                 ApplyOverlayEdits();
             }
         };
-        _strokeColorBox.PropertyChanged += (_, e) =>
+        _strokeColor.PropertyChanged += (_, e) =>
         {
-            if (e.Property == TextBox.TextProperty)
+            if (e.Property == ColorPicker.ColorProperty)
             {
                 ApplyOverlayEdits();
             }
@@ -1632,7 +1644,7 @@ internal sealed class VideoEditorWindow : MyWindow
         _overlayColorRow = InspectorRow("填充颜色", _overlayColor);
         _overlayShapeRow = InspectorRow("形状", _overlayShape);
         _strokeWidthRow = InspectorRow("描边宽度", _strokeWidthSpin);
-        _strokeColorRow = InspectorRow("描边颜色", _strokeColorBox);
+        _strokeColorRow = InspectorRow("描边颜色", _strokeColor);
         _overlayFontRow = InspectorRow("字体", _overlayFontBox);
         _textSizeRow = InspectorRow("字号（相对）", _textSizeSpin);
         _textBoldRow = InspectorRow("字重", _textBoldCheck);
@@ -1644,18 +1656,12 @@ internal sealed class VideoEditorWindow : MyWindow
         _overlayPanel.Children.Add(_strokeWidthRow);
         _overlayPanel.Children.Add(_strokeColorRow);
         _overlayPanel.Children.Add(_overlayShapeRow);
-        // 滤镜编辑（滤镜 Tab 内）：类型 + 强度（滤镜只有效果强度，无变换）。
+        // 滤镜编辑（滤镜 Tab 内）：类型 + 强度（滤镜只有效果强度，无变换；强度用滑动条直观调节）。
         _filterCombo.ItemsSource = FilterDefs.Select(d => d.Name).ToList();
         _filterCombo.SelectionChanged += (_, _) => ApplyFilterEdits();
-        _filterIntensitySpin.PropertyChanged += (_, e) =>
-        {
-            if (e.Property == NumericUpDown.ValueProperty)
-            {
-                ApplyFilterEdits();
-            }
-        };
+        _filterIntensitySlider.ValueChanged += (_, _) => ApplyFilterEdits();
         _filterPanel.Children.Add(InspectorRow("类型", _filterCombo));
-        _filterPanel.Children.Add(InspectorRow("强度 (0~1)", _filterIntensitySpin));
+        _filterPanel.Children.Add(InspectorRow("强度", _filterIntensitySlider));
 
         // Tab 选项卡分组：变换 / 覆盖层（仅 Text/Shape/Image）/ 滤镜（仅 Filter）。
         var transformPanel = new StackPanel
@@ -1673,7 +1679,7 @@ internal sealed class VideoEditorWindow : MyWindow
                 InspectorRow("垂直偏移", _offsetYSpin),
                 InspectorRow("旋转（度）", _rotationSpin),
                 InspectorRow("不透明度", _opacitySpin),
-                new TextBlock { Text = "边缘裁剪（0~1 归一化）", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 8, 0, 0) },
+                new TextBlock { Text = "边缘裁剪", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 8, 0, 0) },
                 InspectorRow("裁左", _cropLSpin),
                 InspectorRow("裁上", _cropTSpin),
                 InspectorRow("裁右", _cropRSpin),
@@ -1803,7 +1809,7 @@ internal sealed class VideoEditorWindow : MyWindow
 
         PushUndo(true);
         clip.Filter = FilterDefs[idx].Key;
-        clip.FilterIntensity = Math.Clamp(_filterIntensitySpin.DoubleValue, 0, 1);
+        clip.FilterIntensity = Math.Clamp(_filterIntensitySlider.Value, 0, 1);
         ScheduleSave();
         _statusText.Text = $"滤镜已改为「{FilterDefs[idx].Name}」（强度 {clip.FilterIntensity:P0}）。";
         // 立即刷新当前时刻的舞台预览（滤镜作用于下方画面）。
@@ -1830,10 +1836,10 @@ internal sealed class VideoEditorWindow : MyWindow
 
         PushUndo(true);
         clip.Text = _overlayText.Text ?? "";
-        clip.Color = string.IsNullOrWhiteSpace(_overlayColor.Text) ? "#FFFFFFFF" : _overlayColor.Text!.Trim();
+        clip.Color = _overlayColor.Color.ToString();
         clip.Shape = _overlayShape.SelectedItem?.ToString() ?? "Rect";
         clip.StrokeWidth = Math.Clamp(_strokeWidthSpin.DoubleValue, 0, 0.2);
-        clip.StrokeColor = string.IsNullOrWhiteSpace(_strokeColorBox.Text) ? "#FF000000" : _strokeColorBox.Text!.Trim();
+        clip.StrokeColor = _strokeColor.Color.ToString();
         // 文本样式：字体下拉（SelectedItem = FontFamily）/ 字号系数 / 加粗。
         if (clip.Kind == "Text")
         {
@@ -3792,7 +3798,7 @@ internal sealed class VideoEditorWindow : MyWindow
             {
                 Text = glyph,
                 FontFamily = AppBase.FluentIconsFontFamily,
-                FontSize = 11,
+                FontSize = 13,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center
             },
@@ -3800,8 +3806,9 @@ internal sealed class VideoEditorWindow : MyWindow
             Margin = new Thickness(0),
             MinWidth = 0,
             MinHeight = 0,
-            Width = 19,
-            Height = 15,
+            // 触摸友好命中尺寸（轨道头行高默认 60，足够容纳）；桌面鼠标同样更易点中。
+            Width = 28,
+            Height = 24,
             HorizontalContentAlignment = HorizontalAlignment.Center,
             VerticalContentAlignment = VerticalAlignment.Center
         };
@@ -4099,23 +4106,38 @@ internal sealed class VideoEditorWindow : MyWindow
             }
         };
         // 选中时显示左右裁剪手柄（拖左 = 改入点，拖右 = 改出点）。
+        // 触摸友好：外层 18px 透明命中区（手指可轻松点到），内层 8px 白色可见条贴块边缘。
         var leftHandle = new Border
         {
-            Width = 10,
+            Width = 18,
             HorizontalAlignment = HorizontalAlignment.Left,
-            Background = new SolidColorBrush(Color.FromArgb(150, 255, 255, 255)),
-            CornerRadius = new CornerRadius(6, 0, 0, 6),
+            Background = Brushes.Transparent,
             Cursor = new Cursor(StandardCursorType.SizeWestEast),
-            IsVisible = isSelected
+            IsVisible = isSelected,
+            Child = new Border
+            {
+                Width = 8,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Background = new SolidColorBrush(Color.FromArgb(170, 255, 255, 255)),
+                CornerRadius = new CornerRadius(6, 0, 0, 6),
+                IsHitTestVisible = false
+            }
         };
         var rightHandle = new Border
         {
-            Width = 10,
+            Width = 18,
             HorizontalAlignment = HorizontalAlignment.Right,
-            Background = new SolidColorBrush(Color.FromArgb(150, 255, 255, 255)),
-            CornerRadius = new CornerRadius(0, 6, 6, 0),
+            Background = Brushes.Transparent,
             Cursor = new Cursor(StandardCursorType.SizeWestEast),
-            IsVisible = isSelected
+            IsVisible = isSelected,
+            Child = new Border
+            {
+                Width = 8,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Background = new SolidColorBrush(Color.FromArgb(170, 255, 255, 255)),
+                CornerRadius = new CornerRadius(0, 6, 6, 0),
+                IsHitTestVisible = false
+            }
         };
         var block = new Border
         {
@@ -4187,8 +4209,7 @@ internal sealed class VideoEditorWindow : MyWindow
     /// 拖拽始终跟手。rootPos 为 _timelineRoot 坐标。</summary>
     private void BeginClipDrag(VideoClip clip, PointerEventArgs e, Point rootPos)
     {
-        // 点击片段也把播放头 seek 到该位置。
-        SetPlayhead(Math.Max(0, rootPos.X / _pxPerSecond));
+        // 点击 / 按下片段不移动播放头（seek 指针不“凑热闹”）：要定位播放位置请点标尺或泳道空白处。
         // 多选：点击已选中的片段保持选择（准备拖动整个组）；否则清空并单选。
         if (!_selectedClips.Contains(clip))
         {
@@ -4367,10 +4388,11 @@ internal sealed class VideoEditorWindow : MyWindow
         }
 
         _dragLogMoves++;
-        // 落点按指针 Y 判定（组拖动不支持插入新轨，只落轨；高亮目标泳道）。
+        // 落点按指针 Y 判定：贴近轨界 / 轨道区外顶部底部 = 提示「新建轨道」（整组来自同一数据轨时）。
         var trackCount = _project.TrackCount;
-        var (targetTrack, _) = ResolveDropTarget(rootPos.Y, trackCount);
-        UpdateDropHighlight(targetTrack, trackCount, false, -1);
+        var (targetTrack, insertPos) = ResolveDropTarget(rootPos.Y, trackCount);
+        var canInsertNewTrack = insertPos >= 0 && md.Tracks.Values.Distinct().Count() <= 1;
+        UpdateDropHighlight(targetTrack, trackCount, false, canInsertNewTrack ? insertPos : -1);
     }
 
     /// <summary>根画布指针释放：完成裁剪（刷新并保存）或完成整组落轨。</summary>
@@ -4402,27 +4424,65 @@ internal sealed class VideoEditorWindow : MyWindow
         e.Pointer.Capture(null);
         if (wasFloating)
         {
-            // 释放：整组吸附 → 按指针 Y 落轨（组内轨道相对偏移保持）。
+            // 释放：整组吸附 → 解析落点。贴近轨道边界 / 轨道区外顶部底部 = 建立新轨道
+            // （整组来自同一数据轨时最直观：把这“一整行”挪到新建的空轨上）。
             var rootPos = e.GetPosition(_timelineRoot);
             var trackCount = _project.TrackCount;
-            var (targetTrack, _) = ResolveDropTarget(rootPos.Y, trackCount);
+            var (targetTrack, insertPos) = ResolveDropTarget(rootPos.Y, trackCount);
             var grabTrack = md.Tracks[md.Pressed];
-            var trackDelta = Math.Clamp(targetTrack, 0, 32) - grabTrack;
-            foreach (var (c, origTrack) in md.Tracks)
+            var singleSourceRow = md.Tracks.Values.Distinct().Count() <= 1;
+            if (insertPos >= 0 && singleSourceRow)
             {
-                c.Track = Math.Clamp(origTrack + trackDelta, 0, 32);
-                if (_snapEnabled)
+                // 在视觉位置 insertPos 插入一条新空轨：位于插入点上方的既有轨道数据轨号 +1
+                // 为新轨腾位（组内片段先排除，稍后统一落到新轨上）。
+                var n = trackCount;
+                foreach (var c in _project.Clips)
                 {
-                    c.StartTime = SnapTime(c.StartTime);
+                    if (md.Tracks.ContainsKey(c) || c.Track <= n - 1 - insertPos)
+                    {
+                        continue;
+                    }
+
+                    c.Track++;
                 }
 
-                if (!FitsOnTrack(c.Track, c.StartTime, c.Duration, c))
+                var newTrack = n - insertPos;
+                foreach (var (c, _) in md.Tracks)
                 {
-                    c.StartTime = FitToTrack(c, c.StartTime, c.Track);
+                    c.Track = newTrack;
+                    if (_snapEnabled)
+                    {
+                        c.StartTime = SnapTime(c.StartTime);
+                    }
+
+                    if (!FitsOnTrack(c.Track, c.StartTime, c.Duration, c))
+                    {
+                        c.StartTime = FitToTrack(c, c.StartTime, c.Track);
+                    }
                 }
+
+                EditorLog($"组拖到轨道边界/外部 y={rootPos.Y:0.#} → 新建轨道（视觉位置 {insertPos}，新数据轨 {newTrack}） n={md.Origins.Count} 条");
             }
+            else
+            {
+                // 落到既有轨道：整组相对偏移保持（多数据轨的组或多轨组落中段走这里）。
+                var trackDelta = Math.Clamp(targetTrack, 0, 32) - grabTrack;
+                foreach (var (c, origTrack) in md.Tracks)
+                {
+                    c.Track = Math.Clamp(origTrack + trackDelta, 0, 32);
+                    if (_snapEnabled)
+                    {
+                        c.StartTime = SnapTime(c.StartTime);
+                    }
 
-            EditorLog($"组落轨 y={rootPos.Y:0.#} → track={targetTrack} delta={trackDelta} n={md.Origins.Count}");
+                    if (!FitsOnTrack(c.Track, c.StartTime, c.Duration, c))
+                    {
+                        c.StartTime = FitToTrack(c, c.StartTime, c.Track);
+                    }
+                }
+
+                EditorLog($"组落轨 y={rootPos.Y:0.#} → track={targetTrack} delta={trackDelta} n={md.Origins.Count}");
+            }
         }
 
         ClearDropHighlight();
@@ -4545,34 +4605,33 @@ internal sealed class VideoEditorWindow : MyWindow
     /// <summary>
     /// 把泳道区内的纵向坐标解析为落点：返回（数据轨号, 插入位置）。
     /// insertPosition = -1 = 直接落到该轨道；0..trackCount = 在视觉位置 p 插入新轨
-    /// （0 = 最顶层上方，trackCount = 最底层下方，中间 = 两轨之间）。指针贴近轨道边界
-    /// （±8px，含顶/底边）判定为插入意图，拖拽时显示水平插入指示线。
+    /// （0 = 最顶层上方，trackCount = 最底层下方，中间 = 两轨之间）。
+    /// 判定碰撞体积较大：每轨顶部的判定带为 <see cref="DropBoundaryThreshold"/> 像素
+    /// （贴近某轨顶部即视为在该轨上方新建），轨道区上方空白（y&lt;0）与最底轨底边
+    /// 及更下方空白都视为新建轨道——因此“碰到轨道附近（含轨道外）区域”即可新建。
     /// </summary>
     private (int Track, int InsertPosition) ResolveDropTarget(double y, int trackCount)
     {
-        const double threshold = 8;
-        // 先扫边界（顶边、两轨之间、底边）：贴近即插入。
-        var acc = 0.0;
-        for (var row = 0; row <= trackCount; row++)
+        if (trackCount <= 0)
         {
-            if (Math.Abs(y - acc) <= threshold)
-            {
-                return (Math.Clamp(RowOfTrackInverse(Math.Min(row, trackCount - 1), trackCount), 0, Math.Max(0, trackCount - 1)), row);
-            }
-
-            if (row < trackCount)
-            {
-                acc += LaneHeightOf(RowOfTrackInverse(row, trackCount));
-            }
+            // 无轨道：任意纵向位置都建成第一条新轨。
+            return (0, 0);
         }
 
-        // 不在边界：命中所在轨道（数据轨号）。
-        acc = 0.0;
+        var acc = 0.0;
         for (var row = 0; row < trackCount; row++)
         {
             var t = RowOfTrackInverse(row, trackCount);
             var h = LaneHeightOf(t);
-            if (y < acc + h)
+            // 本轨顶部判定带（含轨道区上方空白，y<0 也命中这里 → 顶部新建）：
+            // 前一轨底部的这一小段 + 本轨顶部这一小段都算「两轨之间新建」。
+            if (y < acc + DropBoundaryThreshold)
+            {
+                return (t, row);
+            }
+
+            // 轨道中段 → 直接落到该轨。
+            if (y <= acc + h - DropBoundaryThreshold)
             {
                 return (t, -1);
             }
@@ -4580,9 +4639,12 @@ internal sealed class VideoEditorWindow : MyWindow
             acc += h;
         }
 
-        // 超出底部：底部插入。
+        // 超出底部（含最底轨底部判定带与更下方空白）：底部新建。
         return (0, trackCount);
     }
+
+    /// <summary>新建轨道判定带的半带宽（像素）：贴近轨顶 / 轨外的这个范围内都视为“新建轨道”。</summary>
+    private const double DropBoundaryThreshold = 14;
 
     /// <summary>把泳道区内的纵向坐标解析为所在轨的视觉顶部（落点标签定位用）。</summary>
     private double VisualTopOfTrack(int track, int trackCount)
@@ -5087,13 +5149,13 @@ internal sealed class VideoEditorWindow : MyWindow
             if (isOverlay)
             {
                 _overlayText.Text = clip!.Text;
-                _overlayColor.Text = clip.Color;
+                _overlayColor.Color = ParseHexColor(clip.Color);
                 _overlayShape.SelectedItem = clip.Shape;
                 _overlayText.IsEnabled = clip.Kind == "Text";
                 _overlayShape.IsEnabled = clip.Kind == "Shape";
                 _overlayColor.IsEnabled = clip.Kind != "Image";
                 _strokeWidthSpin.DoubleValue = clip.StrokeWidth;
-                _strokeColorBox.Text = clip.StrokeColor;
+                _strokeColor.Color = ParseHexColor(clip.StrokeColor);
                 // 文本样式：字体下拉（按系统字体名回填，空 = 微软雅黑）、字号系数、加粗。
                 var wantFont = string.IsNullOrWhiteSpace(clip.TextFontFamily) ? "Microsoft YaHei" : clip.TextFontFamily;
                 var selIdx = -1;
@@ -5165,7 +5227,7 @@ internal sealed class VideoEditorWindow : MyWindow
             {
                 var fi = Array.FindIndex(FilterDefs, d => d.Key == clip!.Filter);
                 _filterCombo.SelectedIndex = fi < 0 ? 0 : fi;
-                _filterIntensitySpin.DoubleValue = Math.Clamp(clip!.FilterIntensity, 0, 1);
+                _filterIntensitySlider.Value = Math.Clamp(clip!.FilterIntensity, 0, 1);
             }
 
             // 当前分段被隐藏（片段类型变化）时回退到变换；片段变化时自动切到对应分段。
@@ -5674,11 +5736,19 @@ internal sealed class VideoEditorWindow : MyWindow
             }
         }
 
-        _playheadTime = 0;
+        // 保留当前播放头（seek 位置）：新建播放器从该处开始，而非强制回 0——
+        // 这样按空格可以在当前 seek 处继续播放。
+        _playheadTime = Math.Clamp(_playheadTime, 0, Math.Max(0, _project.Duration));
         PositionPlayheadLine();
-        _timeText.Text = FormatTime(0);
+        PositionPlayheadHead();
+        _timeText.Text = FormatTime(_playheadTime);
         _player = new VideoProjectPlayer(_project, PreviewMaxDimension, _targetFps, OnPreviewFrame);
         _player.Start();
+        if (_playheadTime > 0)
+        {
+            _player.Seek(_playheadTime);
+        }
+
         _playing = true;
         UpdateTransportUi();
         _statusText.Text = "预览播放中…";
@@ -5973,23 +6043,23 @@ internal sealed class VideoEditorWindow : MyWindow
             _stageHandleOverlay.Children.Add(handle);
         }
 
-        // 旋转臂（选中框顶部中心向上，紫色虚线）+ 旋转手柄（紫色圆点 + 白描边，底图图层编辑器同款）。
+        // 旋转臂（选中框顶部中心向上）+ 旋转手柄：外观与八向缩放手柄一致（白底圆点 + 强调色描边），
+        // 旋转臂用强调色细线把圆点接到选中框顶部中心——不再用突兀的紫色大圆点 + 白描边。
         // 位于八向手柄「北」上方：选中框顶部中心上方约 34px。
         _rotateArm = new Avalonia.Controls.Shapes.Line
         {
-            Stroke = new SolidColorBrush(Color.FromRgb(121, 80, 242)),
-            StrokeThickness = 1.5,
-            StrokeDashArray = [4, 3],
+            Stroke = ThemePalette.AccentBrushWithAlpha(190),
+            StrokeThickness = 1,
             IsHitTestVisible = false,
             IsVisible = false
         };
         _stageHandleOverlay.Children.Add(_rotateArm);
-        var rotateDot = new Ellipse
+        _rotateDot = new Ellipse
         {
-            Width = 14,
-            Height = 14,
-            Fill = new SolidColorBrush(Color.FromRgb(121, 80, 242)),
-            Stroke = Brushes.White,
+            Width = 16,
+            Height = 16,
+            Fill = Brushes.White,
+            Stroke = ThemePalette.AccentBrush(),
             StrokeThickness = 2,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
@@ -6002,12 +6072,19 @@ internal sealed class VideoEditorWindow : MyWindow
             Background = Brushes.Transparent,
             Cursor = new Cursor(StandardCursorType.Hand),
             IsVisible = false,
-            Child = rotateDot
+            Child = _rotateDot
         };
         _rotateHandle.PointerPressed += RotateHandleOnPointerPressed;
         _rotateHandle.PointerMoved += RotateHandleOnPointerMoved;
         _rotateHandle.PointerReleased += RotateHandleOnPointerReleased;
-        _rotateHandle.PointerCaptureLost += (_, _) => _rotating = false;
+        _rotateHandle.PointerCaptureLost += (_, _) =>
+        {
+            _rotating = false;
+            // 捕获意外丢失也恢复默认样式（与八向缩放手柄一致）。
+            _rotateDot.Fill = Brushes.White;
+            _rotateDot.Stroke = ThemePalette.AccentBrush();
+            _rotateDot.StrokeThickness = 2;
+        };
         _stageHandleOverlay.Children.Add(_rotateHandle);
 
         _stageHandleOverlay.IsVisible = false;
@@ -6140,6 +6217,9 @@ internal sealed class VideoEditorWindow : MyWindow
 
         _rotating = true;
         _resizeUndoPushed = false;
+        // 按下 → 实心强调色（与八向缩放手柄 pressed 同款）。
+        _rotateDot.Fill = ThemePalette.AccentBrush();
+        _rotateDot.Stroke = null;
         _rotateStartPointer = e.GetPosition(_stageBorder);
         _rotateStartRect = GetSelectedDisplayRect(clip);
         _rotateStartRotation = clip.Rotation;
@@ -6203,6 +6283,10 @@ internal sealed class VideoEditorWindow : MyWindow
         }
 
         _rotating = false;
+        // 恢复默认样式：白底 + 强调色描边。
+        _rotateDot.Fill = Brushes.White;
+        _rotateDot.Stroke = ThemePalette.AccentBrush();
+        _rotateDot.StrokeThickness = 2;
         e.Pointer.Capture(null);
         FillPropertyPanel();
     }
@@ -6514,7 +6598,6 @@ internal sealed class VideoEditorWindow : MyWindow
                     wSpin,
                     new TextBlock { Text = "输出高（像素）：" },
                     hSpin,
-                    new TextBlock { Text = "舞台与渲染输出将按此宽高比显示。", Opacity = 0.6, FontSize = 11 }
                 }
             },
             PrimaryButtonText = "确定",
@@ -6926,7 +7009,7 @@ internal sealed class VideoEditorWindow : MyWindow
         {
             IsChecked = InjectorRuntime.Settings.RenderHardwareAccelerated,
             OnContent = "硬件加速",
-            OffContent = "软件"
+            OffContent = "软解模式"
         };
         var dialog = new ContentDialog
         {
@@ -6936,14 +7019,14 @@ internal sealed class VideoEditorWindow : MyWindow
                 Spacing = 10,
                 Children =
                 {
-                    new TextBlock { Text = "分辨率（默认 270p 足够做主界面背景）：" },
+                    new TextBlock { Text = "分辨率：" },
                     resCombo,
-                    new TextBlock { Text = "画质（越高文件越大）：" },
+                    new TextBlock { Text = "画质：" },
                     qualityCombo,
                     hwToggle,
                     new TextBlock
                     {
-                        Text = "硬件加速：自动探测 Intel QSV / NVIDIA / AMD / Windows 硬件编码与解码，\n可用时大幅提速；失败自动回退软件编码。垃圾 CPU 机器建议开启。",
+                        Text = "硬件加速：自动探测 Intel QSV/NVIDIA/AMD/Windows 硬件编码与解码。",
                         FontSize = 11,
                         Opacity = 0.65,
                         TextWrapping = TextWrapping.Wrap

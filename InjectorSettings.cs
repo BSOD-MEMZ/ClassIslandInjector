@@ -389,25 +389,9 @@ public sealed class WallpaperLayerItem
     /// <summary>图层内容类型（位图 / 矢量形状 / 文本框）。</summary>
     public WallpaperLayerKind Kind { get; set; } = WallpaperLayerKind.Image;
 
-    /// <summary>是否扩展到整个 ClassIsland 显示框架：忽略锚点/尺寸，铺满主界面
-    /// （启用时运行时隐藏底色、边框、阴影）。</summary>
-    public bool FullscreenExtend { get; set; }
-
     /// <summary>是否整张画布图层：铺满整个编辑器画布（主界面 + 四周留白区域），
     /// 供自由绘制；栅格化后转为普通图片图层，才会出现在主界面上。</summary>
     public bool IsCanvasLayer { get; set; }
-
-    /// <summary>全屏扩展时是否启用九宫格切图（防变形拉伸）。</summary>
-    public bool SliceEnabled { get; set; }
-
-    /// <summary>九宫格上/下/左/右切边（像素，相对图片本身）。</summary>
-    public double SliceTop { get; set; }
-
-    public double SliceBottom { get; set; }
-
-    public double SliceLeft { get; set; }
-
-    public double SliceRight { get; set; }
 
     /// <summary>高斯模糊半径（像素）；0 = 不模糊（仅图片图层）。</summary>
     public double BlurRadius { get; set; }
@@ -616,13 +600,7 @@ public sealed class WallpaperLayerItem
         Rotation = Rotation,
         SlideshowIntervalSeconds = SlideshowIntervalSeconds,
         Kind = Kind,
-        FullscreenExtend = FullscreenExtend,
         IsCanvasLayer = IsCanvasLayer,
-        SliceEnabled = SliceEnabled,
-        SliceTop = SliceTop,
-        SliceBottom = SliceBottom,
-        SliceLeft = SliceLeft,
-        SliceRight = SliceRight,
         BlurRadius = BlurRadius,
         ShadowEnabled = ShadowEnabled,
         ShadowBlurRadius = ShadowBlurRadius,

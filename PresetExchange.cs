@@ -142,7 +142,7 @@ internal static class PresetExchange
 
             if (preset == null || string.IsNullOrWhiteSpace(preset.Name))
             {
-                return new Result(false, "预设包内容无效（缺少名称或设置）。");
+                return new Result(false, "预设包内容无效。");
             }
 
             // 元数据（可选）：老版本预设包可能没有 metadata.json。
