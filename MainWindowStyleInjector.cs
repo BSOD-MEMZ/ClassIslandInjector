@@ -179,11 +179,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private readonly Dictionary<Border, Border> _blockTextureHosts = [];
     /// <summary>当前是否处于「分体逐块底纹」模式（用于切换行级/逐块宿主时的一次性清理）。</summary>
     private bool _blockTextureActive;
-    /// <summary>分体模式下每个分块的专属背景图宿主（键 = 分块 line-background Border），
-    /// 插在该块底色之上、底纹之下；未设置的块保持透明透出整岛底图。</summary>
-    private readonly Dictionary<Border, Border> _blockWallpaperHosts = [];
-    /// <summary>专属图宿主当前装入的位图（释放管理）。</summary>
-    private readonly Dictionary<Border, Bitmap> _blockWallpaperBitmaps = [];
     /// <summary>当前底纹画刷（随设置变更重建）。</summary>
     private IBrush? _textureBrush;
     /// <summary>动态频谱底纹：系统声音输出回环捕获器（仅 Spectrum 纹理时启用）。</summary>
@@ -720,12 +715,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
     {
         if (!_settings.Enabled || _mainWindow == null || _islandRoot == null)
         {
-            // 停用 / 无主窗口：释放分块专属背景图宿主。
-            if (_blockWallpaperHosts.Count > 0)
-            {
-                RemoveBlockWallpaperHosts();
-            }
-
             // 只在进入空闲（停用 / 无主窗口）时记录一次，避免每 50ms 轮询刷一条日志。
             if (!_stateTickIdleReported)
             {
@@ -750,16 +739,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
         if (_videoFillHost != null)
         {
             UpdateVideoFillBounds(descendants);
-        }
-
-        // 分块专属背景图（逐块底图）：有块设置了图才逐块同步；否则仅清理残留宿主。
-        if (_settings.SplitBlockBackgrounds.Values.Any(v => v.HasWallpaperOverride && !string.IsNullOrEmpty(v.WallpaperPath)))
-        {
-            UpdateBlockWallpapers(descendants);
-        }
-        else if (_blockWallpaperHosts.Count > 0)
-        {
-            RemoveBlockWallpaperHosts();
         }
 
         if (_textureHosts.Count > 0 ||
@@ -1726,7 +1705,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
-        var enabled = _settings.Enabled && _settings.WallpaperEnabled;
+        // 分体主界面下禁用整岛底图（设置页分体模式已隐藏图层编辑器入口与底图模糊）：
+        // 整岛底图只服务于非分体整岛，分体块外观统一由「底色填充 / 底纹纹理」画笔控制。
+        var enabled = _settings.Enabled && _settings.WallpaperEnabled && !IsSeparatedMode();
         if (!enabled)
         {
             RemoveWallpaper();
@@ -2025,14 +2006,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
         };
         SetBlockTextureBrush(host, spec);
         host.Tag = spec;
-        var insertIndex = Math.Max(0, panel.Children.IndexOf(anchor) + 1);
-        // 底纹宿主排在块专属图宿主之后（渲染顺序：底色 → 块图 → 底纹 → 内容）。
-        while (insertIndex < panel.Children.Count && _blockWallpaperHosts.ContainsValue((Border)panel.Children[insertIndex]))
-        {
-            insertIndex++;
-        }
-
-        panel.Children.Insert(insertIndex, host);
+        // 底纹宿主插在底色 Border 之后（渲染顺序：底色 → 底纹 → 内容）。
+        panel.Children.Insert(Math.Max(0, panel.Children.IndexOf(anchor) + 1), host);
         _blockTextureHosts[anchor] = host;
         return host;
     }
@@ -2094,160 +2069,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         _textureHosts.Clear();
-    }
-
-    // ============ 分块专属背景图（底图逐块）============
-
-    /// <summary>
-    /// 刷新分块专属背景图宿主：为每个设置了 HasWallpaperOverride 且图片存在的分块建立一张
-    /// 背景图宿主（插在该块底色 Border 之后、底纹宿主之前 → 渲染 底色→块图→底纹→内容）。
-    /// 未设置 / 文件缺失的块保持透明，透出整岛底图。
-    /// </summary>
-    private void UpdateBlockWallpapers(IEnumerable<Control> controls)
-    {
-        if (!_settings.Enabled)
-        {
-            RemoveBlockWallpaperHosts();
-            return;
-        }
-
-        var anchors = controls.OfType<Border>().Where(IsSplitComponentBackground).ToArray();
-        if (anchors.Length == 0)
-        {
-            RemoveBlockWallpaperHosts();
-            return;
-        }
-
-        var live = new HashSet<Border>();
-        foreach (var anchor in anchors)
-        {
-            if (!anchor.IsVisible || anchor.Bounds.Width <= 0 || anchor.Bounds.Height <= 0)
-            {
-                continue;
-            }
-
-            var id = GetSplitBlockComponentId(anchor);
-            var block = id != null && _settings.SplitBlockBackgrounds.TryGetValue(id, out var b) ? b : null;
-            var path = block?.HasWallpaperOverride == true ? block.WallpaperPath ?? string.Empty : string.Empty;
-            if (string.IsNullOrEmpty(path) || !File.Exists(path))
-            {
-                continue; // 无专属图 / 文件缺失：保持透明，透出整岛底图。
-            }
-
-            live.Add(anchor);
-            var host = EnsureBlockWallpaperHost(anchor, path);
-            if (host != null)
-            {
-                PositionBlockTextureHost(host, anchor);
-            }
-        }
-
-        foreach (var stale in _blockWallpaperHosts.Keys.Where(k => !live.Contains(k)).ToArray())
-        {
-            RemoveBlockWallpaperHost(stale);
-        }
-    }
-
-    /// <summary>为分块建立/更新专属背景图宿主（存在则仅当路径变化时重载图片）。</summary>
-    private Border? EnsureBlockWallpaperHost(Border anchor, string path)
-    {
-        if (_blockWallpaperHosts.TryGetValue(anchor, out var existing))
-        {
-            ApplyBlockWallpaperSource(existing, path);
-            return existing;
-        }
-
-        if (anchor.Parent is not Panel panel)
-        {
-            return null;
-        }
-
-        var host = new Border
-        {
-            IsHitTestVisible = false,
-            ClipToBounds = true,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            VerticalAlignment = VerticalAlignment.Top
-        };
-        _blockWallpaperHosts[anchor] = host;
-        // 插在底色 Border 之后；底纹宿主创建时也会跳过它排到其上方（块图 → 底纹 → 内容）。
-        panel.Children.Insert(Math.Max(0, panel.Children.IndexOf(anchor) + 1), host);
-        ApplyBlockWallpaperSource(host, path);
-        return host;
-    }
-
-    /// <summary>给专属图宿主装入指定图片（路径变化才重建并释放旧位图；加载失败置空保持透明）。</summary>
-    private void ApplyBlockWallpaperSource(Border host, string path)
-    {
-        if (Equals(host.Tag, path))
-        {
-            return;
-        }
-
-        if (_blockWallpaperBitmaps.Remove(host, out var old))
-        {
-            old.Dispose();
-        }
-
-        host.Tag = path;
-        Bitmap? bitmap = null;
-        try
-        {
-            bitmap = new Bitmap(path);
-        }
-        catch
-        {
-            bitmap = null;
-        }
-
-        if (bitmap != null)
-        {
-            _blockWallpaperBitmaps[host] = bitmap;
-            host.Background = new ImageBrush(bitmap) { Stretch = Stretch.UniformToFill };
-        }
-        else
-        {
-            host.Background = null;
-        }
-    }
-
-    /// <summary>移除某个分块的专属背景图宿主并释放位图。</summary>
-    private void RemoveBlockWallpaperHost(Border anchor)
-    {
-        if (!_blockWallpaperHosts.Remove(anchor, out var host))
-        {
-            return;
-        }
-
-        if (host.Parent is Panel panel)
-        {
-            panel.Children.Remove(host);
-        }
-
-        if (_blockWallpaperBitmaps.Remove(host, out var bitmap))
-        {
-            bitmap.Dispose();
-        }
-    }
-
-    /// <summary>移除并释放全部分块专属背景图宿主。</summary>
-    private void RemoveBlockWallpaperHosts()
-    {
-        foreach (var host in _blockWallpaperHosts.Values)
-        {
-            if (host.Parent is Panel panel)
-            {
-                panel.Children.Remove(host);
-            }
-        }
-
-        foreach (var bitmap in _blockWallpaperBitmaps.Values)
-        {
-            bitmap.Dispose();
-        }
-
-        _blockWallpaperHosts.Clear();
-        _blockWallpaperBitmaps.Clear();
     }
 
     /// <summary>

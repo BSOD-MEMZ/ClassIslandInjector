@@ -164,12 +164,6 @@ public sealed class SplitBlockBackgroundSetting
     /// <summary>分体块底纹单元大小（像素）。</summary>
     public double TextureSize { get; set; } = 24;
 
-    /// <summary>是否启用该分块的专属背景图（否则保持透明、透出整岛底图）。</summary>
-    public bool HasWallpaperOverride { get; set; }
-
-    /// <summary>专属背景图路径（本地图片，空=无）。</summary>
-    public string WallpaperPath { get; set; } = string.Empty;
-
     public SplitBlockBackgroundSetting Clone() => new()
     {
         Enabled = Enabled,
@@ -181,9 +175,7 @@ public sealed class SplitBlockBackgroundSetting
         HasTextureOverride = HasTextureOverride,
         TextureType = TextureType,
         TextureColor = TextureColor,
-        TextureSize = TextureSize,
-        HasWallpaperOverride = HasWallpaperOverride,
-        WallpaperPath = WallpaperPath
+        TextureSize = TextureSize
     };
 }
 

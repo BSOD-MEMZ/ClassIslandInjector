@@ -38,11 +38,21 @@
     <Move SourceFiles="$(OutputPath)Microsoft.Windows.SDK.NET.dll" DestinationFolder="$(_CipxStaging)" Condition="Exists('$(OutputPath)Microsoft.Windows.SDK.NET.dll')" />
     <Move SourceFiles="$(OutputPath)WinRT.Runtime.dll" DestinationFolder="$(_CipxStaging)" Condition="Exists('$(OutputPath)WinRT.Runtime.dll')" />
     <Move SourceFiles="$(OutputPath)$(AssemblyName).pdb" DestinationFolder="$(_CipxStaging)" Condition="Exists('$(OutputPath)$(AssemblyName).pdb')" />
+    <!-- FFmpeg 原生库绝不能进 cipx：运行时按需把库下载到「配置目录\ffmpeg」，插件包不应携带任何 avcodec 等。
+         若有人把 FFmpeg dll 拷进输出目录（本机排错用），打包前先移走、打包后移回，确保包体干净。 -->
+    <ItemGroup>
+      <_FfmpegStray Include="$(OutputPath)avcodec-*.dll;$(OutputPath)avformat-*.dll;$(OutputPath)avutil-*.dll;$(OutputPath)swscale-*.dll;$(OutputPath)swresample-*.dll" />
+    </ItemGroup>
+    <Move SourceFiles="@(_FfmpegStray)" DestinationFolder="$(_CipxStaging)" Condition="'@(_FfmpegStray)' != ''" />
   </Target>
   <Target Name="RestoreCipxInput" AfterTargets="CreateCipx">
     <Move SourceFiles="$(_CipxStaging)Microsoft.Windows.SDK.NET.dll" DestinationFolder="$(OutputPath)" Condition="Exists('$(_CipxStaging)Microsoft.Windows.SDK.NET.dll')" />
     <Move SourceFiles="$(_CipxStaging)WinRT.Runtime.dll" DestinationFolder="$(OutputPath)" Condition="Exists('$(_CipxStaging)WinRT.Runtime.dll')" />
     <Move SourceFiles="$(_CipxStaging)$(AssemblyName).pdb" DestinationFolder="$(OutputPath)" Condition="Exists('$(_CipxStaging)$(AssemblyName).pdb')" />
+    <ItemGroup>
+      <_FfmpegStrayBack Include="$(_CipxStaging)avcodec-*.dll;$(_CipxStaging)avformat-*.dll;$(_CipxStaging)avutil-*.dll;$(_CipxStaging)swscale-*.dll;$(_CipxStaging)swresample-*.dll" />
+    </ItemGroup>
+    <Move SourceFiles="@(_FfmpegStrayBack)" DestinationFolder="$(OutputPath)" Condition="'@(_FfmpegStrayBack)' != ''" />
   </Target>
 
   <ItemGroup>

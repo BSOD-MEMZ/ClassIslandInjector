@@ -96,7 +96,7 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
 - 底色填充必须同时识别两者：非分体 `BackgroundBorder`（按 Name）+ 分体根组件背景（Name 空、带 `line-background` 类、且不在 `Grid#GridOverlay` 内，见 `IsSplitComponentBackground()`）。`GridOverlay` 内提醒覆盖层的 Border 也带 `line-background` 类，必须排除。
 - 分体开关/行级分体切换会即时重建行模板，装饰需重应用：插件订阅宿主 `Settings.IsIslandSeperated` 的 PropertyChanged（`EnsureSplitSwitchSubscription`）+ `OnStateTick` 50ms 轮询统计分体背景数量签名兜底。
 - 样式类名 `line-background` 在 `HostContract.LineBackgroundClass`，纳入契约对照表（`classNames` 分组），宿主升级可联网覆盖。
-- 目前底色/边框/阴影装饰已适配分体；底图/视频覆盖层宿主约束（`ApplyOverlayHostBounds`）也已识别分体背景（`IsSplitComponentBackground`），会把覆盖层约束到分体块并集边界内。
+- 目前底色/边框/阴影装饰已适配分体；**分体主界面下整岛底图（图层编辑器底图）已整体禁用（2026-09）**：运行时 `ApplyWallpaper` 判 `IsSeparatedMode()` 跳过渲染并 `RemoveWallpaper`，设置页分体页隐藏「背景图片」图层编辑器入口与「底图模糊」组（`ApplyWallpaperSectionVisibility`），分体页 `SaveAndApply` 不写全局底图（`if (!_splitPage)` 保护，保留非分体下配置）。视频覆盖层宿主约束（`ApplyOverlayHostBounds`）仍识别分体背景（`IsSplitComponentBackground`），会把视频填充约束到分体块并集边界内。
 - 底纹纹理分两种形态（`ApplyTextureHost`→`UpdateTextureBounds`）：**非分体，或全局=动态频谱** → 行级宿主（MainWindowLine 每行一个、铺满该行背景并集、跨块连续，见 `UpdateLineTextureBounds`/`PositionTextureHost`）；**分体且全局为静态纹理** → 逐块宿主（`UpdateBlockTextureBounds`/`EnsureBlockTextureHost`/`PositionBlockTextureHost`：每个分块 background 一个宿主、插在该块底色之上内容之下；块覆盖独立于全局开关——无覆盖继承全局、`HasTextureOverride` 且 `TextureType=None`=清除该块、静态=用该块图案/颜色/大小）。动态频谱不可逐块；`RemoveTextureHost`/`UpdateTextureClip` 同时清理行级与逐块宿主；`OnStateTick` 每 tick 走一次（块规格变经宿主 `Tag` 比对才重建画刷）。
 
 ### 8. 分体块独立配色（一个分体一个颜色）
@@ -106,7 +106,7 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
 - 应用：`ApplyDecorations` 对每个分体块查 `SplitBlockBackgrounds`，命中且 `Enabled` 时用块级颜色/渐变（`BuildBlockBackgroundBrush`），否则回退全局底色。
 - SMTC 按块：`SplitBlockBackgroundSetting.UseDynamicColor` 控制该块是否跟随动态取色；`RefreshDynamicColors` 依此只更新对应块的画刷。
 - 底纹覆盖数据：`SplitBlockBackgroundSetting.HasTextureOverride / TextureType / TextureColor / TextureSize`（原子覆盖——有覆盖才用该块自己的图案/颜色/大小；`TextureType=None`=清除该块底纹；无覆盖=继承全局底纹；动态频谱不可逐块）。`Clone()`/预设/`CopyFrom` 已同步。运行时逐块渲染见约束 7。
-- 专属背景图数据：`SplitBlockBackgroundSetting.HasWallpaperOverride / WallpaperPath`（本地图片；无=该块保持透明、透出整岛底图）。`Clone()` 已同步。运行时逐块宿主 `_blockWallpaperHosts`（`UpdateBlockWallpapers`→`EnsureBlockWallpaperHost`：插在该块底色之上、底纹之下；路径变化才重载并释放旧位图；未设置/文件缺失不建宿主；禁用或非分体时清理）。设置页「分块背景图片」为第三支画笔（分体页顶部作用域下，开关开=用所选图 / 关=无专属图）。
+- **分块专属背景图已整体删除（2026-09）**：`SplitBlockBackgroundSetting.HasWallpaperOverride / WallpaperPath` 字段已删（设置模型/Clone/运行时 `_blockWallpaperHosts` 系列宿主方法/设置页「分块背景图片」第三支画笔全部移除）；旧 settings.json 里对应键被 JSON 忽略，无需迁移。分体块外观只剩底色/底纹两支画笔。
 - 设置页（`Views/InjectorSettingsPage.cs`）：分体块**作用域选择区**位于页面最顶部（「样式注入器」主标题之上；非分体整区 `IsVisible=false`）。结构：① 带图标 `CommandBar`（全选 / 清空 / 刷新 / 清除配色）→ ② 原生 `DataGrid`（仿宿主「档案→科目」：勾选列在最前，其后 组件名 / 行号 / 当前颜色色块，行模型 `SplitBlockRow`，INPC）。
 - **画笔 = 「背景 → 底色填充」与「背景 → 底纹纹理」两支**（旧独立「批量编辑分体块」卡片组已删除）。都由顶部同一份分体块勾选（作用域）驱动：分体页面（`_splitPage`）下两组的“总开关”都隐藏、整组充当分块画笔——勾选（默认全选）哪些分块就只给哪些设置（分别写入其 `SplitBlockBackgrounds` 专属配置：底色 `Enabled=true`；底纹 `HasTextureOverride=true` 等）；**一个都不勾 → 两整组都禁用**；取消勾选某块＝只缩小作用域、不动它现有配置。非分体页面两组件行为不变（全局）。
 - 写盘按属性增量：底色画笔控件变化 → `BrushChanged`（仅 `_brushActive` 走分块提交）→ 200ms `_splitCommitTimer` 防抖 → `CommitBrushToBlocks`（已有专属配置的块只改改动项；无配置的块用 `CopyBrushStyle` 整体初始化防跳变）→ `InjectorRuntime.SaveAndApply()`。分体页面下 `SaveAndApply` **不写全局底色/底纹**（`if (!_splitPage)` 保护）。

@@ -15,6 +15,11 @@
 ![截图](./Assets/Readme/smtc.png)
 ![截图](./Assets/Readme/picture.png)
 
+- **分体块独立配色**：分体主界面下，每个分块都能单独上底色、叠纹理，不必跟随全局，也能各自出彩
+
+![截图](./Assets/Readme/shangyangmode.png)
+
+- **动态视频背景**：放一段本地视频当主界面背景
 
 ### 跟着音乐变颜色
 - 播放音乐时，主界面的背景、边框、阴影会自动变为专辑封面的配色
@@ -48,6 +53,11 @@
 ### 底图图层编辑器
 - 在 ClassIsland 中使用像 Photoshop 一样的多图层编辑器！
 ![截图](./Assets/Readme/photoshop.png)
+
+### 视频编辑器（PR 风格）
+- 素材库 + 多轨时间轴：多段视频按时间拼接、裁剪入出点，把片段拖到轨道边界即可新建轨道
+- 渲染成 mp4 一键设为主界面动态背景
+
 ### 一键切换方案
 - 把自己调好的整套效果保存成预设
 - 配合 ClassIsland 的**自动化**，还能按时间、课程等条件自动切换方案
@@ -67,9 +77,12 @@
 - **移动和缩放绘制的内容**：栅格化画布，另外裁剪工具也可以在栅格化后使用。
 - **没有看到相对定位效果**：在图层编辑器内拖动项目，直到感受到磁吸并且看到紫色对其基准线，这样相对定位才能生效。
 - **贴纸库加载失败**：源在 GitHub，科学上网。
+- **动态视频背景 / 视频编辑器提示缺少 FFmpeg**：点「下载 FFmpeg 解码库」自动安装（运行时可下载，不随插件分发）；要彻底移除可在「设置 → 调试」里删除。
 ### 感谢梁圣开源
 
 本项目基本上全部由 DeepSeek V4 Flash 编写，真的便宜，希望国模能越做越好吧。
+
+> （2026/9/4补：现在ds涨价了搞鬼）
 
 ## 开源许可与版权
 
@@ -83,6 +96,8 @@
 | MaterialColorUtilities | 0.3.0 | 专辑封面取色（Material You 调色板） | Apache-2.0 |
 | NAudio.Wasapi | 2.2.1 | 音频频谱捕获（动态频谱纹理） | MIT |
 | System.Drawing.Common | 8.0.25 | GIF 逐帧解码、屏幕抓取 | MIT |
+| FFmpeg.AutoGen | 8.1.0 | FFmpeg C# 绑定（视频解码 / 转码 / 渲染；原生共享库运行时可下载） | MIT |
+| Clipper2 | 2.0.0 | 多边形布尔运算（图层编辑器矢量「逻辑运算」） | BSL-1.0 |
 
 
 ### 引用的外部资源
@@ -91,6 +106,7 @@
 - **Fluent System Icons**（Microsoft）：界面图标，MIT 许可证。
 - **sekai-stickers 贴纸库**（[TheOriginalAyaka/sekai-stickers](https://github.com/TheOriginalAyaka/sekai-stickers)）：编辑器「添加贴纸」功能按需从该仓库在线拉取贴纸列表与缩略图（缓存到本地配置目录，不随插件分发）。贴纸为社区粉丝自制，仅供个人使用，相关角色形象版权归原版权方（SEGA / Colorful Palette）所有。
 - **hanabi 效果**（[LingFeng-bbben/MajdataView](https://github.com/LingFeng-bbben/MajdataView/)）：舞萌 hanabi 效果贴图。
+- **FFmpeg（原生共享库）**：动态视频背景、素材压缩转码与视频剪辑渲染所需。原生库不随插件分发，安装器会按需从默认源 / 自定义镜像下载到用户配置目录，也支持手动放置。
 ### 自带素材
 
 - `Assets/` 目录下的示例图片、教程横幅与演示音效为本插件自带素材，随插件分发，仅用于功能演示与内置教程，Music 目录下的示例音乐归原版权方所有。

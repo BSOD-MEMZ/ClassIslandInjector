@@ -98,6 +98,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private SettingsExpander _borderGroup = null!;
     /// <summary>背景图片：图层编辑器为唯一入口（简单模式已删除）。</summary>
     private SettingsExpander _wallpaperGroup = null!;
+    /// <summary>底图模糊组（作用于整个底图宿主；分体模式下与「背景图片」一起隐藏）。</summary>
+    private SettingsExpander _wallpaperBlurGroup = null!;
     // ===== 分体块背景（分体主界面独立配色，页面最顶部）=====
     /// <summary>分体块背景独立区域（页面最顶部，主标题「样式注入器」之上）。</summary>
     private StackPanel _splitBlockSection = null!;
@@ -155,21 +157,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         new(BackgroundTexture.DiagonalLines, "斜线"),
         new(BackgroundTexture.Cross, "十字网格"),
     ];
-    // ===== 块专属背景图画笔（分体页面第三支画笔）=====
-    /// <summary>「分块背景图片」卡片（顶部作用域下方，仅分体页面显示）。</summary>
-    private SettingsExpander _blockWallpaperGroup = null!;
-    /// <summary>图片行条目（动态说明/混值提示）。</summary>
-    private SettingsExpanderItem _blockWallpaperImgItem = null!;
-    /// <summary>该块背景图开关：开=用自己选的图；关=无专属图（保持透明、透出整岛底图）。</summary>
-    private readonly ToggleSwitch _blockWallpaperEnabled = Toggle();
-    /// <summary>图片路径只读展示（真实路径存在 <see cref="_blockWallpaperChosenPath"/>；混值时显示「多个值」占位）。</summary>
-    private readonly TextBox _blockWallpaperPath = new() { MinWidth = 240, IsReadOnly = true, Watermark = "尚未选择图片（保持透明，透出整岛底图）" };
-    /// <summary>最近一次真实选择的图片路径（仅由文件选择写入）。</summary>
-    private string _blockWallpaperChosenPath = string.Empty;
-    /// <summary>块专属图画笔待提交标记。</summary>
-    private bool _pendingWallpaperCommit;
-    private const string BlockWallpaperImgBaseDesc = "给勾选的分块选一张自己的背景图；未设图的分块保持透明、透出整岛底图。";
-    private const string BlockWallpaperMixed = "（多个值）勾选的分块背景图不一致，重新选择后将统一应用。";
     private readonly ToggleSwitch _gradient = Toggle();
     private readonly ColorPicker _gradientEndColor = ColorPicker();
     private readonly ComboBox _gradientDirection = Combo(GradientDirections);
@@ -455,7 +442,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         WireLivePreview();
         WireBackgroundBrush();
         WireTextureBrush();
-        WireWallpaperBrush();
         WirePresetAssociation();
         // 调试开关即时生效（须在 LoadFromSettings 之前挂接，加载持久化值时也会触发）。
         _reduceVisualBurden.PropertyChanged += (_, _) => ApplyVisualBurdenReduction();
@@ -1095,8 +1081,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         };
         panel.Children.Add(_wallpaperGroup);
         // 底图模糊：作用于整个底图宿主（图层模式共用）；图标用专门的「模糊」字形。
-        panel.Children.Add(Group("\uE20B", "底图模糊", "对整个底图（含所有图层）应用高斯模糊（0 为关闭）。",
-            Item("模糊半径", "高斯模糊半径（像素，0 为关闭）。", _wallpaperBlur)));
+        // 分体模式下与「背景图片」一起隐藏（整岛底图被禁用），见 ApplyWallpaperSectionVisibility。
+        _wallpaperBlurGroup = Group("\uE20B", "底图模糊", "对整个底图（含所有图层）应用高斯模糊（0 为关闭）。",
+            Item("模糊半径", "高斯模糊半径（像素，0 为关闭）。", _wallpaperBlur));
+        panel.Children.Add(_wallpaperBlurGroup);
         // 动态视频填充：专家模式专属，紧跟「背景图片」组（视觉上在「打开图层编辑器」按钮下方）。
         // 视频解码完全依赖 FFmpeg 共享库：库缺失时整组禁用（见 RefreshFfmpegAvailability），
         // 并在组下方显示 InfoBar 引导联机下载。
@@ -1602,42 +1590,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
         _splitBlockGrid = BuildSplitBlockGrid();
         section.Children.Add(_splitBlockGrid);
-
-        // 分块背景图片（第三支画笔）：给勾选的分块各贴一张自己的图。
-        var chooseButton = Button("选择图片…", PickBlockWallpaper);
-        _blockWallpaperImgItem = new SettingsExpanderItem
-        {
-            Content = "图片",
-            Description = BlockWallpaperImgBaseDesc,
-            Footer = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                Spacing = 4,
-                VerticalAlignment = VerticalAlignment.Center,
-                Children = { _blockWallpaperPath, chooseButton }
-            }
-        };
-        _allItems.Add(_blockWallpaperImgItem);
-        _blockWallpaperGroup = new SettingsExpander
-        {
-            IconSource = new FluentIconSource("\uF42D"),
-            Header = "分块背景图片",
-            Description = "整岛底图之外的可选逐块背景图：给勾选的分块各贴一张自己的图；未设图的分块保持透明、透出整岛底图。",
-            IsExpanded = true,
-            Footer = _blockWallpaperEnabled
-        };
-        _blockWallpaperGroup.Items.Add(_blockWallpaperImgItem);
-        _allExpanders.Add(_blockWallpaperGroup);
-        void SyncImgItem() =>
-            _blockWallpaperImgItem.IsEnabled = _blockWallpaperEnabled.IsChecked == true && _blockWallpaperGroup.IsEnabled;
-        _blockWallpaperEnabled.PropertyChanged += (_, e) =>
-        {
-            if (e.Property == ToggleSwitch.IsCheckedProperty)
-            {
-                SyncImgItem();
-            }
-        };
-        section.Children.Add(_blockWallpaperGroup);
         return section;
     }
 
@@ -1706,12 +1658,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _splitCommitTimer.Tick += (_, _) =>
         {
             _splitCommitTimer.Stop();
-            if (_pendingWallpaperCommit)
-            {
-                _pendingWallpaperCommit = false;
-                CommitWallpaperToBlocks();
-            }
-
             if (_pendingTextureCommit)
             {
                 _pendingTextureCommit = false;
@@ -1838,12 +1784,11 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         }
     }
 
-    /// <summary>一次性刷新三支画笔（底色填充 + 底纹纹理 + 分块背景图）状态。</summary>
+    /// <summary>一次性刷新两支画笔（底色填充 + 底纹纹理）状态。</summary>
     private void RefreshBackgroundBrushState()
     {
         RefreshBackgroundBrushStateCore();
         RefreshBackgroundTextureState();
-        RefreshBlockWallpaperState();
     }
 
     /// <summary>
@@ -2076,176 +2021,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         RefreshBackgroundBrushState();
     }
 
-    /// <summary>块背景图画笔：总开关变化 → 分体模式写勾选分块（图片由文件选择设置）。</summary>
-    private void WireWallpaperBrush()
-    {
-        _blockWallpaperEnabled.PropertyChanged += (_, e) =>
-        {
-            if (e.Property != ToggleSwitch.IsCheckedProperty || _suppressBrushRefresh)
-            {
-                return;
-            }
-
-            if (_brushActive)
-            {
-                _pendingWallpaperCommit = true;
-                _splitCommitTimer.Stop();
-                _splitCommitTimer.Start();
-            }
-        };
-    }
-
-    /// <summary>选择一张图片作为勾选分块的专属背景图。</summary>
-    private async void PickBlockWallpaper()
-    {
-        var topLevel = TopLevel.GetTopLevel(this);
-        if (topLevel?.StorageProvider is not { } provider)
-        {
-            return;
-        }
-
-        var files = await provider.OpenFilePickerAsync(new FilePickerOpenOptions
-        {
-            Title = "选择分块背景图片",
-            AllowMultiple = false,
-            FileTypeFilter =
-            [
-                new FilePickerFileType("图片") { Patterns = ["*.png", "*.jpg", "*.jpeg", "*.bmp", "*.webp", "*.gif"] },
-                FilePickerFileTypes.All
-            ]
-        });
-        if (files.Count == 0)
-        {
-            return;
-        }
-
-        var path = files[0].TryGetLocalPath() ?? string.Empty;
-        if (string.IsNullOrEmpty(path))
-        {
-            return;
-        }
-
-        _blockWallpaperChosenPath = path;
-        _blockWallpaperPath.Text = path;
-        if (_brushActive)
-        {
-            _pendingWallpaperCommit = true;
-            _splitCommitTimer.Stop();
-            _splitCommitTimer.Start();
-        }
-    }
-
-    /// <summary>把块背景图选择写入全部勾选分块：开（且有可用图片）= 用自己的图；关 = 无专属图（透明透出整岛底图）。</summary>
-    private void CommitWallpaperToBlocks()
-    {
-        if (_suppressBrushRefresh || !_brushActive)
-        {
-            return;
-        }
-
-        var ids = _splitBlockRows.Where(r => r.IsChecked).Select(r => r.Id).ToList();
-        if (ids.Count == 0)
-        {
-            return;
-        }
-
-        var on = _blockWallpaperEnabled.IsChecked == true &&
-                 !string.IsNullOrEmpty(_blockWallpaperChosenPath) &&
-                 File.Exists(_blockWallpaperChosenPath);
-        var path = on ? _blockWallpaperChosenPath : string.Empty;
-        var settings = InjectorRuntime.Settings;
-        settings.BeginUpdate();
-        try
-        {
-            foreach (var id in ids)
-            {
-                var block = settings.SplitBlockBackgrounds.TryGetValue(id, out var existing)
-                    ? existing
-                    : new SplitBlockBackgroundSetting();
-                block.HasWallpaperOverride = on;
-                block.WallpaperPath = path;
-                settings.SplitBlockBackgrounds[id] = block;
-            }
-        }
-        finally
-        {
-            settings.EndUpdate();
-        }
-
-        InjectorRuntime.SaveAndApply();
-        RefreshBackgroundBrushState();
-    }
-
-    /// <summary>
-    /// 刷新分块背景图画笔状态：非分体 → 无操作；分体页面 → 按勾选分块回填开关与图片路径，
-    /// 勾选为空整组禁用，勾选多个且图不一致时标注「多个值」。
-    /// </summary>
-    private void RefreshBlockWallpaperState()
-    {
-        if (_blockWallpaperGroup == null || !_splitPage)
-        {
-            return;
-        }
-
-        var settings = InjectorRuntime.Settings;
-        var checkedIds = _splitBlockRows.Where(r => r.IsChecked).Select(r => r.Id).ToList();
-        var active = checkedIds.Count > 0;
-        _blockWallpaperGroup.IsEnabled = active;
-        if (!active)
-        {
-            SetBlockWallpaperGroupDesc("未勾选任何分块：请先在上方表格勾选要设置的分块（默认全选）。未勾选时此处禁用。");
-            return;
-        }
-
-        var overrides = checkedIds
-            .Where(id => settings.SplitBlockBackgrounds.TryGetValue(id, out var b) && b.HasWallpaperOverride)
-            .Select(id => settings.SplitBlockBackgrounds[id].WallpaperPath ?? string.Empty)
-            .ToList();
-        _suppressBrushRefresh = true;
-        try
-        {
-            if (overrides.Count == 0)
-            {
-                _blockWallpaperEnabled.IsChecked = false;
-                _blockWallpaperPath.Text = string.Empty;
-                SetBgItemDesc(_blockWallpaperImgItem, BlockWallpaperImgBaseDesc, false);
-            }
-            else if (overrides.Count < checkedIds.Count || overrides.Distinct().Count() > 1)
-            {
-                _blockWallpaperEnabled.IsChecked = true;
-                _blockWallpaperPath.Text = BlockWallpaperMixed;
-                SetBgItemDesc(_blockWallpaperImgItem, BlockWallpaperImgBaseDesc, true);
-            }
-            else
-            {
-                var path = overrides[0];
-                _blockWallpaperEnabled.IsChecked = true;
-                _blockWallpaperPath.Text = path;
-                _blockWallpaperChosenPath = path;
-                SetBgItemDesc(_blockWallpaperImgItem, BlockWallpaperImgBaseDesc, false);
-            }
-        }
-        finally
-        {
-            _suppressBrushRefresh = false;
-        }
-
-        SetBlockWallpaperGroupDesc(active
-            ? $"当前给勾选的 {checkedIds.Count} 个分块设置背景图（开=用下方所选图片 / 关=该块保持透明透出整岛底图；未勾选保留原样）。"
-            : "未勾选任何分块：请先在上方表格勾选要设置的分块（默认全选）。未勾选时此处禁用。");
-    }
-
-    /// <summary>更新分块背景图画笔（卡片）说明（「降低视觉负担」开启时保持隐藏）。</summary>
-    private void SetBlockWallpaperGroupDesc(string desc)
-    {
-        if (_reduceVisualBurden.IsChecked == true)
-        {
-            return;
-        }
-
-        _blockWallpaperGroup.Description = desc;
-    }
-
     /// <summary>
     /// 刷新画笔（底色填充组）状态：
     /// 非分体页面 → 保持全局语义（BuildContent 原始行为）；分体页面 → 整组作为分块画笔：
@@ -2442,6 +2217,24 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     }
 
     /// <summary>
+    /// 分体模式下隐藏「背景图片」图层编辑器入口与「底图模糊」：整岛底图在分体主界面被禁用
+    /// （运行时 ApplyWallpaper 判 IsSeparatedMode 跳过渲染），分体块外观统一由底色/底纹画笔控制。
+    /// </summary>
+    private void ApplyWallpaperSectionVisibility()
+    {
+        var show = !_splitPage;
+        if (_wallpaperGroup != null)
+        {
+            _wallpaperGroup.IsVisible = show;
+        }
+
+        if (_wallpaperBlurGroup != null)
+        {
+            _wallpaperBlurGroup.IsVisible = show;
+        }
+    }
+
+    /// <summary>
     /// 重新枚举主界面的分体块并重建表格行。非分体主界面（或暂不可用）时隐藏整个区域。
     /// 打开页面默认勾选全部分块（画笔作用域＝全部）；「刷新」保留既有勾选并为新分块补勾。
     /// 勾选变化会同步刷新下方「底色填充」画笔的状态。
@@ -2458,6 +2251,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         {
             // 非分体主界面：不显示分体块区域，并清空表格与选择集。
             _splitPage = false;
+            ApplyWallpaperSectionVisibility();
             _splitBlockSection.IsVisible = false;
             _splitBlockRows = [];
             _splitSelectedIds.Clear();
@@ -2471,6 +2265,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         }
 
         _splitPage = true;
+        ApplyWallpaperSectionVisibility();
         _splitBlockSection.IsVisible = true;
 
         // 保留仍存在的勾选；新出现（或首次打开）的分块默认勾选。
@@ -4012,8 +3807,14 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.BorderEnabled = _border.IsChecked == true;
             settings.BorderColor = _borderColor.Color.ToString();
             settings.BorderThickness = _borderThickness.DoubleValue;
-            settings.WallpaperEnabled = _wallpaperEnabled.IsChecked == true;
-            settings.WallpaperBlurRadius = _wallpaperBlur.DoubleValue;
+            if (!_splitPage)
+            {
+                // 分体模式下整岛底图被禁用：不写全局底图（图层编辑器入口与底图模糊已隐藏），
+                // 避免把用户在非分体整岛下配置好的底图覆盖成隐藏控件的陈旧值。
+                settings.WallpaperEnabled = _wallpaperEnabled.IsChecked == true;
+                settings.WallpaperBlurRadius = _wallpaperBlur.DoubleValue;
+            }
+
             settings.WallpaperDesignerEnabled = true;
             settings.VideoFillEnabled = _videoFillEnabled.IsChecked == true;
             settings.VideoFillPath = _videoFillPath.Text ?? string.Empty;
