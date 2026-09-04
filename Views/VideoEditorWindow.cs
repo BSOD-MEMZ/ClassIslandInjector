@@ -2473,11 +2473,10 @@ internal sealed class VideoEditorWindow : MyWindow
         // 封面视图与列表视图同步重建。
         RefreshAssetCovers();
         UpdateAssetButtons();
-        // 空素材库显示导入占位（仅素材库选择模式；文字/形状/效果模式下不显示）。
-        if (_emptyState != null)
-        {
-            _emptyState.IsVisible = _currentTool == "select" && _assets.Count == 0;
-        }
+        // 面板可见性也要重算：从空素材库导入后 _assetList/_assetCoverScroll 仍是隐藏态
+        // （它们的 IsVisible 只在本方法里按素材数量更新），必须立即显示新导入的素材，
+        // 否则要切一次工具选项卡才能看到。
+        UpdateLibraryContent();
     }
 
     private void UpdateAssetButtons() => _addToTimelineButton.IsEnabled = _assetList.SelectedIndex >= 0;
@@ -2606,6 +2605,14 @@ internal sealed class VideoEditorWindow : MyWindow
     {
         try
         {
+            // 探测前确保 FFmpeg 库已就绪：ffmpeg.RootPath 只有 EnsureLoaded() 会设置，
+            // 若本进程从未加载过（如从未启用过视频填充/压缩），直接调 ffmpeg 会抛
+            // DllNotFoundException → 时长探测失败 → 拖入片段只能落到 10 秒兜底长度。
+            if (!FFmpegRuntime.IsAvailable || !FFmpegRuntime.EnsureLoaded())
+            {
+                return 0;
+            }
+
             using var source = new VideoFrameSource();
             return source.Open(path, 640) ? source.Duration : 0;
         }
@@ -2660,16 +2667,20 @@ internal sealed class VideoEditorWindow : MyWindow
         _statusText.Text = "已导入底图图层快照（图片覆盖层，可在属性面板调整）。";
     }
 
-    /// <summary>取素材时长（带缓存，供裁剪右边界上限）。</summary>
+    /// <summary>取素材时长（带缓存，供裁剪右边界上限）。探测失败（0）不缓存，下次拖入重试。</summary>
     private double GetAssetDuration(string path)
     {
-        if (_assetDurations.TryGetValue(path, out var d))
+        if (_assetDurations.TryGetValue(path, out var d) && d > 0)
         {
             return d;
         }
 
         d = ProbeDuration(path);
-        _assetDurations[path] = d;
+        if (d > 0)
+        {
+            _assetDurations[path] = d;
+        }
+
         return d;
     }
 
@@ -3263,6 +3274,9 @@ internal sealed class VideoEditorWindow : MyWindow
 
     private void RefreshTimeline()
     {
+        // 片段增删/拖拽/撤销后同步预览播放器：它若仍按构造时的片段快照调度，
+        // 已删除的片段会继续出现在预览里（即使时间轴已不显示）。
+        _player?.RefreshClips();
         var trackCount = _project.TrackCount;
         _lanes.Clear();
         // 保留纵向滚动偏移：轨道头与泳道已通过 ScrollChanged 同步平移（不会错位），
@@ -5912,6 +5926,9 @@ internal sealed class VideoEditorWindow : MyWindow
         PositionPlayheadHead();
         _timeText.Text = FormatTime(_playheadTime);
         _player = new VideoProjectPlayer(_project, PreviewMaxDimension, _targetFps, OnPreviewFrame);
+        // 某轨道不再有活跃片段（片段被删/播完/轨道隐藏）时隐藏该轨图层：
+        // 否则最后一帧会一直冻结在舞台上，看起来像「删掉的片段还在预览里」。
+        _player.TrackCleared += track => Dispatcher.UIThread.Post(() => HideStageTrack(track));
         _player.Start();
         if (_playheadTime > 0)
         {
@@ -5969,6 +5986,20 @@ internal sealed class VideoEditorWindow : MyWindow
                 _player?.MarkTrackConsumed(track);
             }
         });
+    }
+
+    /// <summary>隐藏指定轨道的舞台预览图层（该轨当前时刻无活跃片段：片段已删/播完/轨道隐藏）。</summary>
+    private void HideStageTrack(int track)
+    {
+        if (track < 0 || track >= _stageLayers.Count)
+        {
+            return;
+        }
+
+        var layer = _stageLayers[track];
+        layer.Image.IsVisible = false;
+        layer.Image.Source = null;
+        UpdateStageHandles();
     }
 
     /// <summary>更新指定轨道的舞台预览图层（位图 + 变换 + 显示）。</summary>

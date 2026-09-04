@@ -209,12 +209,26 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
             _pkt = ffmpeg.av_packet_alloc();
             _frame = ffmpeg.av_frame_alloc();
             _bgra = new byte[_outW * _outH * 4];
-            Duration = _fmtCtx->duration > 0 ? _fmtCtx->duration / 1000000.0 : 0;
             // 源帧率：转码压缩时按它编码，保证时长一致。
             var fr = _fmtCtx->streams[_streamIndex]->avg_frame_rate;
             SourceFps = fr.num > 0 && fr.den > 0
                 ? Math.Clamp((double)fr.num / fr.den, 1.0, 120.0)
                 : 25;
+            // 总时长：容器 duration → 视频流 duration → 帧数/帧率，逐级兜底。
+            // 部分封装（网络下载的 mp4/flv 等）没有容器级时长，只有流级；都没有时用
+            // 帧数估算——否则视频编辑器拖入片段探测不到原时长，只能落到 10 秒默认。
+            Duration = _fmtCtx->duration > 0 ? _fmtCtx->duration / 1000000.0 : 0;
+            var stream = _fmtCtx->streams[_streamIndex];
+            if (Duration <= 0 && stream->duration > 0)
+            {
+                Duration = stream->duration * stream->time_base.num / (double)stream->time_base.den;
+            }
+
+            if (Duration <= 0 && stream->nb_frames > 0)
+            {
+                Duration = stream->nb_frames / SourceFps;
+            }
+
             Log($"已打开 {path}: {srcW}x{srcH} → {_outW}x{_outH}（解码器={name}）");
             return true;
         }

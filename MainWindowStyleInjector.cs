@@ -44,6 +44,12 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private double _originalHostRadiusY;
     private bool _hostShapeCaptured;
     private double _effectiveCornerRadius;
+    /// <summary>
+    /// 从主界面实际 BackgroundBorder 上观察到的实时圆角（50ms 轮询时刷新）。
+    /// 覆盖层裁切优先用它：宿主圆角在 Apply 之后被用户/主题修改时，
+    /// _effectiveCornerRadius 快照会过期，覆盖层圆角与主界面不一致就会从四角溢出。
+    /// </summary>
+    private double? _islandCornerRadiusObserved;
     private Type? _hostSettingsType;
     private PropertyInfo? _hostSettingsProperty;
     /// <summary>宿主全局「启用提醒特效」开关属性（缓存，避免重复反射）。</summary>
@@ -2145,6 +2151,11 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
+        // 记录主界面背景 Border 的实时圆角（各角统一，来自宿主 RadiusX），
+        // 供 ApplyOverlayClip 让底图/视频/底纹宿主的圆角实时跟随。
+        var corner = borders[0].CornerRadius;
+        _islandCornerRadiusObserved = corner.TopLeft;
+
         var minX = double.MaxValue;
         var minY = double.MaxValue;
         var maxX = double.MinValue;
@@ -2183,10 +2194,37 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
-        // 底图/纹理宿主的圆角跟随当前生效圆角（与宿主 RadiusX 保持一致），
-        // 避免覆盖层与宿主内容裁切不一致。
-        host.CornerRadius = new CornerRadius(_effectiveCornerRadius);
+        // 圆角优先取主界面 BackgroundBorder 的实时值（设置页改圆角 / 主题变化后
+        // 50ms 内跟随），读不到时退回插件生效圆角；避免覆盖层圆角与主界面
+        // 实际圆角不一致导致「注入内容没被圆角裁切、从四角溢出」。
+        var radius = _islandCornerRadiusObserved ?? _effectiveCornerRadius;
+        if (!IsClose(host.CornerRadius.TopLeft, radius))
+        {
+            host.CornerRadius = new CornerRadius(radius);
+        }
+
+        // 显式圆角矩形裁切与 ClipToBounds 的合成器圆角裁切互为双保险；
+        // 裁切在宿主本地坐标（Rect 原点恒为 0,0），仅尺寸/圆角变化时重建。
+        var w = host.Bounds.Width;
+        var h = host.Bounds.Height;
+        if (w <= 0 || h <= 0)
+        {
+            return;
+        }
+
+        if (host.Clip is RectangleGeometry geo &&
+            IsClose(geo.Rect.Width, w) && IsClose(geo.Rect.Height, h) &&
+            IsClose(geo.RadiusX, radius))
+        {
+            return;
+        }
+
+        host.Clip = radius > 0
+            ? new RectangleGeometry(new Rect(0, 0, w, h), radius, radius)
+            : new RectangleGeometry(new Rect(0, 0, w, h));
     }
+
+    private static bool IsClose(double a, double b) => Math.Abs(a - b) < 0.01;
 
     private void UpdateWallpaperClip() => ApplyOverlayClip(_wallpaperHost);
 
@@ -2261,9 +2299,13 @@ internal sealed class MainWindowStyleInjector : IDisposable
         // ---- 单文件模式 ----
         var path = _settings.VideoFillPath;
         EnsureVideoFillHost();
-        // 透明度 / 模糊跟随设置即时生效。
+        // 透明度 / 模糊 / 显示方式跟随设置即时生效（显示方式只改 Image.Stretch，无需重启解码）。
         _videoFillHost!.Opacity = _settings.VideoFillOpacity;
         ApplyVideoFillBlur();
+        if (_videoFillImage != null)
+        {
+            _videoFillImage.Stretch = VideoFillStretch(_settings.VideoFillFit);
+        }
 
         // 参数或路径变化时重启解码线程（保留宿主与位图）。
         var signature = $"{path}|{_settings.VideoFillMaxDimension}|{_settings.VideoFillTargetFps}|{_settings.VideoFillLoop}";
@@ -2299,6 +2341,15 @@ internal sealed class MainWindowStyleInjector : IDisposable
         !string.IsNullOrWhiteSpace(_settings.VideoProjectPath) &&
         File.Exists(_settings.VideoProjectPath);
 
+    /// <summary>把「显示方式」设置映射到视频填充 Image 的 Stretch：
+    /// Fill=等比铺满裁边（默认）、Fit=等比完整显示、Stretch=逐轴拉伸。旧版无论选什么都拉伸（写死 Fill）。</summary>
+    private static Stretch VideoFillStretch(VideoFillFit fit) => fit switch
+    {
+        VideoFillFit.Fill => Stretch.UniformToFill,
+        VideoFillFit.Fit => Stretch.Uniform,
+        _ => Stretch.Fill
+    };
+
     /// <summary>建立视频填充宿主（Image + Border，插到底图宿主之后）。幂等。</summary>
     private void EnsureVideoFillHost()
     {
@@ -2310,7 +2361,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _videoFillImage = new Image
         {
             IsHitTestVisible = false,
-            Stretch = Stretch.Fill
+            Stretch = VideoFillStretch(_settings.VideoFillFit)
         };
         _videoTracksHost = new Grid { IsHitTestVisible = false };
         _videoTracksHost.Children.Add(_videoFillImage);
@@ -2322,6 +2373,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
             HorizontalAlignment = HorizontalAlignment.Stretch,
             Child = _videoTracksHost
         };
+        // 尺寸变化时立即重算圆角裁切（与底图宿主一致；50ms 轮询兜底）。
+        _videoFillHost.SizeChanged += (_, _) => ApplyOverlayClip(_videoFillHost);
         var islandGrid = _mainWindow?.FindControl<Grid>(HostContract.GridRoot);
         if (islandGrid != null)
         {
@@ -2366,6 +2419,24 @@ internal sealed class MainWindowStyleInjector : IDisposable
             // 自动硬解：包/驱动支持 D3D11VA 时走硬解，否则播放器内部回退软解。
             HardwareDecoder = _settings.RenderHardwareAccelerated ? "auto" : null
         };
+        // 某轨道不再有活跃片段（片段播完/工程编辑后删除）时隐藏该轨图层：
+        // 否则最后一帧会一直冻结在主界面上（时间轴里已经没有它）。
+        _videoProjectPlayer.TrackCleared += track => Dispatcher.UIThread.Post(() =>
+        {
+            try
+            {
+                if (track >= 0 && track < _videoTrackLayers.Count)
+                {
+                    var layer = _videoTrackLayers[track];
+                    layer.Image.IsVisible = false;
+                    layer.Image.Source = null;
+                }
+            }
+            catch
+            {
+                // 播放器已释放等竞态：忽略，不冒泡到宿主。
+            }
+        });
         _videoProjectPlayer.Start();
         UpdateVideoFillBounds();
     }
@@ -2417,7 +2488,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
         var trackCount = project.TrackCount;
         for (var t = 0; t < trackCount; t++)
         {
-            var img = new Image { IsHitTestVisible = false, Stretch = Stretch.Fill, IsVisible = false };
+            // 原比例居中（Uniform）：与编辑器舞台预览 / 渲染器一致；旧版 Fill 会把
+            // 与主界面比例不同的素材拉扁（编辑器里看着正常，应用到主界面却被拉伸）。
+            var img = new Image { IsHitTestVisible = false, Stretch = Stretch.Uniform, IsVisible = false };
             _videoTrackLayers.Add(new VideoTrackLayer { Track = t, Image = img });
             _videoTracksHost.Children.Add(img); // 后添加的渲染在上层：轨道号越大越靠上
         }

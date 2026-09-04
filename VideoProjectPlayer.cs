@@ -21,6 +21,8 @@ namespace ClassIslandInjector;
 ///
 /// 帧回调在播放器线程触发，调用方负责把像素复制到自己的缓冲并把 UI 更新 Post 到 UI 线程。
 /// 所有解码器的开关都在播放器线程串行执行，避免多线程释放/重建解码器的竞态。
+/// 片段列表支持热同步（RefreshClips）：编辑器增删/拖拽/撤销后调用，播放器下一拍
+/// 即按新列表调度（否则已删除的片段仍会继续播放）。
 /// </summary>
 internal sealed class VideoProjectPlayer : IDisposable
 {
@@ -29,16 +31,17 @@ internal sealed class VideoProjectPlayer : IDisposable
 
     private static void Log(string message) => DiagnosticLog.Write(LogPath, $"[player] {message}");
 
-    private readonly List<VideoClip> _clips;
-    private readonly double _duration;
+    private readonly VideoProject _project;
     private readonly int _maxDimension;
     private readonly int _targetFps;
     private readonly Action<VideoFrame, VideoClip, int> _onFrame;
     /// <summary>覆盖层帧生成尺寸（按输出比例，最长边 = _maxDimension）。</summary>
     private readonly int _overlayW;
     private readonly int _overlayH;
-    /// <summary>轨道是否启用（跳过隐藏轨）。</summary>
-    private readonly bool[] _trackEnabled;
+    /// <summary>活跃片段列表（RefreshClips 可整体替换；播放线程按拍枚举单引用，交换安全）。</summary>
+    private List<VideoClip> _clips;
+    /// <summary>工程总时长（随 RefreshClips 同步；循环复位用它判断）。</summary>
+    private double _duration;
     /// <summary>硬件解码器名（"auto" = 按编码自动选 D3D11VA；null = 软解）。</summary>
     public string? HardwareDecoder { get; set; }
 
@@ -84,20 +87,9 @@ internal sealed class VideoProjectPlayer : IDisposable
     public VideoProjectPlayer(VideoProject project, int maxDimension, int targetFps,
         Action<VideoFrame, VideoClip, int> onFrame)
     {
-        // 轨道启用：跳过隐藏轨。
-        var trackCount = project.Clips.Count == 0 ? 1 : project.Clips.Max(c => c.Track) + 1;
-        _trackEnabled = new bool[trackCount];
-        for (var t = 0; t < trackCount; t++)
-        {
-            var st = project.GetTrackState(t);
-            _trackEnabled[t] = st == null || !st.Hidden;
-        }
-
-        // 浅拷贝片段列表：播放器只枚举自己的列表（编辑器增删/拖拽不破坏播放），
-        // 但片段对象与工程共享引用，属性编辑（入出点/变换）可实时反映到预览。
-        // 隐藏轨的片段直接排除（播放时不显示）。
-        _clips = project.Clips.Where(c => c.Track < _trackEnabled.Length && _trackEnabled[c.Track]).ToList();
-        _duration = project.Duration;
+        _project = project;
+        _clips = BuildClipList();
+        _duration = Math.Max(0, project.Duration);
         _maxDimension = maxDimension;
         _targetFps = Math.Max(1, targetFps);
         _onFrame = onFrame;
@@ -106,6 +98,67 @@ internal sealed class VideoProjectPlayer : IDisposable
         _overlayW = maxDimension;
         _overlayH = Math.Max(2, (int)(maxDimension / aspect));
     }
+
+    /// <summary>按工程当前片段重建播放列表（跳过隐藏轨）。整体替换引用，播放线程枚举安全。</summary>
+    private List<VideoClip> BuildClipList()
+    {
+        var trackCount = _project.Clips.Count == 0 ? 1 : _project.Clips.Max(c => c.Track) + 1;
+        return _project.Clips
+            .Where(c => c.Track >= 0 && c.Track < trackCount &&
+                        _project.GetTrackState(c.Track) is not { Hidden: true })
+            .ToList();
+    }
+
+    /// <summary>
+    /// 重新同步工程片段（编辑器增删片段 / 拖拽 / 撤销重做 / 轨道隐藏后调用）：
+    /// 重建片段列表、刷新总时长并按需扩展轨道状态。修复「编辑后播放器仍按构造时的
+    /// 片段快照播放——已删除的片段继续出现」的问题。任意线程调用安全。
+    /// </summary>
+    public void RefreshClips()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        lock (_sync)
+        {
+            _clips = BuildClipList();
+            _duration = Math.Max(0, _project.Duration);
+        }
+
+        EnsureTrackStates();
+    }
+
+    /// <summary>轨道数增长时扩展轨道状态（新轨默认启用；播放线程遍历旧数组引用安全）。</summary>
+    private void EnsureTrackStates()
+    {
+        var trackCount = _clips.Count == 0 ? 1 : _clips.Max(c => c.Track) + 1;
+        if (_tracks.Length >= trackCount)
+        {
+            return;
+        }
+
+        var grown = new TrackState[trackCount];
+        for (var i = 0; i < _tracks.Length; i++)
+        {
+            grown[i] = _tracks[i];
+        }
+
+        for (var i = _tracks.Length; i < trackCount; i++)
+        {
+            grown[i] = new TrackState { Track = i };
+        }
+
+        _tracks = grown;
+    }
+
+    /// <summary>
+    /// 某轨道从「有活跃片段」变为「无活跃片段」时回调（播放器线程触发）。
+    /// 调用方借此隐藏该轨显示图层：否则片段删除/播完后，最后一帧会一直冻结在画面上
+    /// （时间轴里已经没有它，预览/主界面却仍显示）。
+    /// </summary>
+    public Action<int>? TrackCleared { get; set; }
 
     public void Start()
     {
@@ -294,6 +347,7 @@ internal sealed class VideoProjectPlayer : IDisposable
         var clip = FindActiveClip(state.Track, time);
         if (!ReferenceEquals(clip, state.ActiveClip))
         {
+            var hadClip = state.ActiveClip != null;
             CloseTrack(state);
             if (clip != null && clip.Kind == "Video")
             {
@@ -305,6 +359,19 @@ internal sealed class VideoProjectPlayer : IDisposable
             }
 
             state.ActiveClip = clip;
+            if (hadClip && clip == null)
+            {
+                // 该轨已无活跃片段（片段删除/播完/轨道隐藏）：通知调用方隐藏图层，
+                // 否则最后一帧一直冻结在画面上（时间轴里已经没有它）。
+                try
+                {
+                    TrackCleared?.Invoke(state.Track);
+                }
+                catch
+                {
+                    // 回调异常不中断播放。
+                }
+            }
         }
 
         if (state.ActiveClip == null)
