@@ -432,7 +432,7 @@ public static class FFmpegRuntime
                     catch (FfmpegLibraryInUseException ex)
                     {
                         // 目标 dll 正被当前进程加载占用，换任何下载源都同样无法覆盖，直接给出明确指引。
-                        Report(progress, "安装失败：库文件被占用", indeterminate: true, log: "✗ " + ex.Message);
+                        Report(progress, "安装失败：库文件被占用", indeterminate: true, log: "[失败] " + ex.Message);
                         return (false, ex.Message);
                     }
 
@@ -457,7 +457,7 @@ public static class FFmpegRuntime
                 }
                 catch (Exception ex)
                 {
-                    Report(progress, $"{sourceHost} 下载失败，尝试下一源…", indeterminate: true, log: $"✗ {ex.Message}");
+                    Report(progress, $"{sourceHost} 下载失败，尝试下一源…", indeterminate: true, log: $"[失败] {ex.Message}");
                 }
                 finally
                 {

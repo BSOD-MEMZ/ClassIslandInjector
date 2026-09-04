@@ -1001,10 +1001,11 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(_smtcTutorialInfoBar);
 
         AddSection(panel, "\uF42F", "用户预设");
-        panel.Children.Add(Setting("\uF42F", "保存当前为预设", "把插件当前全部设置项保存为一个命名预设（同名覆盖）", PresetSaveFooter()));
-        panel.Children.Add(Setting("\uF42F", "套用 / 删除预设", "套用会把全部设置项替换为该预设保存时的状态。", PresetManageFooter()));
-        panel.Children.Add(Setting("\uF42F", "导出 / 导入预设", "把预设（含底图等静态资源与作者信息）导出为 .cizip 文件分享给别人，或从别人分享的 .cizip 导入预设。", PresetExchangeFooter()));
-        panel.Children.Add(Setting("\uF42F", "双击安装预设包", "注册 .cizip 文件关联：双击预设包即可启动 ClassIsland 并进入安装确认。", PresetAssociationFooter()));
+        // 各预设操作图标各不相同，避免“用户预设”大类里图标重复：保存 / 套用 / 导出导入 / 文件关联。
+        panel.Children.Add(Setting("\uEEB5", "保存当前为预设", "把插件当前全部设置项保存为一个命名预设（同名覆盖）", PresetSaveFooter()));
+        panel.Children.Add(Setting("\uE104", "套用 / 删除预设", "套用会把全部设置项替换为该预设保存时的状态。", PresetManageFooter()));
+        panel.Children.Add(Setting("\uE0E4", "导出 / 导入预设", "把预设（含底图等静态资源与作者信息）导出为 .cizip 文件分享给别人，或从别人分享的 .cizip 导入预设。", PresetExchangeFooter()));
+        panel.Children.Add(Setting("\uEAAF", "双击安装预设包", "注册 .cizip 文件关联：双击预设包即可启动 ClassIsland 并进入安装确认。", PresetAssociationFooter()));
         panel.Children.Add(Setting("\uE0BD", "恢复插件默认", "把全部设置恢复为插件默认（不会修改 Overrides.axaml）", Button("恢复默认", ResetToDefaults)));
 
         AddSection(panel, "\uE51F", "背景");
@@ -1015,7 +1016,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _bgGradientItem = Item("线性渐变", BgGradientBaseDesc, _gradient);
         _bgGradientDirItem = Item("渐变方向", BgGradientDirBaseDesc, _gradientDirection, _gradient);
         _bgGradientEndItem = Item("渐变终止色", BgGradientEndBaseDesc, _gradientEndColor, _gradient);
-        _backgroundGroup = SwitchableGroup("\uE520", "底色填充", "非分体模式画整个主界面背景；分体模式给勾选的分块上色（未单独配色的分块跟随全局底色）。", _customBackground,
+        _backgroundGroup = SwitchableGroup("\uE520", "底色填充", "非分体模式画整个主界面背景；分体模式给勾选的分块上色。", _customBackground,
             _bgColorItem, _bgDynamicItem, _bgGradientItem, _bgGradientDirItem, _bgGradientEndItem);
         _backgroundGroup.Name = "BackgroundGroup";
         _dynamicBackgroundColor.Name = "BackgroundDynamicToggle";
@@ -1029,7 +1030,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         var spectrumBarsItem = Item("频谱柱条数", "主界面约 400 像素宽时的柱条数，柱条宽度保持恒定。", _backgroundTextureSpectrumBars);
         var spectrumMirroredItem = Item("双面对称", "同时向上和向下绘制镜像频谱。", _backgroundTextureSpectrumMirrored);
         var spectrumAutoWidthItem = Item("自动匹配宽度", "开启后柱条数随主界面宽度自动增减（柱宽恒定）。", _backgroundTextureSpectrumAutoWidth);
-        _textureGroup = SwitchableGroup("\uE92B", "底纹纹理", "在底色之上叠加可平铺的纹理图案；分体模式下给勾选的分块逐块设置。", _backgroundTextureEnabled,
+        _textureGroup = SwitchableGroup("\uE92B", "底纹纹理", "在底色之上叠加可平铺的纹理图案。", _backgroundTextureEnabled,
             _texTypeItem,
             _texColorItem,
             _texSizeItem,
@@ -1093,8 +1094,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             }
         };
         panel.Children.Add(_wallpaperGroup);
-        // 底图模糊：作用于整个底图宿主（图层模式共用）。
-        panel.Children.Add(Group("\uE721", "底图模糊", "对整个底图（含所有图层）应用高斯模糊（0 为关闭）。",
+        // 底图模糊：作用于整个底图宿主（图层模式共用）；图标用专门的「模糊」字形。
+        panel.Children.Add(Group("\uE20B", "底图模糊", "对整个底图（含所有图层）应用高斯模糊（0 为关闭）。",
             Item("模糊半径", "高斯模糊半径（像素，0 为关闭）。", _wallpaperBlur)));
         // 动态视频填充：专家模式专属，紧跟「背景图片」组（视觉上在「打开图层编辑器」按钮下方）。
         // 视频解码完全依赖 FFmpeg 共享库：库缺失时整组禁用（见 RefreshFfmpegAvailability），
@@ -1114,7 +1115,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Content = _ffmpegStatusText,
         };
         _ffmpegInfoBar.Name = "FfmpegInfoBar";
-        _videoFillGroup = Group("\uE7F4", "动态视频填充", "用本地视频作为主界面动态背景（FFmpeg 解码，建议 H.264/MP4）。",
+        // 动态视频背景用「视频」形图标，区别于其它图片/背景类图标。
+        // 动态视频背景用空心「视频」图标。
+        _videoFillGroup = Group("\uF3D1", "动态视频填充", "用本地视频作为主界面动态背景（FFmpeg 解码，建议 H.264/MP4）。",
             Item("打开视频编辑器", "像 PR 一样裁剪/拼接视频片段、调整比例，渲染并应用到主界面。", Button("打开编辑器", OpenVideoEditor)),
             Item("使用编辑工程", "优先播放视频编辑器导出的多片段工程；关闭则使用下方单文件。", _videoProjectToggle),
             Item("视频文件", "MP4 等视频文件的路径。", VideoFillPathFooter()),
@@ -1232,7 +1235,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         VisibleWhen(cinematicFlashItem, _rippleType, RippleType.Cinematic);
         AutoSelectOnEnable(_rippleEnabled, _rippleType, RippleTypes);
         panel.Children.Add(rippleGroup);
-        panel.Children.Add(SwitchableGroup("\uE85E", "全屏流光", "仿照手机智慧识屏或语音助手激活时的全屏内发光效果，可与上方任意 Ripple 效果叠加播放。", _marqueeEnabled,
+        panel.Children.Add(SwitchableGroup("\uE85F", "全屏流光", "仿照手机智慧识屏或语音助手激活时的全屏内发光效果，可与上方任意 Ripple 效果叠加播放。", _marqueeEnabled,
             Item("流光颜色", "流光的整体色调；纯白为完整彩虹，带色调会整体偏向该颜色。", _marqueeColor),
             Item("流光时长", "流光效果的播放时长（秒）。", _marqueeDuration),
             Item("流光不透明度", "流光效果的整体透明度。", _marqueeOpacity),
@@ -1267,7 +1270,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("光带粗细", "光带厚度（相对主界面宽高较大者的比例）。", _countdownLightBandThickness),
             Item("光带角度", "光带的倾斜角度（度）。", _countdownLightBandAngle),
             Item("扫过速度", "每秒扫过主界面的次数。", _countdownLightBandSpeed));
-        var warningGroup = SwitchableGroup("\uE024", "即将上课警告", "注意：本效果较为恐怖，且会阻断鼠标和触摸输入，请谨慎使用！", _prepareWarningEnabled,
+        var warningGroup = SwitchableGroup("\uE025", "即将上课警告", "注意：本效果较为恐怖，且会阻断鼠标和触摸输入，请谨慎使用！", _prepareWarningEnabled,
             Item("警告颜色", "支持透明度的警告内发光颜色。", _prepareWarningColor),
             Item("提前触发秒数", "距上课剩余秒数小于该值时显示警告。", _prepareWarningTriggerSeconds),
             Item("闪动速度", "警告每秒闪动的次数。", _prepareWarningFlashSpeed),
@@ -1358,7 +1361,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(Setting("\uEF25", "关闭版本检查和提醒", "不再检查插件版本，也不提示去 GitHub 更新。", _disableVersionCheck));
         panel.Children.Add(Setting("\uEF4F", "关闭宿主定位点失效检查", "不再检测宿主点位失效，也不显示降级提示。", _disableDegradationCheck));
         panel.Children.Add(Setting("\uE480", "输出诊断日志", "写入日志文件用于排查问题。", _diagnosticLogging));
-        panel.Children.Add(Setting("\uE958", "重置插件教学", "清除本插件全部教学（SMTC / 底图编辑器）的完成状态，下次打开相关窗口即可重新播放。", Button("重置教学", ResetPluginTutorials)));
+        // 删除已安装 FFmpeg 库按钮（原放在“FFmpeg 就绪”InfoBar 里，InfoBar 关闭时不可见 → 移到调试分组）。
+        panel.Children.Add(Setting("\uE61D", "删除已安装 FFmpeg 解码库",
+            "彻底删除已安装的 FFmpeg 解码库。", _ffmpegDeleteButton));
+        panel.Children.Add(Setting("\uE959", "重置插件教学", "清除本插件全部教学（SMTC / 底图编辑器）的完成状态，下次打开相关窗口即可重新播放。", Button("重置教学", ResetPluginTutorials)));
 
         AddSection(panel, "\uE9E4", "关于");
         var manifest = Plugin.Manifest;
@@ -4325,8 +4331,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _ffmpegInfoBar.IsOpen = !available;
         _ffmpegInfoBar.Severity = available ? InfoBarSeverity.Success : InfoBarSeverity.Warning;
         _ffmpegInfoBar.Title = available ? "FFmpeg 库已就绪" : "缺少 FFmpeg 库";
-        // 操作按钮随可用性切换：缺失 = 下载引导；就绪 = 删除已安装库。
-        _ffmpegInfoBar.ActionButton = available ? _ffmpegDeleteButton : _ffmpegDownloadButton;
+        // InfoBar 只负责缺失时的下载引导；「删除已安装库」按钮已移到「调试」分组（_ffmpegDeleteButton）。
+        _ffmpegInfoBar.ActionButton = _ffmpegDownloadButton;
         if (available)
         {
             // 已就绪：轻量加载后区分精简解码包与完整包（剪辑渲染需要完整包）。
@@ -4375,7 +4381,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Title = "彻底删除 FFmpeg 解码库",
             Content = new TextBlock
             {
-                Text = "将删除已安装的 FFmpeg 解码库（约 7~50 MB）。删除后动态视频背景、视频编辑器预览与渲染均不可用，需要时重新下载安装即可。\n确定要彻底删除吗？",
+                Text = "将删除已安装的 FFmpeg 解码库。删除后动态视频背景、视频编辑器预览与渲染均不可用，需要时重新下载安装即可。\n确定要彻底删除吗？",
                 TextWrapping = TextWrapping.Wrap
             },
             PrimaryButtonText = "彻底删除",

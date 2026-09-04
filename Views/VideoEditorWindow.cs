@@ -227,11 +227,12 @@ internal sealed class VideoEditorWindow : MyWindow
     // ---- 属性 ----
     private readonly EditorSpin _inSpin = new(0, 36000, 0.1, "0.#");
     private readonly EditorSpin _outSpin = new(0.1, 36000, 0.1, "0.#");
-    private readonly EditorSpin _scaleSpin = new(0.05, 10, 0.01, "0.##");
-    private readonly EditorSpin _scaleXSpin = new(0.05, 10, 0.01, "0.##");
-    private readonly EditorSpin _scaleYSpin = new(0.05, 10, 0.01, "0.##");
-    private readonly EditorSpin _offsetXSpin = new(-1, 1, 0.01, "0.##");
-    private readonly EditorSpin _offsetYSpin = new(-1, 1, 0.01, "0.##");
+    // 变换直接按像素编辑（X/Y = 相对输出画布中心的像素坐标，宽/高 = 像素）：
+    // 内部仍以归一化数值为准，检查器读写时与「画布适配基准」互算（见 SetTransformPxFromClip / ApplyPropertyEdits）。
+    private readonly EditorSpin _pxXSpin = new(-20000, 20000, 1, "0");
+    private readonly EditorSpin _pxYSpin = new(-20000, 20000, 1, "0");
+    private readonly EditorSpin _pxWSpin = new(1, 20000, 1, "0");
+    private readonly EditorSpin _pxHSpin = new(1, 20000, 1, "0");
     private readonly EditorSpin _rotationSpin = new(-180, 180, 0.5, "0.#");
     private readonly EditorSpin _opacitySpin = new(0, 1, 0.01, "0.##");
     private readonly EditorSpin _cropLSpin = new(0, 1, 0.01, "0.##");
@@ -239,6 +240,10 @@ internal sealed class VideoEditorWindow : MyWindow
     private readonly EditorSpin _cropRSpin = new(0, 1, 0.01, "0.##");
     private readonly EditorSpin _cropBSpin = new(0, 1, 0.01, "0.##");
     private Control[] _propertyControls = [];
+    /// <summary>px 投影基准缓存：当前选中片段在输出画布内的“适配基准矩形”（缩放=1 时的像素尺寸）。</summary>
+    private (double BaseW, double BaseH) _pxBaseCache = (16, 9);
+    /// <summary>px 基准是否已建立（素材未解码时兜底用整幅画布，仍可编辑）。</summary>
+    private bool _pxBaseReady;
 
     // ---- 时间轴（多轨）----
     private readonly Grid _timeline = new();
@@ -338,9 +343,10 @@ internal sealed class VideoEditorWindow : MyWindow
     private readonly ComboBox _overlayShape = new() { MinWidth = 110 };
     private readonly EditorSpin _strokeWidthSpin = new(0, 0.2, 0.005, "0.###");
     private readonly ColorPicker _strokeColor = new() { VerticalAlignment = VerticalAlignment.Center };
-    // 文本样式（仅 Text）：字体下拉（枚举系统字体，非写死）/ 字号系数 / 加粗。
+    // 文本样式（仅 Text）：字体下拉（枚举系统字体，非写死）/ 字号（px）/ 加粗。
+    // 内部仍存相对画布高度的系数（TextFontSize），检查器按输出画布高度换算成像素编辑。
     private readonly ComboBox _overlayFontBox = new() { MinWidth = 140, MaxDropDownHeight = 360 };
-    private readonly EditorSpin _textSizeSpin = new(0.05, 1.2, 0.01, "0.##");
+    private readonly EditorSpin _textSizeSpin = new(1, 4096, 1, "0");
     private readonly CheckBox _textBoldCheck = new() { Content = "加粗" };
     /// <summary>系统字体列表（FontManager 枚举，含预览字体渲染）。</summary>
     private FontFamily[] _systemFonts = [];
@@ -362,6 +368,7 @@ internal sealed class VideoEditorWindow : MyWindow
         Minimum = 0,
         Maximum = 1,
         Value = 1,
+        Width = 150,
         VerticalAlignment = VerticalAlignment.Center,
         IsSnapToTickEnabled = false
     };
@@ -380,6 +387,16 @@ internal sealed class VideoEditorWindow : MyWindow
     private readonly Button _playButton = new()
     {
         Content = new IconText { Glyph = "\uEDB9", Text = "" },
+        Padding = new Thickness(8, 3),
+        MinWidth = 32,
+        Background = Brushes.Transparent,
+        BorderThickness = new Thickness(0),
+        Cursor = new Cursor(StandardCursorType.Hand)
+    };
+    /// <summary>舞台底部传输条：全屏按钮（把编辑器窗口切入 / 退出全屏）。</summary>
+    private readonly Button _fullscreenButton = new()
+    {
+        Content = new IconText { Glyph = "\uE8D0", Text = "" },
         Padding = new Thickness(8, 3),
         MinWidth = 32,
         Background = Brushes.Transparent,
@@ -435,6 +452,8 @@ internal sealed class VideoEditorWindow : MyWindow
     private readonly DispatcherTimer _dragScrollTimer = new() { Interval = TimeSpan.FromMilliseconds(16) };
     /// <summary>拖拽落点提示标签（accent 底白字「轨道 N / 新建轨道」，跟随目标泳道移动，不被拖拽块遮挡）。</summary>
     private Border? _dropTrackBadge;
+    /// <summary>上次时间轴强调色（切歌 / 动态主题变化时重绘 seek 线、标尺等强调色元素）。</summary>
+    private Color _lastTimelineAccent;
     private readonly TextBlock _timeText = new()
     {
         FontSize = 12,
@@ -639,8 +658,12 @@ internal sealed class VideoEditorWindow : MyWindow
                     break;
             }
         };
-        // 播放时钟：轮询播放器当前时间驱动播放头与时间码。
-        _clockTimer.Tick += (_, _) => UpdateClock();
+        // 播放时钟：轮询播放器当前时间驱动播放头与时间码；顺带监听动态主题强调色变化。
+        _clockTimer.Tick += (_, _) =>
+        {
+            UpdateClock();
+            WatchTimelineAccent();
+        };
         _clockTimer.Start();
         // 时间轴宽度变化（窗口调整）防抖后重建，让时间轴铺满视口。
         _resizeTimer.Tick += (_, _) =>
@@ -965,6 +988,8 @@ internal sealed class VideoEditorWindow : MyWindow
         _stageBorder.VerticalAlignment = VerticalAlignment.Center;
         _playButton.Click += (_, _) => TogglePreview();
         ToolTip.SetTip(_playButton, "播放 / 暂停（空格）");
+        _fullscreenButton.Click += (_, _) => ToggleStageFullscreen();
+        ToolTip.SetTip(_fullscreenButton, "全屏预览（再次点击退出全屏）");
         // 舞台点击：若处于文本/形状工具，在该位置放置覆盖层片段。
         // 挂在 _stageBorder（黑背景可命中）：点舞台空白处时事件源是 _stageBorder，
         // 冒泡路径不经过 _stageHostGrid（它是 _stageBorder 的子级），挂子级会漏掉空白区点击。
@@ -990,6 +1015,7 @@ internal sealed class VideoEditorWindow : MyWindow
         };
         transportBar.Children.Add(_playButton);
         transportBar.Children.Add(_timeText);
+        transportBar.Children.Add(_fullscreenButton);
         var stageInner = new Grid
         {
             RowDefinitions = new RowDefinitions("*,Auto"),
@@ -1489,10 +1515,20 @@ internal sealed class VideoEditorWindow : MyWindow
             StartTime = _playheadTime,
             InPoint = 0,
             OutPoint = 5,
-            Scale = kind == "Text" ? 1 : 0.4,
+            Scale = 1,
             ScaleX = 1,
             ScaleY = 1
         };
+        if (kind == "Shape")
+        {
+            // 形状默认 1:1（正方形，边长 = 输出画布短边的 60%），按画布像素换算。
+            var outW = Math.Max(1, _project.OutputWidth);
+            var outH = Math.Max(1, _project.OutputHeight);
+            var side = Math.Max(24, Math.Min(outW, outH) * 0.6);
+            clip.ScaleX = side / outW;
+            clip.ScaleY = side / outH;
+        }
+
         if (stagePos != null)
         {
             var W = _stageBorder.Bounds.Width;
@@ -1558,7 +1594,7 @@ internal sealed class VideoEditorWindow : MyWindow
     {
         _propertyControls =
         [
-            _inSpin, _outSpin, _scaleSpin, _scaleXSpin, _scaleYSpin, _offsetXSpin, _offsetYSpin,
+            _inSpin, _outSpin, _pxXSpin, _pxYSpin, _pxWSpin, _pxHSpin,
             _rotationSpin, _opacitySpin, _cropLSpin, _cropTSpin, _cropRSpin, _cropBSpin
         ];
         foreach (var spin in _propertyControls)
@@ -1646,7 +1682,7 @@ internal sealed class VideoEditorWindow : MyWindow
         _strokeWidthRow = InspectorRow("描边宽度", _strokeWidthSpin);
         _strokeColorRow = InspectorRow("描边颜色", _strokeColor);
         _overlayFontRow = InspectorRow("字体", _overlayFontBox);
-        _textSizeRow = InspectorRow("字号（相对）", _textSizeSpin);
+        _textSizeRow = InspectorRow("字号（px）", _textSizeSpin);
         _textBoldRow = InspectorRow("字重", _textBoldCheck);
         _overlayPanel.Children.Add(_overlayTextRow);
         _overlayPanel.Children.Add(_overlayFontRow);
@@ -1672,11 +1708,10 @@ internal sealed class VideoEditorWindow : MyWindow
                 InspectorRow("入点（秒）", _inSpin),
                 InspectorRow("出点（秒）", _outSpin),
                 new TextBlock { Text = "变换", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 8, 0, 0) },
-                InspectorRow("缩放", _scaleSpin),
-                InspectorRow("横向拉伸", _scaleXSpin),
-                InspectorRow("纵向拉伸", _scaleYSpin),
-                InspectorRow("水平偏移", _offsetXSpin),
-                InspectorRow("垂直偏移", _offsetYSpin),
+                InspectorRow("X（px）", _pxXSpin),
+                InspectorRow("Y（px）", _pxYSpin),
+                InspectorRow("宽度（px）", _pxWSpin),
+                InspectorRow("高度（px）", _pxHSpin),
                 InspectorRow("旋转（度）", _rotationSpin),
                 InspectorRow("不透明度", _opacitySpin),
                 new TextBlock { Text = "边缘裁剪", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 8, 0, 0) },
@@ -1840,11 +1875,12 @@ internal sealed class VideoEditorWindow : MyWindow
         clip.Shape = _overlayShape.SelectedItem?.ToString() ?? "Rect";
         clip.StrokeWidth = Math.Clamp(_strokeWidthSpin.DoubleValue, 0, 0.2);
         clip.StrokeColor = _strokeColor.Color.ToString();
-        // 文本样式：字体下拉（SelectedItem = FontFamily）/ 字号系数 / 加粗。
+        // 文本样式：字体下拉（SelectedItem = FontFamily）/ 字号（px → 相对画布高的内部系数）/ 加粗。
         if (clip.Kind == "Text")
         {
+            var canvasH = Math.Max(1, _project.OutputHeight);
             clip.TextFontFamily = (_overlayFontBox.SelectedItem as FontFamily)?.Name ?? "";
-            clip.TextFontSize = Math.Clamp(_textSizeSpin.DoubleValue, 0.05, 1.2);
+            clip.TextFontSize = Math.Clamp(_textSizeSpin.DoubleValue / canvasH, 0.02, 4);
             clip.TextBold = _textBoldCheck.IsChecked == true;
         }
 
@@ -1871,6 +1907,8 @@ internal sealed class VideoEditorWindow : MyWindow
             Opacity = 0.8,
             FontSize = 12
         });
+        // 所有设置项（spinbox / combobox / 颜色选择器 / 按钮 / 滑条等）严格贴右列右对齐。
+        control.HorizontalAlignment = HorizontalAlignment.Right;
         Grid.SetColumn(control, 1);
         row.Children.Add(control);
         return row;
@@ -3550,8 +3588,11 @@ internal sealed class VideoEditorWindow : MyWindow
         var half = interval / 2;
         var total = Math.Max(_project.Duration + 5, 20);
         var count = (int)Math.Ceiling(total / half);
-        var majorBrush = new SolidColorBrush(Color.FromArgb(170, 190, 190, 200));
-        var minorBrush = new SolidColorBrush(Color.FromArgb(90, 190, 190, 200));
+        // 主刻度用主题强调色（切歌 / 动态主题变化时随主题重绘）；次刻度用中性灰并随深浅主题。
+        var majorBrush = new SolidColorBrush(ThemePalette.AccentColorWithAlpha(205));
+        var minorBrush = new SolidColorBrush(ThemePalette.IsDarkTheme()
+            ? Color.FromArgb(80, 190, 190, 200)
+            : Color.FromArgb(80, 80, 80, 90));
         for (var i = 0; i <= count; i++)
         {
             var t = i * half;
@@ -3748,6 +3789,65 @@ internal sealed class VideoEditorWindow : MyWindow
         PositionPlayheadLine();
         PositionPlayheadHead();
         _timeText.Text = FormatTime(_playheadTime);
+    }
+
+    /// <summary>动态主题（切歌）强调色变化时，让时间轴的 seek 线 / 标尺等强调色元素一起切换。</summary>
+    private void WatchTimelineAccent()
+    {
+        var accent = ThemePalette.AccentColor();
+        if (accent == _lastTimelineAccent)
+        {
+            return;
+        }
+
+        _lastTimelineAccent = accent;
+        // 拖拽 / 裁剪 / scrub / 旋转 / 缩放中不打断（等该手势结束后的下一拍再应用）。
+        if (_moveGroup != null || _trimState != null || _scrubbing || _rotating || _resizeHandle >= 0)
+        {
+            return;
+        }
+
+        // 重建时间轴（标尺 / 轨道 / 选中块都会按新强调色重绘）+ 重设播放头等常驻强调色元素。
+        RefreshTimeline();
+        RestyleTimelineAccent();
+    }
+
+    /// <summary>按当前强调色重设时间轴 / 舞台里常驻的强调色元素（seek 线、播放头圈、插入指示线、手柄等）。</summary>
+    private void RestyleTimelineAccent()
+    {
+        if (_playhead.Child is Border line)
+        {
+            line.Background = ThemePalette.AccentBrush();
+        }
+
+        if (_playheadHead?.Child is Ellipse headDot)
+        {
+            headDot.Stroke = ThemePalette.AccentBrush();
+        }
+
+        _splitCursorLine.Stroke = ThemePalette.AccentBrush();
+        _insertIndicator.Background = ThemePalette.AccentBrush();
+        _marqueeRect.Stroke = ThemePalette.AccentBrush();
+        _marqueeRect.Fill = ThemePalette.AccentBrushWithAlpha(35);
+        _handleOutline.BorderBrush = ThemePalette.AccentBrushWithAlpha(220);
+        _handleOutline.Background = ThemePalette.AccentBrushWithAlpha(18);
+        for (var i = 0; i < _handles.Length; i++)
+        {
+            if (_handles[i].Tag is Ellipse dot)
+            {
+                dot.Fill = Brushes.White;
+                dot.Stroke = ThemePalette.AccentBrush();
+                dot.StrokeThickness = 2;
+            }
+        }
+
+        _rotateArm.Stroke = ThemePalette.AccentBrushWithAlpha(190);
+        if (_rotateDot != null)
+        {
+            _rotateDot.Fill = Brushes.White;
+            _rotateDot.Stroke = ThemePalette.AccentBrush();
+            _rotateDot.StrokeThickness = 2;
+        }
     }
 
     private string FormatTime(double seconds) => $"{FormatClock(seconds)} / {FormatClock(_project.Duration)}";
@@ -4219,9 +4319,11 @@ internal sealed class VideoEditorWindow : MyWindow
         }
 
         _selected = clip;
-        // 按下点相对块（块在泳道内顶部偏移 6px，左缘 = StartTime * px）。
+        // 按下点相对块：左缘 = StartTime*px；顶缘在根画布坐标 = 所在轨视觉顶部 + 泳道内 6px 边距。
+        // （必须含轨道偏移 VisualTopOfTrack，否则从下方轨道拖起时块会比鼠标高一段、越靠下越偏。）
         var grabX = rootPos.X - clip.StartTime * _pxPerSecond;
-        var grabY = Math.Max(0, rootPos.Y - 6);
+        var blockRootTop = VisualTopOfTrack(clip.Track, _project.TrackCount) + 6;
+        var grabY = Math.Max(0, rootPos.Y - blockRootTop);
         _dragOffsetX = grabX;
         var origins = new Dictionary<VideoClip, double>();
         var tracks = new Dictionary<VideoClip, int>();
@@ -4749,7 +4851,10 @@ internal sealed class VideoEditorWindow : MyWindow
         }
         else if (text.StartsWith("shape:", StringComparison.Ordinal))
         {
-            // 形状库拖入：在目标轨道/位置新增形状覆盖层片段。
+            // 形状库拖入：在目标轨道/位置新增形状覆盖层片段（默认 1:1 正方形，边长 = 输出画布短边 60%）。
+            var outW = Math.Max(1, _project.OutputWidth);
+            var outH = Math.Max(1, _project.OutputHeight);
+            var shapeSide = Math.Max(24, Math.Min(outW, outH) * 0.6);
             clip = new VideoClip
             {
                 Kind = "Shape",
@@ -4759,9 +4864,9 @@ internal sealed class VideoEditorWindow : MyWindow
                 StartTime = startTime,
                 InPoint = 0,
                 OutPoint = 5,
-                Scale = 0.4,
-                ScaleX = 1,
-                ScaleY = 1
+                Scale = 1,
+                ScaleX = shapeSide / outW,
+                ScaleY = shapeSide / outH
             };
             _project.Clips.Add(clip);
         }
@@ -5125,11 +5230,12 @@ internal sealed class VideoEditorWindow : MyWindow
             var has = clip != null;
             _inSpin.DoubleValue = clip?.InPoint ?? 0;
             _outSpin.DoubleValue = clip?.OutPoint ?? 10;
-            _scaleSpin.DoubleValue = clip?.Scale ?? 1;
-            _scaleXSpin.DoubleValue = clip?.ScaleX ?? 1;
-            _scaleYSpin.DoubleValue = clip?.ScaleY ?? 1;
-            _offsetXSpin.DoubleValue = clip?.OffsetX ?? 0;
-            _offsetYSpin.DoubleValue = clip?.OffsetY ?? 0;
+            // 变换按像素显示：由画布适配基准 + 归一化数值换算回填（X/Y 为画布中心坐标）。
+            if (clip != null)
+            {
+                SetTransformPxFromClip(clip);
+            }
+
             _rotationSpin.DoubleValue = clip?.Rotation ?? 0;
             _opacitySpin.DoubleValue = clip?.Opacity ?? 1;
             _cropLSpin.DoubleValue = clip?.CropLeft ?? 0;
@@ -5169,7 +5275,8 @@ internal sealed class VideoEditorWindow : MyWindow
                 }
 
                 _overlayFontBox.SelectedIndex = selIdx;
-                _textSizeSpin.DoubleValue = clip.TextFontSize;
+                // 字号按 px 显示：内部系数 × 输出画布高（生成/渲染都以画布高为基准）。
+                _textSizeSpin.DoubleValue = Math.Max(1, Math.Round(clip.TextFontSize * Math.Max(1, _project.OutputHeight)));
                 _textBoldCheck.IsChecked = clip.TextBold;
                 // 各覆盖层行按片段类型显隐（图片只留通用变换）。
                 if (_overlayTextRow is { } textRow)
@@ -5282,11 +5389,18 @@ internal sealed class VideoEditorWindow : MyWindow
         var (inLimit, outLimit) = TrimBounds(clip);
         clip.InPoint = Math.Clamp(Math.Max(0, _inSpin.DoubleValue), Math.Max(0, inLimit), clip.OutPoint - 0.1);
         clip.OutPoint = Math.Clamp(Math.Max(clip.InPoint + 0.1, _outSpin.DoubleValue), clip.InPoint + 0.1, outLimit);
-        clip.Scale = _scaleSpin.DoubleValue;
-        clip.ScaleX = _scaleXSpin.DoubleValue;
-        clip.ScaleY = _scaleYSpin.DoubleValue;
-        clip.OffsetX = _offsetXSpin.DoubleValue;
-        clip.OffsetY = _offsetYSpin.DoubleValue;
+        // 像素 → 归一化：以选中片段的「画布适配基准」与内部基准缩放换算（基准缩放保持，只调 ScaleX/Y）。
+        var (bw, bh) = _pxBaseReady ? _pxBaseCache : BaseFitPxFor(clip);
+        var canvasW = Math.Max(1, _project.OutputWidth);
+        var canvasH = Math.Max(1, _project.OutputHeight);
+        var wPx = Math.Max(1, _pxWSpin.DoubleValue);
+        var hPx = Math.Max(1, _pxHSpin.DoubleValue);
+        var baseScale = Math.Max(0.05, clip.Scale);
+        clip.Scale = baseScale;
+        clip.ScaleX = Math.Max(0.05, wPx / Math.Max(1, bw * baseScale));
+        clip.ScaleY = Math.Max(0.05, hPx / Math.Max(1, bh * baseScale));
+        clip.OffsetX = Math.Clamp((_pxXSpin.DoubleValue - canvasW / 2.0) / canvasW, -5, 5);
+        clip.OffsetY = Math.Clamp((_pxYSpin.DoubleValue - canvasH / 2.0) / canvasH, -5, 5);
         clip.Rotation = _rotationSpin.DoubleValue;
         clip.Opacity = Math.Clamp(_opacitySpin.DoubleValue, 0, 1);
         clip.CropLeft = Math.Clamp(_cropLSpin.DoubleValue, 0, 1);
@@ -5302,6 +5416,56 @@ internal sealed class VideoEditorWindow : MyWindow
             ApplyTransform(_stageLayers[clip.Track], clip);
             UpdateStageHandles();
         }
+    }
+
+    /// <summary>
+    /// 计算片段的「画布适配基准」（输出画布像素；缩放=1 时铺满/适配的矩形尺寸）。
+    /// 视频按真实画面比例在画布内 letterbox 适配；文本/形状/图片覆盖层以整幅输出画布为基准。
+    /// </summary>
+    private (double BaseW, double BaseH) BaseFitPxFor(VideoClip clip)
+    {
+        var Wc = Math.Max(1, _project.OutputWidth);
+        var Hc = Math.Max(1, _project.OutputHeight);
+        if (clip.Kind == "Video")
+        {
+            var aspect = SourceLayerAspect(clip);
+            var canvasAspect = Wc / Hc;
+            if (aspect is { } a && a > 0)
+            {
+                return a >= canvasAspect
+                    ? (Wc, Wc / a)
+                    : (Hc * a, Hc);
+            }
+        }
+
+        // 覆盖层（文本/形状/图片）及视频尚未解码时：以整幅画布为适配基准。
+        return (Wc, Hc);
+    }
+
+    /// <summary>取选中视频片段当前舞台图层的真实画面比例（尚未解码时返回 null）。</summary>
+    private double? SourceLayerAspect(VideoClip clip)
+    {
+        if (clip.Track >= 0 && clip.Track < _stageLayers.Count &&
+            _stageLayers[clip.Track].Bitmap is { } bm &&
+            bm.PixelSize.Width > 0 && bm.PixelSize.Height > 0)
+        {
+            return bm.PixelSize.Width / (double)bm.PixelSize.Height;
+        }
+
+        return null;
+    }
+
+    /// <summary>把片段的归一化变换换算成像素并回填检查器（同时缓存适配基准）。</summary>
+    private void SetTransformPxFromClip(VideoClip clip)
+    {
+        _pxBaseCache = BaseFitPxFor(clip);
+        _pxBaseReady = true;
+        var Wc = Math.Max(1, _project.OutputWidth);
+        var Hc = Math.Max(1, _project.OutputHeight);
+        _pxWSpin.DoubleValue = Math.Max(1, Math.Round(_pxBaseCache.BaseW * clip.Scale * clip.ScaleX));
+        _pxHSpin.DoubleValue = Math.Max(1, Math.Round(_pxBaseCache.BaseH * clip.Scale * clip.ScaleY));
+        _pxXSpin.DoubleValue = Math.Round(Wc / 2.0 + clip.OffsetX * Wc);
+        _pxYSpin.DoubleValue = Math.Round(Hc / 2.0 + clip.OffsetY * Hc);
     }
 
     /// <summary>
@@ -5371,6 +5535,11 @@ internal sealed class VideoEditorWindow : MyWindow
 
                     UpdateStageLayer(track, ApplyActiveFilter(new VideoFrame(pixels, w, h), clip, clip.StartTime), clip);
                     UpdateStageHandles();
+                    // 拿到真实画面比例后，用真实适配基准回填 px 数值（此前未解码时用画布兜底）。
+                    if (ReferenceEquals(_selected, clip))
+                    {
+                        SetTransformPxFromClip(clip);
+                    }
                 });
             }
             catch
@@ -5767,6 +5936,18 @@ internal sealed class VideoEditorWindow : MyWindow
         if (_playButton.Content is IconText icon)
         {
             icon.Glyph = _playing ? "\uEC91" : "\uEDB9";
+        }
+    }
+
+    /// <summary>切换编辑器窗口全屏（舞台右下播放条旁的全屏按钮）；退出时恢复普通窗口。</summary>
+    private void ToggleStageFullscreen()
+    {
+        var target = WindowState == WindowState.FullScreen ? WindowState.Normal : WindowState.FullScreen;
+        WindowState = target;
+        if (_fullscreenButton.Content is IconText fsIcon)
+        {
+            // 全屏最大化 / 全屏还原（退出）图标随状态切换。
+            fsIcon.Glyph = target == WindowState.FullScreen ? "\uE8D2" : "\uE8D0";
         }
     }
 
@@ -6971,7 +7152,7 @@ internal sealed class VideoEditorWindow : MyWindow
                 _trayItemRegistered = true;
             }
 
-            _trayProgressItem.Header = $"🎬 {message}（{percent:P0}）";
+            _trayProgressItem.Header = $"{message}（{percent:P0}）";
         }
         catch
         {

@@ -5,7 +5,6 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Controls.Templates;
-using Avalonia.Data;
 using Avalonia.Layout;
 using Avalonia.Media;
 using ClassIsland.Core;
@@ -150,8 +149,8 @@ internal sealed class FfmpegInstallWindow : MyWindow
     /// <summary>包档位对比表：不安装 / 精简解码包 / 完整包的能力差异（原生 DataGrid）。</summary>
     private Control BuildComparisonTable()
     {
-        const string no = "✗";
-        const string yes = "✓";
+        const string no = "no";
+        const string yes = "yes";
         var rows = new List<FfmpegComparisonRow>
         {
             new("动态视频背景", no, yes, yes),
@@ -170,8 +169,8 @@ internal sealed class FfmpegInstallWindow : MyWindow
             CanUserReorderColumns = false,
             CanUserResizeColumns = false,
             CanUserSortColumns = false,
-            RowHeight = 20,
-            MaxHeight = 120,
+            RowHeight = 28,
+            MaxHeight = 160,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
             Margin = new Thickness(0, 4, 0, 0)
@@ -180,48 +179,69 @@ internal sealed class FfmpegInstallWindow : MyWindow
         {
             Header = "功能",
             Width = new DataGridLength(1, DataGridLengthUnitType.Star),
-            CellTemplate = CellTemplate("Feature", null, center: false)
+            CellTemplate = TextTemplate(row => row.Feature, center: false)
         });
-        grid.Columns.Add(new DataGridTemplateColumn { Header = "不安装", Width = new DataGridLength(60), CellTemplate = CellTemplate("None", "NoneBrush", center: true) });
-        grid.Columns.Add(new DataGridTemplateColumn { Header = "精简版", Width = new DataGridLength(60), CellTemplate = CellTemplate("Minimal", "MinimalBrush", center: true) });
-        grid.Columns.Add(new DataGridTemplateColumn { Header = "完整版", Width = new DataGridLength(60), CellTemplate = CellTemplate("Full", "FullBrush", center: true) });
+        // 支持与否用 Fluent 图标表达（Checkmark / Dismiss），体积等文本行照常显示文字。
+        grid.Columns.Add(new DataGridTemplateColumn { Header = "不安装", Width = new DataGridLength(76), CellTemplate = MarkTemplate(row => row.None) });
+        grid.Columns.Add(new DataGridTemplateColumn { Header = "精简版", Width = new DataGridLength(76), CellTemplate = MarkTemplate(row => row.Minimal) });
+        grid.Columns.Add(new DataGridTemplateColumn { Header = "完整版", Width = new DataGridLength(76), CellTemplate = MarkTemplate(row => row.Full) });
         return grid;
     }
 
-    /// <summary>对比表行：✓ 用强调色、✗ 弱化灰、体积等文本用默认前景。</summary>
-    private sealed record FfmpegComparisonRow(string Feature, string None, string Minimal, string Full)
-    {
-        public IBrush? NoneBrush => MarkBrush(None);
-        public IBrush? MinimalBrush => MarkBrush(Minimal);
-        public IBrush? FullBrush => MarkBrush(Full);
+    /// <summary>对比表行：no/yes 用 Fluent 图标（勾选/关闭），体积等文本用默认前景。</summary>
+    private sealed record FfmpegComparisonRow(string Feature, string None, string Minimal, string Full);
 
-        private static IBrush? MarkBrush(string s) => s switch
-        {
-            "✓" => ThemePalette.AccentBrush(),
-            "✗" => Brushes.Gray,
-            _ => null
-        };
-    }
-
-    /// <summary>DataGrid 单元格模板：文本 + 可选前景画刷（null = 默认前景）。</summary>
-    private static IDataTemplate CellTemplate(string textPath, string? brushPath, bool center) =>
-        new FuncDataTemplate<object>((_, _) =>
+    /// <summary>普通文本单元格（功能列等）。</summary>
+    private static IDataTemplate TextTemplate(Func<FfmpegComparisonRow, string> valueOf, bool center) =>
+        new FuncDataTemplate<object>((data, _) =>
         {
             var tb = new TextBlock
             {
-                FontSize = 11,
+                Text = data is FfmpegComparisonRow row ? valueOf(row) : string.Empty,
+                FontSize = 14,
                 HorizontalAlignment = center ? HorizontalAlignment.Center : HorizontalAlignment.Left,
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = center ? new Thickness(0) : new Thickness(6, 0, 0, 0)
             };
-            tb.Bind(TextBlock.TextProperty, new Binding(textPath));
-            if (brushPath != null)
-            {
-                tb.Bind(TextBlock.ForegroundProperty, new Binding(brushPath));
-            }
-
             return tb;
         });
+
+    /// <summary>能力标记单元格：yes = 强调色 Checkmark，no = 灰色 Dismiss，否则为文字（体积行）。</summary>
+    private static IDataTemplate MarkTemplate(Func<FfmpegComparisonRow, string> valueOf) =>
+        new FuncDataTemplate<object>((data, _) =>
+        {
+            var s = data is FfmpegComparisonRow row ? valueOf(row) : string.Empty;
+            if (s == "yes")
+            {
+                // \uE423 = Fluent Checkmark（实心），用强调色。
+                return MarkerGlyph("\uE423", ThemePalette.AccentBrush());
+            }
+
+            if (s == "no")
+            {
+                // \uE670 = Fluent Dismiss（关闭/不支持），弱化灰。
+                return MarkerGlyph("\uE670", Brushes.Gray);
+            }
+
+            return new TextBlock
+            {
+                Text = s,
+                FontSize = 14,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+        });
+
+    /// <summary>以图标字体渲染单个 Fluent 字形。</summary>
+    private static TextBlock MarkerGlyph(string glyph, IBrush brush) => new()
+    {
+        Text = glyph,
+        FontFamily = AppBase.FluentIconsFontFamily,
+        FontSize = 18,
+        Foreground = brush,
+        HorizontalAlignment = HorizontalAlignment.Center,
+        VerticalAlignment = VerticalAlignment.Center
+    };
 
     /// <summary>开始安装指定档位（隐藏选择区，启动下载任务）。</summary>
     private void StartInstall(FfmpegPackageKind kind)
@@ -240,7 +260,7 @@ internal sealed class FfmpegInstallWindow : MyWindow
             SetProgressVisible(false);
             _stageText.Text = "需要重启";
             _actionButton.Content = "关闭";
-            AppendLog("✗ 当前进程已加载 FFmpeg 解码库（文件被占用），无法覆盖安装。\n请重启 ClassIsland 后再安装。");
+            AppendLog("[失败] 当前进程已加载 FFmpeg 解码库（文件被占用），无法覆盖安装。\n请重启 ClassIsland 后再安装。");
             return;
         }
 
@@ -260,7 +280,7 @@ internal sealed class FfmpegInstallWindow : MyWindow
             SetProgressVisible(false); // 安装结束：进度条与速度/剩余时间不再有意义，隐藏。
             _stageText.Text = success ? "安装完成" : "安装失败";
             _actionButton.Content = "关闭";
-            AppendLog((success ? "✓ " : "✗ ") + message);
+            AppendLog((success ? "[完成] " : "[失败] ") + message);
         }
         catch (Exception ex)
         {
@@ -268,7 +288,7 @@ internal sealed class FfmpegInstallWindow : MyWindow
             SetProgressVisible(false);
             _stageText.Text = "安装中断";
             _actionButton.Content = "关闭";
-            AppendLog($"✗ {ex.Message}");
+            AppendLog($"[失败] {ex.Message}");
         }
     }
 
@@ -391,7 +411,7 @@ internal sealed class FfmpegInstallWindow : MyWindow
 
         var (success, message) = FFmpegRuntime.DeleteLibraries();
         FFmpegRuntime.Refresh();
-        AppendLog((success ? "✓ " : "✗ ") + message);
+        AppendLog((success ? "[完成] " : "[失败] ") + message);
         _stageText.Text = success ? "已删除" : "删除待完成";
         _deleteButton.IsVisible = FFmpegRuntime.IsAvailable;
     }
