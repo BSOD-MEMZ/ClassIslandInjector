@@ -393,7 +393,7 @@ internal sealed class VideoEditorWindow : MyWindow
         BorderThickness = new Thickness(0),
         Cursor = new Cursor(StandardCursorType.Hand)
     };
-    /// <summary>舞台底部传输条：全屏按钮（把编辑器窗口切入 / 退出全屏）。</summary>
+    /// <summary>舞台底部传输条：全屏按钮（打开 / 关闭全屏视频预览窗）。</summary>
     private readonly Button _fullscreenButton = new()
     {
         Content = new IconText { Glyph = "\uE8D0", Text = "" },
@@ -403,6 +403,8 @@ internal sealed class VideoEditorWindow : MyWindow
         BorderThickness = new Thickness(0),
         Cursor = new Cursor(StandardCursorType.Hand)
     };
+    /// <summary>全屏预览窗（舞台视频镜像 + 悬浮播放面板）；null = 未打开。见 ToggleStageFullscreen。</summary>
+    private StageFullscreenWindow? _stageFullscreen;
     /// <summary>时间轴上方工具条：刀片切割 / 删除片段（紧凑图标按钮，悬停显示说明）。</summary>
     private readonly Button _cutButton = new()
     {
@@ -791,6 +793,7 @@ internal sealed class VideoEditorWindow : MyWindow
             }
 
             // 关闭前把未落盘的编辑写回工程文件（含片段对齐/轨道/画幅等），重开不丢失。
+            _stageFullscreen?.Close(); // 同步关闭全屏预览窗（其 Closed 回调会清空引用）。
             _saveTimer.Stop();
             SaveProject();
             StopPreview();
@@ -3781,6 +3784,7 @@ internal sealed class VideoEditorWindow : MyWindow
         PositionPlayheadLine();
         PositionPlayheadHead();
         _timeText.Text = FormatTime(_playheadTime);
+        _stageFullscreen?.UpdateTransport(_playing, _playheadTime, _project.Duration);
         if (_playing && _player != null)
         {
             _player.Seek(_playheadTime);
@@ -3803,6 +3807,7 @@ internal sealed class VideoEditorWindow : MyWindow
         PositionPlayheadLine();
         PositionPlayheadHead();
         _timeText.Text = FormatTime(_playheadTime);
+        _stageFullscreen?.UpdateTransport(_playing, _playheadTime, _project.Duration);
     }
 
     /// <summary>动态主题（切歌）强调色变化时，让时间轴的 seek 线 / 标尺等强调色元素一起切换。</summary>
@@ -5920,6 +5925,7 @@ internal sealed class VideoEditorWindow : MyWindow
         }
 
         _stageLayers.Clear();
+        _stageFullscreen?.ClearAll();
         foreach (var child in _stageHostGrid.Children)
         {
             if (child is Image img)
@@ -5964,19 +5970,58 @@ internal sealed class VideoEditorWindow : MyWindow
         {
             icon.Glyph = _playing ? "\uEC91" : "\uEDB9";
         }
+
+        // 全屏预览窗口的播放状态同步。
+        _stageFullscreen?.UpdateTransport(_playing, _playheadTime, _project.Duration);
     }
 
-    /// <summary>切换编辑器窗口全屏（舞台右下播放条旁的全屏按钮）；退出时恢复普通窗口。</summary>
+    /// <summary>
+    /// 全屏预览舞台视频：打开无边框置顶的镜像预览窗（按画幅比例居中，带悬浮播放控制面板），
+    /// 而非编辑器窗口全屏。播放/播放头仍由编辑器统一管理，帧由播放回调双写到镜像层。
+    /// </summary>
     private void ToggleStageFullscreen()
     {
-        var target = WindowState == WindowState.FullScreen ? WindowState.Normal : WindowState.FullScreen;
-        WindowState = target;
-        if (_fullscreenButton.Content is IconText fsIcon)
+        if (_stageFullscreen != null)
         {
-            // 全屏最大化 / 全屏还原（退出）图标随状态切换。
-            fsIcon.Glyph = target == WindowState.FullScreen ? "\uE8D2" : "\uE8D0";
+            CloseStageFullscreen();
+            return;
         }
+
+        _stageFullscreen = new StageFullscreenWindow(_project.OutputWidth, _project.OutputHeight)
+        {
+            PlayPauseRequested = TogglePreview,
+            SeekRequested = SetPlayhead,
+            ExitRequested = CloseStageFullscreen
+        };
+        _stageFullscreen.Closed += (_, _) =>
+        {
+            _stageFullscreen = null;
+            if (_fullscreenButton.Content is IconText fsIcon)
+            {
+                fsIcon.Glyph = "\uE8D0";
+            }
+        };
+        _stageFullscreen.Show();
+        if (_fullscreenButton.Content is IconText icon)
+        {
+            icon.Glyph = "\uE8D2";
+        }
+
+        // 打开即同步状态；暂停中也刷新一次当前画面（seek 预览帧会经 UpdateStageLayer 镜像）。
+        _stageFullscreen.UpdateTransport(_playing, _playheadTime, _project.Duration);
+        ShowFrameAt(_playheadTime);
+        PokeFullscreenPanel();
     }
+
+    /// <summary>关闭全屏预览窗口（幂等）。</summary>
+    private void CloseStageFullscreen()
+    {
+        _stageFullscreen?.Close();
+        _stageFullscreen = null;
+    }
+
+    /// <summary>全屏预览窗口打开时显示悬浮面板（启动即见，不等到鼠标活动）。</summary>
+    private void PokeFullscreenPanel() => _stageFullscreen?.ShowPanel();
 
     private void OnPreviewFrame(VideoFrame frame, VideoClip clip, int track)
     {
@@ -6009,6 +6054,7 @@ internal sealed class VideoEditorWindow : MyWindow
         var layer = _stageLayers[track];
         layer.Image.IsVisible = false;
         layer.Image.Source = null;
+        _stageFullscreen?.ClearLayer(track);
         UpdateStageHandles();
     }
 
@@ -6027,6 +6073,8 @@ internal sealed class VideoEditorWindow : MyWindow
         WriteFrameToImage(layer.Image, ref layer.Bitmap, frame, clip.Grayscale);
         ApplyTransform(layer, clip);
         layer.Image.IsVisible = true;
+        // 全屏预览窗口镜像同帧（同一次 UI 回调内双写，帧像素在 MarkTrackConsumed 前有效）。
+        _stageFullscreen?.UpdateLayer(track, frame, clip);
         UpdateStageHandles();
     }
 
