@@ -39,6 +39,11 @@ internal static unsafe class Program
             {
                 return ProbeHardware();
             }
+
+            if (args.Any(a => a is "--enc" or "enc"))
+            {
+                return EncodeTest();
+            }
         }
         catch (Exception ex)
         {
@@ -64,6 +69,19 @@ internal static unsafe class Program
 
             hr = ffmpeg.avformat_find_stream_info(fmtCtx, null);
             Console.WriteLine($"avformat_find_stream_info = {hr}，流数量={fmtCtx->nb_streams}");
+
+            // 容器元数据：时间基/帧率/帧数（诊断「渲染 fps 异常」用）。
+            for (var i = 0; i < fmtCtx->nb_streams; i++)
+            {
+                var st = fmtCtx->streams[i];
+                var tb = st->time_base;
+                var afr = st->avg_frame_rate;
+                var rfr = st->r_frame_rate;
+                Console.WriteLine(
+                    $"流{i}: time_base={tb.num}/{tb.den} avg_fps={(afr.den > 0 ? (double)afr.num / afr.den : 0):0.###} ({afr.num}/{afr.den}) " +
+                    $"r_fps={(rfr.den > 0 ? (double)rfr.num / rfr.den : 0):0.###} ({rfr.num}/{rfr.den}) " +
+                    $"帧数={st->nb_frames} 时长={st->duration * tb.num / (double)Math.Max(1, tb.den):0.###}s 起始={st->start_time}");
+            }
 
             AVCodec* codec = null;
             var videoStream = ffmpeg.av_find_best_stream(fmtCtx, AVMediaType.AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);
@@ -260,5 +278,270 @@ internal static unsafe class Program
         }
 
         return 0;
+    }
+
+    /// <summary>
+    /// 编码自测（--enc）：用与插件 FFmpegVideoEncoder 相同的逻辑（含 time_base 修复）
+    /// 分别以硬件/软件编码器渲染一段 640x80@24fps 移动条纹测试视频，再回读元数据验证帧率。
+    /// 蓝通道条纹移动，可肉眼检查红蓝是否互换。
+    /// </summary>
+    private static int EncodeTest()
+    {
+        const int w = 640, h = 80, fps = 24, frames = 96;
+        var dir = Path.Combine(Path.GetTempPath(), "enc-test");
+        Directory.CreateDirectory(dir);
+
+        foreach (var hw in new[] { true, false })
+        {
+            var outPath = Path.Combine(dir, hw ? "enc-hw.mp4" : "enc-sw.mp4");
+            Console.WriteLine($"\n=== 编码自测 {(hw ? "硬件（qsv→nvenc→amf→mf→软编回退）" : "软件 libx264")} ===");
+            try
+            {
+                var used = EncodeClip(outPath, w, h, fps, frames, hw);
+                Console.WriteLine($"实际编码器: {used}");
+                ProbeFile(outPath);
+                Console.WriteLine($"文件: {outPath}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"失败: {ex.Message}");
+            }
+        }
+
+        return 0;
+    }
+
+    /// <summary>按候选编码器列表逐个尝试，全部失败抛异常。</summary>
+    private static string EncodeClip(string path, int w, int h, int fps, int frames, bool hw)
+    {
+        var candidates = hw
+            ? new List<string?> { "h264_qsv", "h264_nvenc", "h264_amf", "h264_mf", null }
+            : new List<string?> { null };
+        Exception? last = null;
+        foreach (var cand in candidates)
+        {
+            try
+            {
+                EncodeClipWith(cand, path, w, h, fps, frames);
+                return cand ?? "libx264";
+            }
+            catch (Exception ex)
+            {
+                last = ex;
+                Console.WriteLine($"  编码器 {cand ?? "libx264"} 不可用: {ex.Message}");
+            }
+        }
+
+        throw new InvalidOperationException($"无可用编码器: {last?.Message}");
+    }
+
+    /// <summary>与插件 FFmpegVideoEncoder 相同的编码流程（含 time_base 修复点）。</summary>
+    private static unsafe void EncodeClipWith(string? hwName, string path, int w, int h, int fps, int frames)
+    {
+        AVFormatContext* fmtCtx = null;
+        AVCodecContext* codecCtx = null;
+        SwsContext* sws = null;
+        AVFrame* frame = null;
+        AVPacket* pkt = null;
+        try
+        {
+            var isHw = !string.IsNullOrWhiteSpace(hwName);
+            var outFmt = isHw ? AVPixelFormat.AV_PIX_FMT_NV12 : AVPixelFormat.AV_PIX_FMT_YUV420P;
+
+            var hr = ffmpeg.avformat_alloc_output_context2(&fmtCtx, null, "mp4", path);
+            if (hr < 0 || fmtCtx == null)
+            {
+                throw new InvalidOperationException($"输出上下文失败({hr})");
+            }
+
+            AVCodec* codec;
+            if (isHw)
+            {
+                codec = ffmpeg.avcodec_find_encoder_by_name(hwName);
+                if (codec == null)
+                {
+                    throw new InvalidOperationException("包内未注册");
+                }
+            }
+            else
+            {
+                codec = ffmpeg.avcodec_find_encoder(AVCodecID.AV_CODEC_ID_H264);
+                if (codec == null)
+                {
+                    throw new InvalidOperationException("无 libx264");
+                }
+            }
+
+            codecCtx = ffmpeg.avcodec_alloc_context3(codec);
+            codecCtx->width = w;
+            codecCtx->height = h;
+            codecCtx->time_base = new AVRational { num = 1, den = fps };
+            codecCtx->framerate = new AVRational { num = fps, den = 1 };
+            codecCtx->pix_fmt = outFmt;
+            codecCtx->gop_size = 12;
+            codecCtx->max_b_frames = 2;
+            hr = ffmpeg.avcodec_open2(codecCtx, codec, null);
+            if (hr < 0)
+            {
+                throw new InvalidOperationException($"打开失败({hr})");
+            }
+
+            // ★ 修复点 1：硬件编码器可能改写 time_base，open 后强制恢复 1/fps。
+            codecCtx->time_base = new AVRational { num = 1, den = fps };
+
+            var stream = ffmpeg.avformat_new_stream(fmtCtx, codec);
+            if (stream == null)
+            {
+                throw new InvalidOperationException("建流失败");
+            }
+
+            stream->time_base = new AVRational { num = 1, den = fps };
+            stream->avg_frame_rate = new AVRational { num = fps, den = 1 };
+            stream->r_frame_rate = new AVRational { num = fps, den = 1 };
+            hr = ffmpeg.avcodec_parameters_from_context(stream->codecpar, codecCtx);
+            if (hr < 0)
+            {
+                throw new InvalidOperationException($"参数失败({hr})");
+            }
+
+            hr = ffmpeg.avio_open(&fmtCtx->pb, path, ffmpeg.AVIO_FLAG_WRITE);
+            if (hr < 0)
+            {
+                throw new InvalidOperationException($"打开输出失败({hr})");
+            }
+
+            hr = ffmpeg.avformat_write_header(fmtCtx, null);
+            if (hr < 0)
+            {
+                throw new InvalidOperationException($"写头失败({hr})");
+            }
+
+            var tbStream = stream->time_base;
+
+            sws = ffmpeg.sws_getContext(w, h, AVPixelFormat.AV_PIX_FMT_BGRA, w, h, outFmt,
+                (int)SwsFlags.SWS_BILINEAR, null, null, null);
+            frame = ffmpeg.av_frame_alloc();
+            frame->format = (int)outFmt;
+            frame->width = w;
+            frame->height = h;
+            ffmpeg.av_frame_get_buffer(frame, 32);
+            pkt = ffmpeg.av_packet_alloc();
+
+            // 生成移动条纹测试画面（B 通道条纹移动，肉眼可查红蓝互换）。
+            var bgra = new byte[w * h * 4];
+            for (var i = 0; i < frames; i++)
+            {
+                for (var y = 0; y < h; y++)
+                {
+                    for (var x = 0; x < w; x++)
+                    {
+                        var o = (y * w + x) * 4;
+                        bgra[o] = (byte)((x + i * 8) % 256);
+                        bgra[o + 1] = (byte)(y % 256);
+                        bgra[o + 2] = (byte)((x * 2 + i * 4) % 256);
+                        bgra[o + 3] = 255;
+                    }
+                }
+
+                fixed (byte* p = bgra)
+                {
+                    var srcData = new byte*[] { p };
+                    var srcLinesize = new int[] { w * 4 };
+                    ffmpeg.sws_scale(sws, srcData, srcLinesize, 0, h, frame->data, frame->linesize);
+                }
+
+                frame->pts = i;
+                var sr = ffmpeg.avcodec_send_frame(codecCtx, frame);
+                if (sr < 0)
+                {
+                    throw new InvalidOperationException($"送帧失败({sr})");
+                }
+
+                DrainTestPackets(codecCtx, pkt, fmtCtx, tbStream);
+            }
+
+            ffmpeg.avcodec_send_frame(codecCtx, null);
+            DrainTestPackets(codecCtx, pkt, fmtCtx, tbStream);
+            ffmpeg.av_write_trailer(fmtCtx);
+        }
+        finally
+        {
+            if (pkt != null)
+            {
+                ffmpeg.av_packet_free(&pkt);
+            }
+
+            if (frame != null)
+            {
+                ffmpeg.av_frame_free(&frame);
+            }
+
+            if (sws != null)
+            {
+                ffmpeg.sws_freeContext(sws);
+            }
+
+            if (codecCtx != null)
+            {
+                ffmpeg.avcodec_free_context(&codecCtx);
+            }
+
+            if (fmtCtx != null)
+            {
+                ffmpeg.avformat_free_context(fmtCtx);
+                fmtCtx = null;
+            }
+        }
+    }
+
+    /// <summary>取包并按修复后的时间基换算写入（★ 修复点 2）。</summary>
+    private static unsafe void DrainTestPackets(AVCodecContext* codecCtx, AVPacket* pkt,
+        AVFormatContext* fmtCtx, AVRational tbStream)
+    {
+        while (true)
+        {
+            var rr = ffmpeg.avcodec_receive_packet(codecCtx, pkt);
+            if (rr == ffmpeg.AVERROR(ffmpeg.EAGAIN) || rr == ffmpeg.AVERROR_EOF)
+            {
+                break;
+            }
+
+            if (rr < 0)
+            {
+                throw new InvalidOperationException($"取包失败({rr})");
+            }
+
+            ffmpeg.av_packet_rescale_ts(pkt, codecCtx->time_base, tbStream);
+            pkt->time_base = tbStream;
+            ffmpeg.av_interleaved_write_frame(fmtCtx, pkt);
+            ffmpeg.av_packet_unref(pkt);
+        }
+    }
+
+    /// <summary>回读文件并打印流元数据（fps/time_base/帧数/时长）。</summary>
+    private static unsafe void ProbeFile(string path)
+    {
+        AVFormatContext* fmtCtx = null;
+        var hr = ffmpeg.avformat_open_input(&fmtCtx, path, null, null);
+        if (hr < 0)
+        {
+            Console.WriteLine($"  回读失败({hr})");
+            return;
+        }
+
+        ffmpeg.avformat_find_stream_info(fmtCtx, null);
+        for (var i = 0; i < fmtCtx->nb_streams; i++)
+        {
+            var st = fmtCtx->streams[i];
+            var afr = st->avg_frame_rate;
+            var rfr = st->r_frame_rate;
+            var tb = st->time_base;
+            Console.WriteLine(
+                $"  结果: time_base={tb.num}/{tb.den} avg_fps={(afr.den > 0 ? (double)afr.num / afr.den : 0):0.##} " +
+                $"r_fps={(rfr.den > 0 ? (double)rfr.num / rfr.den : 0):0.##} 帧数={st->nb_frames} " +
+                $"时长={st->duration * tb.num / (double)Math.Max(1, tb.den):0.###}s");
+        }
+
+        ffmpeg.avformat_free_context(fmtCtx);
     }
 }

@@ -50,6 +50,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
     /// _effectiveCornerRadius 快照会过期，覆盖层圆角与主界面不一致就会从四角溢出。
     /// </summary>
     private double? _islandCornerRadiusObserved;
+    /// <summary>覆盖层边界诊断日志指纹（变化才记录）。</summary>
+    private string? _lastBoundsFingerprint;
     private Type? _hostSettingsType;
     private PropertyInfo? _hostSettingsProperty;
     /// <summary>宿主全局「启用提醒特效」开关属性（缓存，避免重复反射）。</summary>
@@ -2180,6 +2182,17 @@ internal sealed class MainWindowStyleInjector : IDisposable
             return;
         }
 
+        // 诊断（状态变化才记录）：首个背景 Border 的圆角/类名 + 并集矩形，用于排查
+        // 「覆盖层为直角」时实际读到的圆角值。
+        var fingerprint = $"{borders.Length}|{corner.TopLeft:0.#}|{minX:0.#},{minY:0.#},{maxX - minX:0.#}x{maxY - minY:0.#}|{host.Bounds.Width:0.#}x{host.Bounds.Height:0.#}";
+        if (_lastBoundsFingerprint != fingerprint)
+        {
+            _lastBoundsFingerprint = fingerprint;
+            var first = borders[0];
+            DebugLog($"ApplyOverlayHostBounds: n={borders.Length} first=[name={first.Name} classes={string.Join(",", first.Classes)} corner={first.CornerRadius.TopLeft:0.#} bounds={first.Bounds.Width:0.#}x{first.Bounds.Height:0.#}] " +
+                     $"union=({minX:0.#},{minY:0.#}) {maxX - minX:0.#}x{maxY - minY:0.#} parent={parent.GetType().Name} host={host.Bounds.Width:0.#}x{host.Bounds.Height:0.#}@{host.Margin.Left:0.#},{host.Margin.Top:0.#}");
+        }
+
         host.Width = maxX - minX;
         host.Height = maxY - minY;
         host.HorizontalAlignment = HorizontalAlignment.Left;
@@ -2195,9 +2208,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         // 圆角优先取主界面 BackgroundBorder 的实时值（设置页改圆角 / 主题变化后
-        // 50ms 内跟随），读不到时退回插件生效圆角；避免覆盖层圆角与主界面
-        // 实际圆角不一致导致「注入内容没被圆角裁切、从四角溢出」。
-        var radius = _islandCornerRadiusObserved ?? _effectiveCornerRadius;
+        // 50ms 内跟随）；读到的值非正数（样式未应用/读取异常）时回退插件生效圆角，
+        // 避免覆盖层圆角错误地变直角导致「注入内容没被圆角裁切、从四角溢出」。
+        var radius = _islandCornerRadiusObserved is > 0 ? _islandCornerRadiusObserved.Value : _effectiveCornerRadius;
         if (!IsClose(host.CornerRadius.TopLeft, radius))
         {
             host.CornerRadius = new CornerRadius(radius);
@@ -4932,13 +4945,11 @@ internal sealed class MainWindowStyleInjector : IDisposable
                                  x.Name == HostContract.OverlayMask ||
                                  IsSplitComponentBackground(x)))
         {
-            var originalCornerRadius = borderControl.CornerRadius;
             var originalBackground = borderControl.Background;
             var originalBorderBrush = borderControl.BorderBrush;
             var originalBorderThickness = borderControl.BorderThickness;
             _decorationRestorers.Add(() =>
             {
-                borderControl.CornerRadius = originalCornerRadius;
                 borderControl.Background = originalBackground;
                 borderControl.BorderBrush = originalBorderBrush;
                 borderControl.BorderThickness = originalBorderThickness;
@@ -4947,6 +4958,13 @@ internal sealed class MainWindowStyleInjector : IDisposable
             // 圆角不再直接修改宿主 Border（会与宿主 Settings.RadiusX 驱动的内容 Clip
             // 裁切不一致）。统一由 ApplyShapeToHost() 写入宿主原生 RadiusX/RadiusY，
             // 让背景样式、内容裁切与遮罩全部同步到同一圆角。
+            //
+            // ★ 修复「主界面/注入内容变直角」：旧还原逻辑把 CornerRadius 也按本地值
+            // 写回——首次还原时捕获到的是样式绑定尚未生效时的瞬态 0，写入本地值后
+            // （本地值优先级高于样式 Setter）宿主 line-background 样式的圆角被永久
+            // 覆盖，此后每次装饰重应用都读到 0、还原 0，主界面与覆盖层全部退化为直角。
+            // 插件不接管 CornerRadius，这里清除本地值让样式绑定（RadiusX 驱动）生效。
+            borderControl.ClearValue(Border.CornerRadiusProperty);
 
             // 分体模式（IsIslandSeperated）下宿主隐藏 Border#BackgroundBorder，
             // 真实背景由每行根组件模板的 Border.line-background 提供；两者都按背景装饰处理。

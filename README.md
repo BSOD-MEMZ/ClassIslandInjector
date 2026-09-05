@@ -20,7 +20,9 @@
 ![截图](./Assets/Readme/shangyangmode.png)
 
 - **动态视频背景**：放一段本地视频当主界面背景
-
+![截图](./Assets/Readme/video.gif)
+> [!IMPORTANT]
+> **不必担心占用问题！**最新版 ClassIsland Injector 仅3MB左右，如需视频播放功能，只需额外下载安装 7MB 左右的 FFmpeg 解码包，如需剪视频也只要五十来兆，且随时可删除。
 ### 跟着音乐变颜色
 - 播放音乐时，主界面的背景、边框、阴影会自动变为专辑封面的配色
 - **动态主题色**：把当前专辑的主色调应用到 ClassIsland 全局主题强调色（专辑封面显示来自 [MediaIsland](https://github.com/bywhite0/MediaIsland)，取色可以独立运行）
@@ -54,12 +56,14 @@
 - 在 ClassIsland 中使用像 Photoshop 一样的多图层编辑器！
 ![截图](./Assets/Readme/photoshop.png)
 
-### 视频编辑器（PR 风格）
+### 视频编辑器
 - 素材库 + 多轨时间轴：多段视频按时间拼接、裁剪入出点，把片段拖到轨道边界即可新建轨道
 - 渲染成 mp4 一键设为主界面动态背景
+![截图](./Assets/Readme/PR.png)
 
 ### 一键切换方案
-- 把自己调好的整套效果保存成预设
+- 把自己调好的整套效果保存成预设，安装别人制作的预设
+![截图](./Assets/Readme/automation.png)
 - 配合 ClassIsland 的**自动化**，还能按时间、课程等条件自动切换方案
 ![截图](./Assets/Readme/automation.png)
 

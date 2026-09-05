@@ -6894,7 +6894,7 @@ internal sealed class VideoEditorWindow : MyWindow
             return;
         }
 
-        // 2. 分辨率 / 画质选项（默认 270p）。
+        // 2. 分辨率 / 画质选项（默认横向 1280）。
         var options = await AskRenderOptionsAsync();
         if (options == null)
         {
@@ -7210,13 +7210,22 @@ internal sealed class VideoEditorWindow : MyWindow
         _trayItemRegistered = false;
     }
 
-    /// <summary>渲染选项对话框：分辨率（默认 270p）+ 画质（CRF）+ 硬件加速。返回 null 表示取消。</summary>
+    /// <summary>渲染选项对话框：横向分辨率（默认 1280）+ 画质（CRF）+ 硬件加速。返回 null 表示取消。</summary>
     private async Task<(int outW, int outH, int crf, bool hw)?> AskRenderOptionsAsync()
     {
-        var resolutions = new[] { "270p", "360p", "480p", "720p", "原尺寸" };
+        // 横向分辨率预设：主界面是超宽条（比例约 14:1），旧版按竖向分辨率（270p 等）
+        // 换算会把宽度爆到 2K+（270p → 3888×270）。按横向算，1280 对课表展示足够。
+        var resolutions = new[] { "640", "800", "1280", "1600", "1920", "原尺寸" };
         var qualities = new[] { "高", "中", "低" };
-        var resCombo = new ComboBox { ItemsSource = resolutions, SelectedIndex = 0 };
+        var resCombo = new ComboBox { ItemsSource = resolutions, SelectedIndex = 2 };
         var qualityCombo = new ComboBox { ItemsSource = qualities, SelectedIndex = 1 };
+        var resHint = new TextBlock { FontSize = 11, Opacity = 0.65 };
+        resCombo.SelectionChanged += (_, _) =>
+        {
+            var aspect = _project.OutputWidth / Math.Max(1.0, _project.OutputHeight);
+            var (w, h) = ComputeRenderSize(resCombo.SelectedItem?.ToString() ?? "1280", aspect);
+            resHint.Text = $"输出 {w}×{h}（主界面比例 {aspect:0.##}:1）";
+        };
         var hwToggle = new ToggleSwitch
         {
             IsChecked = InjectorRuntime.Settings.RenderHardwareAccelerated,
@@ -7231,8 +7240,9 @@ internal sealed class VideoEditorWindow : MyWindow
                 Spacing = 10,
                 Children =
                 {
-                    new TextBlock { Text = "分辨率：" },
+                    new TextBlock { Text = "横向分辨率：" },
                     resCombo,
+                    resHint,
                     new TextBlock { Text = "画质：" },
                     qualityCombo,
                     hwToggle,
@@ -7249,6 +7259,7 @@ internal sealed class VideoEditorWindow : MyWindow
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Primary
         };
+        resCombo.SelectedIndex = 2; // 默认横向 1280（触发尺寸提示）
 
         var result = await ShowDialogAsync(dialog);
         if (result != ContentDialogResult.Primary)
@@ -7262,17 +7273,8 @@ internal sealed class VideoEditorWindow : MyWindow
             InjectorRuntime.Settings.RenderHardwareAccelerated = hwToggle.IsChecked == true;
         }
 
-        var targetH = (resCombo.SelectedItem?.ToString()) switch
-        {
-            "360p" => 360,
-            "480p" => 480,
-            "720p" => 720,
-            "原尺寸" => (int)_project.OutputHeight,
-            _ => 270
-        };
-        var aspect = _project.OutputWidth / Math.Max(1.0, _project.OutputHeight);
-        var outH = Math.Max(2, targetH) & ~1;
-        var outW = Math.Max(2, (int)Math.Round(outH * aspect / 2.0) * 2);
+        var aspect2 = _project.OutputWidth / Math.Max(1.0, _project.OutputHeight);
+        var (outW, outH) = ComputeRenderSize(resCombo.SelectedItem?.ToString() ?? "1280", aspect2);
         var crf = (qualityCombo.SelectedItem?.ToString()) switch
         {
             "高" => 20,
@@ -7280,6 +7282,22 @@ internal sealed class VideoEditorWindow : MyWindow
             _ => 24
         };
         return (outW, outH, crf, hwToggle.IsChecked == true);
+    }
+
+    /// <summary>按横向分辨率预设计算渲染尺寸（高度按主界面宽高比换算，偶数对齐）。</summary>
+    private (int w, int h) ComputeRenderSize(string preset, double aspect)
+    {
+        if (preset == "原尺寸")
+        {
+            var w = Math.Max(2, (int)Math.Round(_project.OutputWidth / 2.0) * 2);
+            var h = Math.Max(2, (int)Math.Round(_project.OutputHeight / 2.0) * 2);
+            return (w, h);
+        }
+
+        var outW = int.TryParse(preset, out var width) ? Math.Max(2, width) : 1280;
+        // 高度 = 宽度 ÷ 宽高比，偶数对齐（H.264 yuv420 要求）。
+        var outH = Math.Max(2, (int)Math.Round(outW / Math.Max(0.05, aspect) / 2.0) * 2);
+        return (outW & ~1, outH);
     }
 
     /// <summary>封面卡右键菜单（闭包固定素材路径）。</summary>

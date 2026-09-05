@@ -16,6 +16,9 @@ internal sealed unsafe class FFmpegVideoEncoder : IDisposable
     private SwsContext* _sws;
     private AVFrame* _frame;
     private AVPacket* _pkt;
+    private AVStream* _stream;
+    /// <summary>写头后复用器最终确定的流时间基（pkt 时间戳换算目标）。</summary>
+    private AVRational _tbStream;
     private readonly int _width;
     private readonly int _height;
     private readonly string? _hwEncoder;
@@ -109,6 +112,11 @@ internal sealed unsafe class FFmpegVideoEncoder : IDisposable
             throw new InvalidOperationException($"打开编码器失败（{hr}）");
         }
 
+        // ★ 硬件编码器（QSV 等）可能在 open 时改写 time_base（实测 QSV 改为 1/12288 之类），
+        // 复用器随后采纳它 → mp4 帧率元数据异常（播放器显示 12300fps、时长缩水）。
+        // open 后强制恢复 1/fps，帧时间戳按真实帧率推进。
+        _codecCtx->time_base = new AVRational { num = 1, den = fps };
+
         var stream = ffmpeg.avformat_new_stream(_fmtCtx, codec);
         if (stream == null)
         {
@@ -124,6 +132,9 @@ internal sealed unsafe class FFmpegVideoEncoder : IDisposable
         }
 
         stream->time_base = new AVRational { num = 1, den = fps };
+        // 显式声明帧率元数据（部分播放器/探测工具直接按它显示）。
+        stream->avg_frame_rate = new AVRational { num = fps, den = 1 };
+        stream->r_frame_rate = new AVRational { num = fps, den = 1 };
 
         hr = ffmpeg.avio_open(&_fmtCtx->pb, path, ffmpeg.AVIO_FLAG_WRITE);
         if (hr < 0)
@@ -138,6 +149,10 @@ internal sealed unsafe class FFmpegVideoEncoder : IDisposable
             Dispose();
             throw new InvalidOperationException($"写入文件头失败（{hr}）");
         }
+
+        // 复用器可能调整流时间基；记录最终值，pkt 时间戳统一换算到它。
+        _stream = stream;
+        _tbStream = stream->time_base;
 
         _sws = ffmpeg.sws_getContext(_width, _height, AVPixelFormat.AV_PIX_FMT_BGRA,
             _width, _height, _swsOutFormat, (int)SwsFlags.SWS_BILINEAR, null, null, null);
@@ -196,6 +211,11 @@ internal sealed unsafe class FFmpegVideoEncoder : IDisposable
                 throw new InvalidOperationException($"取回编码数据失败（{rr}）");
             }
 
+            // 编码器输出的时间戳在其自身时间基上；显式换算到流时间基，并把
+            // pkt.time_base 同步为流时间基（新版 muxer 据此跳过二次换算），
+            // 修复硬件编码路径上 time_base 不一致导致的 mp4 帧率/时长异常。
+            ffmpeg.av_packet_rescale_ts(_pkt, _codecCtx->time_base, _tbStream);
+            _pkt->time_base = _tbStream;
             ffmpeg.av_interleaved_write_frame(_fmtCtx, _pkt);
             ffmpeg.av_packet_unref(_pkt);
         }

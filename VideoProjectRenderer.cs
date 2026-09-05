@@ -436,9 +436,11 @@ internal sealed class VideoProjectRenderer
                 var px = (int)u;
                 var py = (int)v;
                 var si = (py * bw + px) * 4;
-                var sr = src[si];
+                // 帧缓冲为 BGRA（B,G,R,A）：变量名对应实际通道，写入时不能互换。
+                // 旧版误按 RGBA 读取（sr=src[si] 实为蓝）导致渲染输出红蓝互换（看起来像反色）。
+                var sb = src[si];
                 var sg = src[si + 1];
-                var sb = src[si + 2];
+                var sr = src[si + 2];
                 var oi = (row + x) * 4;
 
                 // 预乘 over 合成：a = 源像素 alpha × 片段不透明度（视频帧 alpha=255，退化为原逻辑）。
