@@ -84,6 +84,58 @@ internal static class OverlayFrameGenerator
         }
     }
 
+    /// <summary>字体族解析缓存（System.Drawing 解析代价高且回退结果确定，按名字缓存）。</summary>
+    private static readonly Dictionary<string, FontFamily> FontFamilyCache = new();
+    private static readonly object FontFamilyLock = new();
+
+    /// <summary>
+    /// 安全解析 GDI+ 字体族：System.Drawing 按系统注册表解析，Avalonia 字体列表里
+    /// 的部分字体（用户级安装 / 本地化名不一致等）可能解析失败抛
+    /// ArgumentException（实测「阿里妈妈数黑体」），逐级回退：原字体 → 微软雅黑 →
+    /// Segoe UI → 通用无衬线，保证渲染/预览不崩。
+    /// </summary>
+    private static FontFamily ResolveFontFamily(string? name)
+    {
+        var key = name ?? "";
+        lock (FontFamilyLock)
+        {
+            if (FontFamilyCache.TryGetValue(key, out var cached))
+            {
+                return cached;
+            }
+
+            FontFamily resolved;
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                resolved = SafeFamily("Microsoft YaHei") ?? FontFamily.GenericSansSerif;
+            }
+            else
+            {
+                resolved = SafeFamily(name)
+                            ?? SafeFamily("Microsoft YaHei")
+                            ?? SafeFamily("Segoe UI")
+                            ?? FontFamily.GenericSansSerif;
+            }
+
+            FontFamilyCache[key] = resolved;
+            return resolved;
+        }
+    }
+
+    /// <summary>探测字体族是否可被 GDI+ 解析（Font 构造失败即视为不可用）。</summary>
+    private static FontFamily? SafeFamily(string name)
+    {
+        try
+        {
+            using var probe = new Font(name, 10f);
+            return new FontFamily(name);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     /// <summary>生成覆盖层帧（BGRA + 预乘 alpha）。Text/Shape/Image 返回帧，其它返回 null。</summary>
     public static VideoFrame? Render(VideoClip clip, int w, int h)
     {
@@ -150,7 +202,8 @@ internal static class OverlayFrameGenerator
                 // 字号 = 输出高 × 字号系数（默认 0.32，保持旧行为）；字体族/加粗按片段属性。
                 var sizeFactor = clip.TextFontSize > 0 ? (float)clip.TextFontSize : 0.32f;
                 var fontSize = Math.Max(8f, h * sizeFactor);
-                var familyName = string.IsNullOrWhiteSpace(clip.TextFontFamily) ? "Microsoft YaHei" : clip.TextFontFamily;
+                // 字体族安全解析：缺失/不可解析时回退默认字体（否则 GDI+ 抛 ArgumentException）。
+                var family = ResolveFontFamily(clip.TextFontFamily);
                 var fontStyle = clip.TextBold ? FontStyle.Bold : FontStyle.Regular;
                 var rect = new RectangleF(0, 0, w, h);
                 using var brush = new SolidBrush(color);
@@ -164,7 +217,7 @@ internal static class OverlayFrameGenerator
                 {
                     var penWidth = (float)Math.Max(1, clip.StrokeWidth * h);
                     using var path = new GraphicsPath();
-                    path.AddString(clip.Text, new FontFamily(familyName),
+                    path.AddString(clip.Text, family,
                         (int)fontStyle, fontSize, rect, format);
                     using var pen = new Pen(ParseColor(clip.StrokeColor), penWidth) { LineJoin = LineJoin.Round };
                     g.DrawPath(pen, path);
@@ -172,7 +225,7 @@ internal static class OverlayFrameGenerator
                 }
                 else
                 {
-                    using var font = new Font(familyName, fontSize, fontStyle, GraphicsUnit.Pixel);
+                    using var font = new Font(family, fontSize, fontStyle, GraphicsUnit.Pixel);
                     g.DrawString(clip.Text, font, brush, rect, format);
                 }
             }

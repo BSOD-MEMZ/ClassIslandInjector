@@ -4256,7 +4256,8 @@ internal sealed class VideoEditorWindow : MyWindow
         var block = new Border
         {
             Width = Math.Max(30, clip.Duration * _pxPerSecond),
-            Height = _laneHeight - 12,
+            // 高度跟随所在轨道的实际高度（每轨可拖拽调高），上下各留 6px 边距。
+            Height = Math.Max(20, LaneHeightOf(clip.Track) - 12),
             CornerRadius = new CornerRadius(6),
             Background = isSelected
                 ? ThemePalette.AccentBrushWithAlpha(170)
@@ -4831,6 +4832,15 @@ internal sealed class VideoEditorWindow : MyWindow
         if (_timelineContent != null)
         {
             _timelineContent.Height = lanesHeight;
+        }
+
+        // 该轨片段块高度实时跟随轨道高度（拖动中不重建时间轴，避免打断指针捕获）。
+        foreach (var clip in _project.Clips)
+        {
+            if (clip.Track == track && _blockByClip.TryGetValue(clip, out var block))
+            {
+                block.Height = Math.Max(20, h - 12);
+            }
         }
     }
 
@@ -6902,11 +6912,11 @@ internal sealed class VideoEditorWindow : MyWindow
         }
 
         // 3. 保存工程快照并弹出模态渲染对话框（进度条 + 剩余时间 + 取消 / 后台渲染）。
-        var (outW, outH, crf, hw) = options.Value;
+        var (outW, outH, crf, hw, fps) = options.Value;
         VideoProjectStore.Save(_project, VideoProjectStore.DefaultPath);
         _statusText.Text = "正在渲染…";
         var cts = new CancellationTokenSource();
-        var outcome = await ShowRenderProgressDialogAsync(outputPath, outW, outH, crf, hw, cts);
+        var outcome = await ShowRenderProgressDialogAsync(outputPath, outW, outH, crf, hw, fps, cts);
         switch (outcome)
         {
             case RenderOutcome.Succeeded:
@@ -6931,7 +6941,7 @@ internal sealed class VideoEditorWindow : MyWindow
     /// 「取消」（删半成品）与「后台渲染」（关闭编辑器后台跑，完成后 Toast 通知）。
     /// </summary>
     private async Task<RenderOutcome> ShowRenderProgressDialogAsync(
-        string outputPath, int outW, int outH, int crf, bool hw, CancellationTokenSource cts)
+        string outputPath, int outW, int outH, int crf, bool hw, int fps, CancellationTokenSource cts)
     {
         var bar = new ProgressBar { Minimum = 0, Maximum = 1, MinHeight = 4 };
         var statusText = new TextBlock
@@ -6979,7 +6989,7 @@ internal sealed class VideoEditorWindow : MyWindow
         // 后台渲染任务（进度回调跨线程 → Progress 封送到 UI 线程）。
         var renderTask = Task.Run(() =>
         {
-            new VideoProjectRenderer(_project, outputPath, outW, outH, crf, _targetFps,
+            new VideoProjectRenderer(_project, outputPath, outW, outH, crf, fps,
                 (percent, msg) => progress.Report((percent, msg)),
                 crf <= 20 ? "medium" : crf <= 24 ? "faster" : "veryfast",
                 hw ? "auto" : null,
@@ -7210,14 +7220,16 @@ internal sealed class VideoEditorWindow : MyWindow
         _trayItemRegistered = false;
     }
 
-    /// <summary>渲染选项对话框：横向分辨率（默认 1280）+ 画质（CRF）+ 硬件加速。返回 null 表示取消。</summary>
-    private async Task<(int outW, int outH, int crf, bool hw)?> AskRenderOptionsAsync()
+    /// <summary>渲染选项对话框：横向分辨率（默认 1280）+ 帧率 + 画质（CRF）+ 硬件加速。返回 null 表示取消。</summary>
+    private async Task<(int outW, int outH, int crf, bool hw, int fps)?> AskRenderOptionsAsync()
     {
         // 横向分辨率预设：主界面是超宽条（比例约 14:1），旧版按竖向分辨率（270p 等）
         // 换算会把宽度爆到 2K+（270p → 3888×270）。按横向算，1280 对课表展示足够。
         var resolutions = new[] { "640", "800", "1280", "1600", "1920", "原尺寸" };
+        var frameRates = new[] { "12", "15", "24", "30", "60" };
         var qualities = new[] { "高", "中", "低" };
         var resCombo = new ComboBox { ItemsSource = resolutions, SelectedIndex = 2 };
+        var fpsCombo = new ComboBox { ItemsSource = frameRates, SelectedIndex = 2 };
         var qualityCombo = new ComboBox { ItemsSource = qualities, SelectedIndex = 1 };
         var resHint = new TextBlock { FontSize = 11, Opacity = 0.65 };
         resCombo.SelectionChanged += (_, _) =>
@@ -7243,6 +7255,8 @@ internal sealed class VideoEditorWindow : MyWindow
                     new TextBlock { Text = "横向分辨率：" },
                     resCombo,
                     resHint,
+                    new TextBlock { Text = "帧率：" },
+                    fpsCombo,
                     new TextBlock { Text = "画质：" },
                     qualityCombo,
                     hwToggle,
@@ -7275,13 +7289,14 @@ internal sealed class VideoEditorWindow : MyWindow
 
         var aspect2 = _project.OutputWidth / Math.Max(1.0, _project.OutputHeight);
         var (outW, outH) = ComputeRenderSize(resCombo.SelectedItem?.ToString() ?? "1280", aspect2);
+        var fps = int.TryParse(fpsCombo.SelectedItem?.ToString(), out var parsedFps) ? Math.Clamp(parsedFps, 5, 120) : 24;
         var crf = (qualityCombo.SelectedItem?.ToString()) switch
         {
             "高" => 20,
             "低" => 28,
             _ => 24
         };
-        return (outW, outH, crf, hwToggle.IsChecked == true);
+        return (outW, outH, crf, hwToggle.IsChecked == true, fps);
     }
 
     /// <summary>按横向分辨率预设计算渲染尺寸（高度按主界面宽高比换算，偶数对齐）。</summary>
