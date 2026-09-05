@@ -4218,8 +4218,7 @@ internal sealed class VideoEditorWindow : MyWindow
                 {
                     Text = ClipDisplayName(clip) + (isLocked ? " \uE72E" : ""),
                     FontSize = 11,
-                    TextTrimming = TextTrimming.CharacterEllipsis,
-                    MaxWidth = 150
+                    TextTrimming = TextTrimming.CharacterEllipsis
                 },
                 durationText
             }
@@ -4704,7 +4703,19 @@ internal sealed class VideoEditorWindow : MyWindow
     /// </summary>
     private (double InLimit, double OutLimit) TrimBounds(VideoClip clip)
     {
-        var maxOut = _assetDurations.TryGetValue(clip.SourcePath, out var d) && d > 0 ? d : double.MaxValue;
+        // 素材媒体时长：_assetDurations 只在拖入/添加时探测，重开编辑器（工程从文件加载）
+        // 或首次探测失败时为空 → 旧版回退 double.MaxValue，右头可无限延伸到素材末尾之外。
+        // 这里对视频片段按需探测一次（带缓存；文本/形状/图片覆盖层无固定时长不限制）。
+        var maxOut = double.MaxValue;
+        if (clip.Kind == "Video" && !string.IsNullOrWhiteSpace(clip.SourcePath))
+        {
+            var d = GetAssetDuration(clip.SourcePath);
+            if (d > 0)
+            {
+                maxOut = d;
+            }
+        }
+
         var others = _project.Clips.Where(c => c.Track == clip.Track && !ReferenceEquals(c, clip)).ToList();
         var leftBound = clip.StartTime + clip.InPoint;  // 片段轨道起点
         var prevEnd = others.Where(c => c.StartTime + c.Duration <= leftBound + 0.01)

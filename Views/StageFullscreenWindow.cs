@@ -250,7 +250,8 @@ internal sealed class StageFullscreenWindow : Window
 
     private void HidePanel()
     {
-        if (_playing)
+        // 拖动进度条途中不隐藏（隐藏会把 IsHitTestVisible 关掉、拖拽中断）。
+        if (_playing && !_scrubbing)
         {
             _panel.Opacity = 0;
             _panel.IsHitTestVisible = false;
@@ -330,9 +331,15 @@ internal sealed class StageFullscreenWindow : Window
         _duration = Math.Max(0, duration);
         _playIcon.Glyph = playing ? GlyphPause : GlyphPlay;
         _slider.Maximum = _duration > 0 ? _duration : 1;
-        _updatingFromEditor = true;
-        _slider.Value = Math.Clamp(time, 0, Math.Max(0.001, _duration));
-        _updatingFromEditor = false;
+        if (!_scrubbing)
+        {
+            // 用户拖动进度条时冻结程序回填：播放中编辑器每拍推送播放头，
+            // 若覆盖滑块值就会拖一下弹回去（一抽一抽）。
+            _updatingFromEditor = true;
+            _slider.Value = Math.Clamp(time, 0, Math.Max(0.001, _duration));
+            _updatingFromEditor = false;
+        }
+
         _timeText.Text = $"{FormatClock(time)} / {FormatClock(_duration)}";
         if (!playing)
         {
