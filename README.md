@@ -63,7 +63,7 @@
 
 ### 一键切换方案
 - 把自己调好的整套效果保存成预设，安装别人制作的预设
-![截图](./Assets/Readme/automation.png)
+![截图](./Assets/Readme/preset.png)
 - 配合 ClassIsland 的**自动化**，还能按时间、课程等条件自动切换方案
 ![截图](./Assets/Readme/automation.png)
 

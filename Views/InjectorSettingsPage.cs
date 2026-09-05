@@ -987,7 +987,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(_smtcTutorialInfoBar);
 
         AddSection(panel, "\uF42F", "用户预设");
-        // 各预设操作图标各不相同，避免“用户预设”大类里图标重复：保存 / 套用 / 导出导入 / 文件关联。
+        // 各预设操作图标各不相同，避免“用户预设”大类里图标重复：商店 / 保存 / 套用 / 导出导入 / 文件关联。
+        panel.Children.Add(Setting("\uEF87", "预设商店", "联机浏览社区预设：首页精选轮播、热门排行、搜索与排序，点「获取」即可下载安装（安装前会展示作者等元数据供确认）。", PresetStoreFooter()));
         panel.Children.Add(Setting("\uEEB5", "保存当前为预设", "把插件当前全部设置项保存为一个命名预设（同名覆盖）", PresetSaveFooter()));
         panel.Children.Add(Setting("\uE104", "套用 / 删除预设", "套用会把全部设置项替换为该预设保存时的状态。", PresetManageFooter()));
         panel.Children.Add(Setting("\uE0E4", "导出 / 导入预设", "把预设（含底图等静态资源与作者信息）导出为 .cizip 文件分享给别人，或从别人分享的 .cizip 导入预设。", PresetExchangeFooter()));
@@ -2788,6 +2789,21 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
         return true;
     }
+
+    /// <summary>打开预设商店窗口（单实例；1:1 仿微软商店布局，联机下载预设）。</summary>
+    private void OpenPresetStore()
+    {
+        if (PresetStoreWindow.Current is { } existing)
+        {
+            existing.Activate();
+            return;
+        }
+
+        var window = new PresetStoreWindow();
+        window.Show();
+    }
+
+    private Control PresetStoreFooter() => Button("打开商店", OpenPresetStore);
 
     private Control PresetSaveFooter() => new StackPanel
     {

@@ -21,8 +21,9 @@
 | `SmtcWatcher.cs`                                                                                | 事件驱动的 SMTC 会话监听器（WinRT），推送取色结果/缩略图/播放状态                         |
 | `SmtcAlbumColorPicker.cs`                                                                       | 纯取色工具（MaterialColorUtilities），**不含 WinRT**；含诊断日志                    |
 | `VideoFrameSource.cs` / `FFmpegVideoDecoder.cs` / `FFmpegRuntime.cs`                         | 视频背景解码（**纯 FFmpeg，无 WMF**）：后台解码线程、FFmpeg 解码器、库检测 + 联机下载 |
-| `VideoProject.cs` / `VideoProjectPlayer.cs` / `Views/VideoEditorWindow.cs`               | 视频工程（多片段拼接/变换）与 PR 风格视频编辑器（素材库/舞台/属性/时间轴）            |
-| `Views/InjectorSettingsPage.cs`                                                                 | 设置页 UI（FluentAvalonia`SettingsExpander`/`InfoBar`/`ContentDialog`）             |
+| `VideoProject.cs` / `VideoProjectPlayer.cs` / `Views/VideoEditorWindow.cs`               | 视频工程（多片段拼接/变换）与 PR 风格视频编辑器（素材库/舞台/属性/时间轴）            || `PresetExchange.cs`                                                                              | 预设交换：把用户预设（含静态资源）导出为 .cizip / 从 .cizip 导入；包内 metadata.json / preview.png 商店展示字段 |
+| `PresetStoreService.cs`                                                                          | 预设商店联机服务：索引抓取（15min 磁盘缓存 + 离线回退）、预览图缓存、.cizip 下载（进度）、已安装记录（installed.json）、版本兼容检查 |
+| `Views/PresetStoreWindow.cs` + `Views/PresetStoreCard.cs`                                        | 预设商店窗口（1:1 仿新版微软商店）：自定义标题栏 + 左窄导航（首页/全部/热门/我的）+ Banner 轮播 + 横向卡行 + 网格浏览 + 详情页 || `Views/InjectorSettingsPage.cs`                                                                 | 设置页 UI（FluentAvalonia`SettingsExpander`/`InfoBar`/`ContentDialog`）             |
 | `Views/IslandVisualEditor.cs`                                                                   | 可视化编辑器窗口 + 直接操作画布                                                           |
 | `CountdownArrowOverlay.cs` / `IslandRippleOverlay.cs` / `SuppressingTopmostEffectPlayer.cs` | 覆盖层效果组件                                                                            |
 | `Defaults/Overrides.axaml`                                                                      | 默认覆盖样式表（首次运行复制到配置目录，用户可热重载编辑）                                |
@@ -148,6 +149,16 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
   - **左侧工具栏**：body 列 `"44,{assetW},6,*,6,{inspW}"`，col0=44px 工具条（选择/文本/矩形/椭圆/效果，`ToolButton` 紧凑图标）；`AddOverlayClip` 加文本/形状覆盖层。**舞台点击放置的处理器必须挂 `_stageBorder`**（不能挂 `_stageHostGrid`——它是子级，空白处点击事件源是 `_stageBorder`，冒泡不含 Grid）。
   - **文本/形状覆盖层**：`VideoClip` 加 `Kind/Text/Color/Shape/Grayscale/FlipX/FlipY`；`OverlayFrameGenerator.cs`（System.Drawing 渲染）；播放器覆盖层返回静态帧、渲染器预乘合成+翻转/灰度、`WriteFrameToImage` 加灰度参数、`ApplyVideoClipTransform` 支持 FlipX/Y。
 - **版本号必须从 `ffmpeg.LibraryVersionMap` 动态读取，勿硬编码**：9.0 是 avcodec-63/avformat-63/avutil-61/swresample-7/swscale-10；7.1 是 avcodec-61/.../swscale-8。升级 FFmpeg.AutoGen 时 `FFmpegVideoDecoder` 的 `ffmpeg.SWS_BILINEAR` 已改为 `(int)SwsFlags.SWS_BILINEAR`（9.x 起是枚举）。
+
+## 预设商店（PresetStore）
+
+- 数据源与格式沿用此前约定：索引 `https://xxtsoft.top/support/injector/presets/index.json`（schemaVersion 1，camelCase、大小写不敏感），条目字段 = `Defaults/preset-index.sample.json`（id/name/author/school/description/pluginVersion/minPluginVersion/createdAt/downloadUrl(.cizip)/previewUrl(.png)/sizeBytes，可选 downloads 供热门排序）。
+- 入口：设置页「用户预设 → 预设商店」；窗口单实例（`PresetStoreWindow.Current`）。窗口用 `MyWindow`（FA `AppWindow`）+ `TitleBar.ExtendsContentIntoTitleBar` + `TitleBarHitTestType.Complex`（宿主 SettingsWindowNew 同款）。
+- **2026-09-05 QFW 对照改造（最终形态，用户要求 1:1 照 QFluentWidgets 源码）**：结构 = QFW `MSFluentWindow`：**标题栏横跨全宽（48px，透明透 Mica，浮顶层）+ 内容整体从 48px 下开始**（`hBoxLayout.setContentsMargins(0,48,0,0)`）。侧边导航 = `Views/StoreNavBar.cs`，照 QFW `NavigationBarPushButton` 绘制规格 1:1 手写（按钮 64x58/圆角5/图标20x20@y13/文字11px@y32/选中=白(浅)或rgba(255,255,255,42)(深)底+左侧指示条(0,16,4,24)圆角2强调色+**filled 实心图标**+强调色文字/hover rgba(0|255,9)/pressed α6/未选中图标 opacity0.6→hover 1）；图标 regular/filled 码点成对（home 59796/59795、apps 57455/57454、fire 59453/59452、library 60034/60033）。标题栏 = QFW CustomTitleBar 规格：左 20px 处图标 18x18+标题、搜索框**固定 400 宽居中**（原生样式+InnerLeftContent）、刷新+caption 150。页面切换 = Avalonia 原生 `TransitioningContentControl`+`PageSlide(240ms)`（页面对象缓存于 `_pages`，切 Content 即过渡）。**注意**：曾试过 FA `NavigationView`（LeftCompact）与"pane 铺满"两种布局，用户均不满意；QFW 真实结构是标题栏全宽+窄栏图标上文字下，`NavigationBar`（微软商店风）≠ `NavigationInterface`（汉堡折叠风）。Banner = 原生 `Carousel`（PageSlide 400ms，每页 Tag=entry，点页空白进详情）；骨架屏 = 宿主 `Shimmer`（`AutoDetectContentLoadState=false`+图片到位手动 `IsContentLoaded=true`，失败也要置 true 停呼吸）；网格 = FA `ItemsRepeater`+`UniformGridLayout`（`MinItemWidth/MinRowSpacing`，`FuncDataTemplate` 建卡，`ItemsSource` 整表赋值）。
+- 下载安装流程与「双击 .cizip」共用：`PresetStoreService.DownloadPresetAsync`（下载到 配置目录\store\downloads，zip 可读性校验）→ `PresetExchange.Import` → `PresetInstallDialog.ShowAsync` 确认 → `InjectorRuntime.ImportUserPreset` → `PresetStoreService.MarkInstalled`（store/installed.json 记录 id/安装名/源 createdAt，用于「已安装」状态与「商店端有更新」检测）。
+- 获取按钮状态机：未安装=强调色「获取」/ 下载中=禁用+进度文本 / 已安装=禁用「已安装」/ 有更新=「更新」/ `minPluginVersion` 不满足=禁用「需要插件 vX.Y.Z」（`Version.TryParse`，任一端解析失败视为兼容）。一个 entry 可对应多个按钮（banner/卡片/详情），由 `_getButtonEntries` 字典统一渲染与进度刷新。
+- 预览图：内存 + 磁盘（store/previews）双缓存，`SemaphoreSlim(6)` 限并发；`Bitmap` 解码在 UI 线程、下载在后台，完成后 `Dispatcher.UIThread.Post` 回填。
+- 纯代码 UI 注意（此窗口踩过的坑）：FA `AppWindow` 已有 `Icon` 属性，静态图标辅助方法勿命名 `Icon`（CS0108）；`ToolTip.SetTip` 不能写进对象初始化器（`ToolTip.Tip = …` 是 attached property，CS0747）；Avalonia 11 的 `ScrollViewer` 无 `ScrollToHorizontalOffset`（用 `Offset = new Vector(...)`）；`RowDefinitions.Add` 收 `RowDefinition` 不收 `GridLength`；out 参数不能被 lambda 捕获（先拷局部变量）；`ScrollBarVisibility` 在 `Avalonia.Controls.Primitives`。
 
 ## 设置持久化
 
