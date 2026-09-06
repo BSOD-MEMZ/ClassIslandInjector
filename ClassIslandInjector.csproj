@@ -74,6 +74,8 @@
     <Content Include="Assets\aerostripe.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\aeroleft.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\aeroright.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\pjsk\**\*.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\pjsk\**\*.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\Music\**\*.mp3" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\Stickers\**\*.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

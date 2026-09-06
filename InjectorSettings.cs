@@ -64,7 +64,19 @@ public enum RippleType
     Burst,
     Explode,
     Particle,
-    Cinematic
+    Cinematic,
+    /// <summary>pjsk 强调：一比一移植世界计划 critical 判定特效（真实粒子数据 + 原版相机），
+    /// 主界面视作判定线，特效沿设置方向喷射。</summary>
+    Pjsk
+}
+
+/// <summary>pjsk 强调特效相对判定线（主界面）的喷射方向。</summary>
+public enum PjskRippleDirection
+{
+    /// <summary>向上：pjsk 原版观感（lane 光束伸向谱面纵深，特效从主界面底边向上喷射）。</summary>
+    Up,
+    /// <summary>向下：整体镜像，特效从主界面顶边向下喷射。</summary>
+    Down
 }
 
 /// <summary>
@@ -725,6 +737,7 @@ public sealed class InjectorSettings
     private double _carouselAnimationOffset = 40;
     private CarouselAnimationType _carouselAnimationType = CarouselAnimationType.SlideUp;
     private RippleType _rippleType = RippleType.None;
+    private PjskRippleDirection _pjskRippleDirection = PjskRippleDirection.Up;
     private string _rippleColor = "#AA7DD3FC";
     private double _rippleDurationSeconds = 0.65;
     private double _rippleThickness = 3;
@@ -909,6 +922,7 @@ public sealed class InjectorSettings
     public double CarouselAnimationOffset { get => _carouselAnimationOffset; set => Set(ref _carouselAnimationOffset, Math.Clamp(value, 0, 500)); }
     public CarouselAnimationType CarouselAnimationType { get => _carouselAnimationType; set => Set(ref _carouselAnimationType, value); }
     public RippleType RippleType { get => _rippleType; set => Set(ref _rippleType, value); }
+    public PjskRippleDirection PjskRippleDirection { get => _pjskRippleDirection; set => Set(ref _pjskRippleDirection, value); }
     public string RippleColor { get => _rippleColor; set => Set(ref _rippleColor, value?.Trim() ?? ""); }
     public double RippleDurationSeconds { get => _rippleDurationSeconds; set => Set(ref _rippleDurationSeconds, Math.Clamp(value, 0.1, 10)); }
     public double RippleThickness { get => _rippleThickness; set => Set(ref _rippleThickness, Math.Clamp(value, 0.5, 40)); }
@@ -1108,6 +1122,7 @@ public sealed class InjectorSettings
         CarouselAnimationOffset = source.CarouselAnimationOffset;
         CarouselAnimationType = source.CarouselAnimationType;
         RippleType = source.RippleType;
+        PjskRippleDirection = source.PjskRippleDirection;
         RippleColor = source.RippleColor;
         DynamicBorderColorEnabled = source.DynamicBorderColorEnabled;
         DynamicShadowColorEnabled = source.DynamicShadowColorEnabled;

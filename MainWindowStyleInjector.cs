@@ -4414,7 +4414,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
         var isHanabi = _settings.RippleType == RippleType.Hanabi;
         // 使用自带配色的类型不读取用户颜色设置。
-        var ignoresColor = _settings.RippleType is RippleType.Hanabi or RippleType.Explode or RippleType.Cinematic;
+        var ignoresColor = _settings.RippleType is RippleType.Hanabi or RippleType.Explode or RippleType.Cinematic
+            or RippleType.Pjsk;
         var color = Colors.White;
         if (!ignoresColor && !TryParseColor(_settings.RippleColor, out color))
         {
@@ -4487,7 +4488,32 @@ internal sealed class MainWindowStyleInjector : IDisposable
                 _windowRoot.Children.Add(cinematic);
             }
 
-            _ripples.Add(cinematic);
+        _ripples.Add(cinematic);
+        return;
+    }
+
+        if (_settings.RippleType == RippleType.Pjsk)
+        {
+            // pjsk 强调：主界面 = 判定线，一比一播放 critical 判定特效（真实粒子数据 + 原版相机）。
+            // 上 = 特效从主界面底边向上喷射（pjsk 原版观感）；下 = 从顶边向下镜像喷射。
+            var up = _settings.PjskRippleDirection == PjskRippleDirection.Up;
+            var (pjskAnchor, pjskIslandWidth) = GetPjskAnchor(effectWindow, up);
+            var pjsk = new PjskRippleOverlay(pjskAnchor, pjskIslandWidth, up, _settings.RippleOpacity)
+            {
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Stretch
+            };
+            if (effectControls != null)
+            {
+                effectControls.Add(pjsk);
+                _rippleHosts[pjsk] = effectControls;
+            }
+            else
+            {
+                _windowRoot.Children.Add(pjsk);
+            }
+
+            _ripples.Add(pjsk);
             return;
         }
 
@@ -4612,6 +4638,49 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
         effectWindow = null;
         return null;
+    }
+
+    /// <summary>
+    /// pjsk 强调特效的判定线锚点：返回主界面底边（up）或顶边（!up）中心在特效宿主坐标系里的
+    /// 位置，以及主界面在宿主坐标系里的像素宽度（用于把 8 lane 谱面宽度对齐到主界面宽度）。
+    /// </summary>
+    private (Point Anchor, double IslandWidth) GetPjskAnchor(Window? effectWindow, bool up)
+    {
+        var islandRoot = _islandRoot;
+        var mainWindow = _mainWindow;
+        var windowRoot = _windowRoot;
+        if (islandRoot == null || mainWindow == null || windowRoot == null)
+        {
+            return default;
+        }
+
+        var localY = up ? islandRoot.Bounds.Height : 0;
+        var leftInMainWindow = islandRoot.TranslatePoint(new Point(0, localY), mainWindow);
+        var rightInMainWindow = islandRoot.TranslatePoint(new Point(islandRoot.Bounds.Width, localY), mainWindow);
+        if (leftInMainWindow == null || rightInMainWindow == null)
+        {
+            return default;
+        }
+
+        if (effectWindow != null)
+        {
+            try
+            {
+                var left = effectWindow.PointToClient(mainWindow.PointToScreen(leftInMainWindow.Value));
+                var right = effectWindow.PointToClient(mainWindow.PointToScreen(rightInMainWindow.Value));
+                return (new Point((left.X + right.X) / 2, left.Y), Math.Abs(right.X - left.X));
+            }
+            catch
+            {
+                // 特效窗口可能在重建中，回退到窗口中心。
+                return (new Point(effectWindow.Bounds.Width / 2, effectWindow.Bounds.Height / 2),
+                    Math.Min(720, effectWindow.Bounds.Width * 0.4));
+            }
+        }
+
+        var leftInRoot = islandRoot.TranslatePoint(new Point(0, localY), windowRoot) ?? leftInMainWindow.Value;
+        var rightInRoot = islandRoot.TranslatePoint(new Point(islandRoot.Bounds.Width, localY), windowRoot) ?? rightInMainWindow.Value;
+        return (new Point((leftInRoot.X + rightInRoot.X) / 2, leftInRoot.Y), Math.Abs(rightInRoot.X - leftInRoot.X));
     }
 
     private Point GetRippleCenter(Window? effectWindow)
