@@ -71,6 +71,9 @@
     <Content Include="Assets\editorbackground.jpg" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\SMTCTutorialBanner.webp" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\EditorTutorialBanner.webp" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\aerostripe.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\aeroleft.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\aeroright.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\Music\**\*.mp3" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\Stickers\**\*.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

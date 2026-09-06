@@ -1,4 +1,3 @@
-# ===== .NET 构建产物 =====
 [Bb]in/
 [Oo]bj/
 [Dd]ebug/
@@ -11,12 +10,10 @@ bld/
 [Bb]inaries/
 artifacts/
 
-# ===== ClassIsland 插件打包产物 =====
 cipx/
 *.cipx
 *.cipx.sha256
 
-# ===== NuGet =====
 *.nupkg
 *.snupkg
 packages/
@@ -30,7 +27,6 @@ project.fragment.lock.json
 *.userosscache
 *.sln.docstates
 
-# ===== 运行时与日志 =====
 *.log
 *.tmp
 *.temp
@@ -39,7 +35,6 @@ project.fragment.lock.json
 *.seed
 *.pid.lock
 
-# ===== VS Code / IDE =====
 .vscode/
 .idea/
 *.suo
@@ -48,13 +43,12 @@ project.fragment.lock.json
 *.sln
 *.swp
 *~
+*workbuddy/
 
-# ===== 用户本地配置 =====
 appsettings.Local.json
 appsettings.*.Local.json
 *.local.json
 
-# ===== 系统文件 =====
 .DS_Store
 Thumbs.db
 ehthumbs.db

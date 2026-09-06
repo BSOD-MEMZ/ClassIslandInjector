@@ -189,6 +189,11 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private bool _blockTextureActive;
     /// <summary>当前底纹画刷（随设置变更重建）。</summary>
     private IBrush? _textureBrush;
+    /// <summary>Aero 玻璃条纹：横向平铺条纹 + 左右两端光晕。位图懒加载自插件 Assets 目录。</summary>
+    private Bitmap? _aeroStripeBitmap;
+    private Bitmap? _aeroLeftBitmap;
+    private Bitmap? _aeroRightBitmap;
+    private bool _aeroBitmapsAttempted;
     /// <summary>动态频谱底纹：系统声音输出回环捕获器（仅 Spectrum 纹理时启用）。</summary>
     private AudioSpectrumCapture? _spectrumCapture;
     /// <summary>频谱底纹激活状态（决定 16ms 动画计时器是否保持运行）。</summary>
@@ -2023,6 +2028,16 @@ internal sealed class MainWindowStyleInjector : IDisposable
     /// <summary>把静态底纹画刷应用到逐块宿主。</summary>
     private void SetBlockTextureBrush(Border host, (BackgroundTexture Type, Color Color, double Size) spec)
     {
+        if (spec.Type == BackgroundTexture.Aero)
+        {
+            var h = host.Bounds.Height > 0 ? host.Bounds.Height : Math.Max(8, spec.Size);
+            var layer = BuildAeroLayer(h);
+            host.Child = layer;
+            host.Background = null;
+            return;
+        }
+
+        host.Child = null;
         host.Background = BuildTextureBrush(spec.Type, spec.Color, spec.Size);
     }
 
@@ -2040,6 +2055,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         host.Margin = new Thickness(pos?.X ?? 0, pos?.Y ?? 0, 0, 0);
         host.CornerRadius = new CornerRadius(_effectiveCornerRadius);
         host.IsVisible = anchor.IsVisible && anchor.Bounds.Width > 0 && anchor.Bounds.Height > 0;
+        UpdateAeroLayerBounds(host);
     }
 
     /// <summary>移除某个分块的静态底纹宿主。</summary>
@@ -2130,6 +2146,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         host.VerticalAlignment = VerticalAlignment.Top;
         host.Margin = new Thickness(minX, minY, 0, 0);
         UpdateTextureClip(host);
+        UpdateAeroLayerBounds(host);
     }
 
     /// <summary>
@@ -3269,11 +3286,32 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
             _textureBrush = null;
         }
+        else if (_settings.BackgroundTextureType == BackgroundTexture.Aero)
+        {
+            // Aero：每个宿主挂一个 AeroLayerGrid 子项；若已存在则按当前高度刷新。
+            StopSpectrum();
+            if (_spectrumOverlays.Count > 0 || _textureBrush != null)
+            {
+                RemoveTextureHost();
+            }
+
+            _textureBrush = null;
+            foreach (var host in _textureHosts.Values)
+            {
+                var initialHeight = host.Bounds.Height > 0 ? host.Bounds.Height : 64;
+                var layer = BuildAeroLayer(initialHeight);
+                if (layer != null)
+                {
+                    host.Child = layer;
+                    host.Background = null;
+                }
+            }
+        }
         else
         {
             StopSpectrum();
-            // 从频谱切回常规纹理时，宿主带着覆盖层子项，需重建。
-            if (_spectrumOverlays.Count > 0)
+            // 从频谱 / Aero 切回常规纹理时，宿主带着子项，需重建。
+            if (_spectrumOverlays.Count > 0 || HasAeroHosts())
             {
                 RemoveTextureHost();
             }
@@ -3284,6 +3322,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
             _textureBrush = BuildTextureBrush(_settings.BackgroundTextureType, color, _settings.BackgroundTextureSize);
             foreach (var host in _textureHosts.Values)
             {
+                host.Child = null;
                 host.Background = _textureBrush;
             }
         }
@@ -3294,7 +3333,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     private void EnsureTextureBrush()
     {
-        if (_textureBrush != null || _settings.BackgroundTextureType == BackgroundTexture.Spectrum)
+        if (_textureBrush != null || _settings.BackgroundTextureType == BackgroundTexture.Spectrum || _settings.BackgroundTextureType == BackgroundTexture.Aero)
         {
             return;
         }
@@ -3303,6 +3342,20 @@ internal sealed class MainWindowStyleInjector : IDisposable
             ? parsed
             : DefaultTextureColor;
         _textureBrush = BuildTextureBrush(_settings.BackgroundTextureType, color, _settings.BackgroundTextureSize);
+    }
+
+    /// <summary>行级宿主中是否任意一个挂着 Aero 子项（用于类型切换时判断是否需要整体重建）。</summary>
+    private bool HasAeroHosts()
+    {
+        foreach (var host in _textureHosts.Values)
+        {
+            if (host.Child is AeroLayerGrid)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -3333,6 +3386,12 @@ internal sealed class MainWindowStyleInjector : IDisposable
                 _spectrumOverlays.Add(overlay);
                 host.Child = overlay;
             }
+        }
+        else if (_settings.BackgroundTextureType == BackgroundTexture.Aero)
+        {
+            // Aero 玻璃条纹：横向平铺条纹 + 左右两端光晕（用子项 Grid 承载，不走 Background 画刷）。
+            var layer = BuildAeroLayer(gridRoot.Bounds.Height > 0 ? gridRoot.Bounds.Height : 64);
+            host.Child = layer;
         }
         else
         {
@@ -3428,6 +3487,172 @@ internal sealed class MainWindowStyleInjector : IDisposable
             TileMode = TileMode.Tile,
             DestinationRect = new RelativeRect(0, 0, size, size, RelativeUnit.Absolute)
         };
+    }
+
+    /// <summary>
+    /// 加载 Aero 玻璃条纹所需的三张位图（aerostripe.png / aeroleft.png / aeroright.png）。
+    /// 资源随插件部署到 Assets/ 目录；任一缺失或解码失败则该纹理整体不可用（返回时不抛错）。
+    /// </summary>
+    private void EnsureAeroBitmaps()
+    {
+        if (_aeroBitmapsAttempted)
+        {
+            return;
+        }
+
+        _aeroBitmapsAttempted = true;
+        var pluginDir = InjectorRuntime.PluginDirectory;
+        if (string.IsNullOrEmpty(pluginDir))
+        {
+            return;
+        }
+
+        try
+        {
+            var assetsDir = Path.Combine(pluginDir, "Assets");
+            using (var s = File.OpenRead(Path.Combine(assetsDir, "aerostripe.png")))
+            {
+                _aeroStripeBitmap = new Bitmap(s);
+            }
+
+            using (var s = File.OpenRead(Path.Combine(assetsDir, "aeroleft.png")))
+            {
+                _aeroLeftBitmap = new Bitmap(s);
+            }
+
+            using (var s = File.OpenRead(Path.Combine(assetsDir, "aeroright.png")))
+            {
+                _aeroRightBitmap = new Bitmap(s);
+            }
+        }
+        catch (Exception ex)
+        {
+            DiagnosticLog.Write(InjectorRuntime.ConfigDirectory is { Length: > 0 } ? Path.Combine(InjectorRuntime.ConfigDirectory, "texture-error.log") : null,
+                $"Aero 纹理位图加载失败：{ex.Message}");
+            _aeroStripeBitmap = null;
+            _aeroLeftBitmap = null;
+            _aeroRightBitmap = null;
+        }
+    }
+
+    /// <summary>
+    /// Aero 底纹层容器：横向平铺条纹 + 左右两端光晕。
+    /// 暴露条纹画刷与两侧光晕引用，便于宿主高度变化时在 <see cref="PositionTextureHost"/> /
+    /// <see cref="PositionBlockTextureHost"/> 内调整 DestinationRect / 列宽。
+    /// </summary>
+    private sealed class AeroLayerGrid : Grid
+    {
+        public ImageBrush? StripeBrush;
+        public Border? StripeBorder;
+        public Image? LeftGlow;
+        public Image? RightGlow;
+        /// <summary>条纹原始宽高比（= aerostripe.png 的 802 / 151）。</summary>
+        public double StripeAspect;
+        /// <summary>光晕原始宽高比（= aeroleft.png / aeroright.png 的 228 / 175）。</summary>
+        public double GlowAspect;
+    }
+
+    /// <summary>
+    /// 构造 Aero 底纹层（横向平铺条纹 + 左右两端光晕）。
+    /// 条纹按当前可用高度等比缩放、纵向铺满；两端光晕按相同缩放比例置于左右边缘。
+    /// </summary>
+    private AeroLayerGrid? BuildAeroLayer(double height)
+    {
+        EnsureAeroBitmaps();
+        if (_aeroStripeBitmap == null || _aeroLeftBitmap == null || _aeroRightBitmap == null)
+        {
+            return null;
+        }
+
+        var h = Math.Max(8, height);
+        const double stripeAspect = 802.0 / 151.0;
+        const double glowAspect = 228.0 / 175.0;
+        var glowW = h * glowAspect;
+        var tileW = h * stripeAspect;
+
+        var stripe = new ImageBrush
+        {
+            Source = _aeroStripeBitmap,
+            TileMode = TileMode.Tile,
+            Stretch = Stretch.Fill,
+            DestinationRect = new RelativeRect(0, 0, tileW, h, RelativeUnit.Absolute)
+        };
+
+        var stripeBorder = new Border
+        {
+            Background = stripe,
+            IsHitTestVisible = false,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            Margin = new Thickness(glowW, 0, glowW, 0)
+        };
+
+        var leftImg = new Image
+        {
+            Source = _aeroLeftBitmap,
+            Stretch = Stretch.Fill,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            Width = glowW,
+            IsHitTestVisible = false
+        };
+
+        var rightImg = new Image
+        {
+            Source = _aeroRightBitmap,
+            Stretch = Stretch.Fill,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            Width = glowW,
+            IsHitTestVisible = false
+        };
+
+        var layer = new AeroLayerGrid
+        {
+            IsHitTestVisible = false,
+            ClipToBounds = true,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            StripeBrush = stripe,
+            StripeBorder = stripeBorder,
+            LeftGlow = leftImg,
+            RightGlow = rightImg,
+            StripeAspect = stripeAspect,
+            GlowAspect = glowAspect
+        };
+        // Z 序：左光晕 → 条纹 → 右光晕。光晕与条纹通过 Margin 自然错位不重叠。
+        layer.Children.Add(leftImg);
+        layer.Children.Add(stripeBorder);
+        layer.Children.Add(rightImg);
+        return layer;
+    }
+
+    /// <summary>按宿主当前高度同步 Aero 层的条纹瓦片大小与两端光晕宽度。</summary>
+    private static void UpdateAeroLayerBounds(Border host)
+    {
+        if (host.Child is not AeroLayerGrid aero || aero.StripeBrush == null)
+        {
+            return;
+        }
+
+        var h = Math.Max(8, host.Height);
+        var glowW = h * aero.GlowAspect;
+        var tileW = h * aero.StripeAspect;
+        aero.StripeBrush.DestinationRect = new RelativeRect(0, 0, tileW, h, RelativeUnit.Absolute);
+        if (aero.StripeBorder != null)
+        {
+            aero.StripeBorder.Margin = new Thickness(glowW, 0, glowW, 0);
+        }
+
+        if (aero.LeftGlow != null)
+        {
+            aero.LeftGlow.Width = glowW;
+        }
+
+        if (aero.RightGlow != null)
+        {
+            aero.RightGlow.Width = glowW;
+        }
     }
 
     /// <summary>

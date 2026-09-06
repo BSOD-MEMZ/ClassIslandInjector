@@ -156,6 +156,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         new(BackgroundTexture.Dots, "点阵"),
         new(BackgroundTexture.DiagonalLines, "斜线"),
         new(BackgroundTexture.Cross, "十字网格"),
+        new(BackgroundTexture.Aero, "Aero 玻璃条纹"),
     ];
     private readonly ToggleSwitch _gradient = Toggle();
     private readonly ColorPicker _gradientEndColor = ColorPicker();
@@ -433,6 +434,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         new(BackgroundTexture.DiagonalLines, "斜线"),
         new(BackgroundTexture.Cross, "十字网格"),
         new(BackgroundTexture.Spectrum, "动态频谱"),
+        new(BackgroundTexture.Aero, "Aero 玻璃条纹"),
     ];
 
     public InjectorSettingsPage()
@@ -1030,8 +1032,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _backgroundTextureEnabled.Name = "BackgroundTextureEnabled";
         panel.Children.Add(_textureGroup);
         AutoSelectOnEnable(_backgroundTextureEnabled, _backgroundTextureType, BackgroundTextures);
-        // 动态频谱不使用纹理单元大小：选中频谱时隐藏该项。
-        VisibleWhenNotAny(_texSizeItem, _backgroundTextureType, BackgroundTexture.Spectrum);
+        // 动态频谱 / Aero 玻璃纹理不使用纹理颜色与单元大小：选中时隐藏这两项（Aero 图片自带外观）。
+        VisibleWhenNotAny(_texSizeItem, _backgroundTextureType, BackgroundTexture.Spectrum, BackgroundTexture.Aero);
+        VisibleWhenNotAny(_texColorItem, _backgroundTextureType, BackgroundTexture.Aero);
         VisibleWhen(spectrumSensitivityItem, _backgroundTextureType, BackgroundTexture.Spectrum);
         VisibleWhen(spectrumBarsItem, _backgroundTextureType, BackgroundTexture.Spectrum);
         VisibleWhen(spectrumMirroredItem, _backgroundTextureType, BackgroundTexture.Spectrum);

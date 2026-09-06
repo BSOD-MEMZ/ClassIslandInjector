@@ -190,7 +190,9 @@ public enum BackgroundTexture
     DiagonalLines,
     Cross,
     /// <summary>动态频谱：捕获系统声音输出并实时绘制频谱柱条。</summary>
-    Spectrum
+    Spectrum,
+    /// <summary>Aero 玻璃条纹：横向平铺 aerostripe.png，左右两端铺 aeroleft.png / aeroright.png 光晕（颜色 / 单元大小对此项无效）。</summary>
+    Aero
 }
 
 /// <summary>
