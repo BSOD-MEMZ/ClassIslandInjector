@@ -79,6 +79,15 @@ public enum PjskRippleDirection
     Down
 }
 
+/// <summary>pjsk note 击打效果的样式（对应游戏内不同判定的配色）。</summary>
+public enum PjskNoteStyle
+{
+    /// <summary>普通 note：蓝紫色光。</summary>
+    Normal,
+    /// <summary>绝赞 note：金黄色光（游戏内 critical 判定）。</summary>
+    Critical
+}
+
 /// <summary>
 /// 主界面点击特效类型（插件自绘，不复用提醒 Ripple）。
 /// </summary>
@@ -738,6 +747,8 @@ public sealed class InjectorSettings
     private CarouselAnimationType _carouselAnimationType = CarouselAnimationType.SlideUp;
     private RippleType _rippleType = RippleType.None;
     private PjskRippleDirection _pjskRippleDirection = PjskRippleDirection.Up;
+    private PjskNoteStyle _pjskNoteStyle = PjskNoteStyle.Critical;
+    private double _pjskMaxWidth;
     private string _rippleColor = "#AA7DD3FC";
     private double _rippleDurationSeconds = 0.65;
     private double _rippleThickness = 3;
@@ -923,6 +934,12 @@ public sealed class InjectorSettings
     public CarouselAnimationType CarouselAnimationType { get => _carouselAnimationType; set => Set(ref _carouselAnimationType, value); }
     public RippleType RippleType { get => _rippleType; set => Set(ref _rippleType, value); }
     public PjskRippleDirection PjskRippleDirection { get => _pjskRippleDirection; set => Set(ref _pjskRippleDirection, value); }
+
+    /// <summary>pjsk note 击打效果样式：普通（蓝紫）或绝赞（金黄）。</summary>
+    public PjskNoteStyle PjskNoteStyle { get => _pjskNoteStyle; set => Set(ref _pjskNoteStyle, value); }
+
+    /// <summary>pjsk 强调特效的最大宽度（像素）。0 = 跟随主界面宽度；正值时取主界面宽度与该值的最小者。</summary>
+    public double PjskMaxWidth { get => _pjskMaxWidth; set => Set(ref _pjskMaxWidth, Math.Clamp(value, 0, 2000)); }
     public string RippleColor { get => _rippleColor; set => Set(ref _rippleColor, value?.Trim() ?? ""); }
     public double RippleDurationSeconds { get => _rippleDurationSeconds; set => Set(ref _rippleDurationSeconds, Math.Clamp(value, 0.1, 10)); }
     public double RippleThickness { get => _rippleThickness; set => Set(ref _rippleThickness, Math.Clamp(value, 0.5, 40)); }
@@ -1123,6 +1140,8 @@ public sealed class InjectorSettings
         CarouselAnimationType = source.CarouselAnimationType;
         RippleType = source.RippleType;
         PjskRippleDirection = source.PjskRippleDirection;
+        PjskNoteStyle = source.PjskNoteStyle;
+        PjskMaxWidth = source.PjskMaxWidth;
         RippleColor = source.RippleColor;
         DynamicBorderColorEnabled = source.DynamicBorderColorEnabled;
         DynamicShadowColorEnabled = source.DynamicShadowColorEnabled;

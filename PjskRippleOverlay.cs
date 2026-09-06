@@ -25,8 +25,8 @@ internal sealed class PjskRippleOverlay : Control, IRippleEffect
     private const float EffectsTargetAspect = 16f / 9f;
     private const float ProjectionNear = 0.3f;
     private const float ProjectionFar = 1000f;
-    /// <summary>8 条 lane 的世界横向跨度（间距 = 0.84 × 0.84，与原 EffectView 的双重比例一致）。</summary>
-    private const float LaneSpanWorldUnits = (PjskEffectView.LaneCount - 1) * 0.84f * 0.84f;
+    /// <summary>pjsk 谱面 14 条 lane 的世界跨度（14 × 0.84），映射到主界面宽度以保持游戏内比例。</summary>
+    private const float PlayfieldSpanWorldUnits = PjskEffectView.PlayfieldSpanWorldUnits;
     /// <summary>特效数据自身的总寿命（实测 1s 内全部粒子自然消亡，留 0.2s 余量）。</summary>
     private static readonly TimeSpan EffectDuration = TimeSpan.FromSeconds(1.2);
 
@@ -35,16 +35,16 @@ internal sealed class PjskRippleOverlay : Control, IRippleEffect
     private readonly DateTime _startedAt = DateTime.UtcNow;
     private readonly Point _anchor;
     private readonly bool _up;
-    private readonly double _islandWidth;
+    private readonly double _effectWidth;
     private readonly PjskEffectView _view = new();
     private readonly Matrix4x4 _inverseView;
     private readonly List<PjskEffectQuad> _quads = [];
 
-    public PjskRippleOverlay(Point anchor, double islandWidth, bool up, double opacityScale = 1)
+    public PjskRippleOverlay(Point anchor, double effectWidth, bool up, PjskNoteStyle style, double opacityScale = 1)
     {
         _anchor = anchor;
         _up = up;
-        _islandWidth = Math.Max(60, islandWidth);
+        _effectWidth = Math.Max(60, effectWidth);
         Opacity = Math.Clamp(opacityScale, 0, 1);
         IsHitTestVisible = false;
         ClipToBounds = false;
@@ -55,8 +55,10 @@ internal sealed class PjskRippleOverlay : Control, IRippleEffect
         {
             try
             {
-                _view.Init(assets.LaneCritical, assets.CriticalNormalAura, assets.CriticalNormalGen);
-                _view.TriggerCriticalTap(0f);
+                _view.Init(assets.LaneCritical, assets.CriticalAura, assets.CriticalGen,
+                    assets.LaneDefault, assets.NormalAura, assets.NormalGen);
+                _view.Style = style == PjskNoteStyle.Normal ? PjskStyleKind.Normal : PjskStyleKind.Critical;
+                _view.TriggerHit(0f);
             }
             catch (Exception ex)
             {
@@ -100,13 +102,14 @@ internal sealed class PjskRippleOverlay : Control, IRippleEffect
         var projection = Matrix4x4.CreateScale(projectionScale, projectionScale, 1f)
                          * PjskDx.PerspectiveFovLh(CameraFovDegrees * MathF.PI / 180f, aspect, ProjectionNear, ProjectionFar);
 
-        // 世界缩放：8 lane 跨度 == 主界面宽度（把主界面视作完整谱面宽度）。
-        float pxPerWorldUnit = PixelsPerWorldUnit(projection);
-        var worldZoom = pxPerWorldUnit > 0.0001f ? (float)(_islandWidth / LaneSpanWorldUnits) / pxPerWorldUnit : 1f;
-        var worldTransform = Matrix4x4.CreateScale(worldZoom);
+        // 世界缩放：特效宽度 == 生效宽度（主界面宽度，受用户最大宽度上限约束）。
+        // 像素密度先在未缩放视空间测得，再反推缩放系数。
+        float pxPerWorldUnit = PixelsPerWorldUnit(_sharedView.Value, projection);
+        var worldZoom = pxPerWorldUnit > 0.0001f ? (float)_effectWidth / PlayfieldSpanWorldUnits / pxPerWorldUnit : 1f;
+        var viewWithZoom = Matrix4x4.CreateScale(worldZoom) * _sharedView.Value;
 
         // 判定线锚点：把世界原点（lane 中央、判定线处）平移到锚点像素。
-        var originPixel = ProjectToPixel(new Vector4(0, 0, 0, 1), worldTransform, projection);
+        var originPixel = ProjectToPixel(new Vector4(0, 0, 0, 1), viewWithZoom, projection, Bounds.Width, Bounds.Height);
         var deltaX = (float)(_anchor.X - originPixel.X);
         var deltaY = (float)(_anchor.Y - originPixel.Y);
 
@@ -145,7 +148,8 @@ internal sealed class PjskRippleOverlay : Control, IRippleEffect
                         2 => quad.Corner2,
                         _ => quad.Corner3
                     };
-                    var pixel = ProjectToPixel(new Vector4(corner.X, corner.Y, 0f, 1f), worldTransform, projection);
+                    var pixel = ProjectToPixel(new Vector4(corner.X, corner.Y, corner.Z, 1f), viewWithZoom, projection,
+                        Bounds.Width, Bounds.Height);
                     var x = pixel.X + deltaX;
                     var y = pixel.Y + deltaY;
                     if (!_up)
@@ -178,11 +182,11 @@ internal sealed class PjskRippleOverlay : Control, IRippleEffect
         }
     }
 
-    /// <summary>世界原点处 1 世界单位对应的像素数（经同样的世界缩放管线测得）。</summary>
-    private float PixelsPerWorldUnit(Matrix4x4 projection)
+    /// <summary>世界原点处 1 世界单位对应的像素数（完整管线：视图 × 投影）。</summary>
+    private float PixelsPerWorldUnit(Matrix4x4 view, Matrix4x4 projection)
     {
-        var a = ProjectToNdc(new Vector4(0, 0, 0, 1), Matrix4x4.Identity, projection);
-        var b = ProjectToNdc(new Vector4(1, 0, 0, 1), Matrix4x4.Identity, projection);
+        var a = ProjectToNdc(new Vector4(0, 0, 0, 1), view, projection);
+        var b = ProjectToNdc(new Vector4(1, 0, 0, 1), view, projection);
         var width = (float)Bounds.Width;
         var height = (float)Bounds.Height;
         var ax = (a.X + 1f) / 2f * width;
@@ -192,18 +196,12 @@ internal sealed class PjskRippleOverlay : Control, IRippleEffect
         return MathF.Sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay));
     }
 
-    private static Vector2 ProjectToNdc(Vector4 v, Matrix4x4 world, Matrix4x4 projection)
-    {
-        var value = Vector4.Transform(Vector4.Transform(v, world), _sharedView.Value);
-        var w = MathF.Abs(value.W) > 0.000001f ? value.W : 1f;
-        return new Vector2(value.X / w, value.Y / w);
-    }
-
-    /// <summary>_viewMatrix 跨实例不变，静态缓存避免每次投影重复传参。</summary>
-    private static readonly Lazy<Matrix4x4> _sharedView = new(() => BuildViewMatrix());
+    /// <summary>视矩阵跨实例不变，静态缓存。</summary>
+    private static readonly Lazy<Matrix4x4> _sharedView = new(BuildViewMatrix);
 
     private static Matrix4x4 BuildViewMatrix()
     {
+        // 与原版 initializeEffects 一致（俯视 27.1°）。
         var pitchRadians = CameraPitch * MathF.PI / 180f;
         var yawRadians = CameraYaw * MathF.PI / 180f;
         var front = Vector3.Normalize(new Vector3(
@@ -213,12 +211,21 @@ internal sealed class PjskRippleOverlay : Control, IRippleEffect
         return PjskDx.LookToLh(CameraPosition, front, Vector3.UnitY);
     }
 
-    private Point ProjectToPixel(Vector4 v, Matrix4x4 world, Matrix4x4 projection)
+    /// <summary>完整透视管线：世界坐标 → 视图 → 投影 → NDC。缺一不可。</summary>
+    private static Vector2 ProjectToNdc(Vector4 v, Matrix4x4 view, Matrix4x4 projection)
     {
-        var ndc = ProjectToNdc(v, world, projection);
+        var value = Vector4.Transform(v, view);
+        value = Vector4.Transform(value, projection);
+        var w = MathF.Abs(value.W) > 0.000001f ? value.W : 1f;
+        return new Vector2(value.X / w, value.Y / w);
+    }
+
+    private static Point ProjectToPixel(Vector4 v, Matrix4x4 view, Matrix4x4 projection, double boundsWidth, double boundsHeight)
+    {
+        var ndc = ProjectToNdc(v, view, projection);
         return new Point(
-            (ndc.X + 1f) / 2f * Bounds.Width,
-            (1f - ndc.Y) / 2f * Bounds.Height);
+            (ndc.X + 1f) / 2f * boundsWidth,
+            (1f - ndc.Y) / 2f * boundsHeight);
     }
 
     private static PjskEffectAssets? LoadAssets()
@@ -241,10 +248,13 @@ internal sealed class PjskRippleOverlay : Control, IRippleEffect
 
             using var stream = File.OpenRead(atlasPath);
             var atlas = new Bitmap(stream);
-            var lane = PjskEffectLoader.Parse(File.ReadAllText(Path.Combine(assetsDir, "fx_lane_critical.json")));
-            var aura = PjskEffectLoader.Parse(File.ReadAllText(Path.Combine(assetsDir, "fx_note_critical_normal_aura.json")));
-            var gen = PjskEffectLoader.Parse(File.ReadAllText(Path.Combine(assetsDir, "fx_note_critical_normal_gen.json")));
-            return new PjskEffectAssets(atlas, lane, aura, gen);
+            var laneCritical = PjskEffectLoader.Parse(File.ReadAllText(Path.Combine(assetsDir, "fx_lane_critical.json")));
+            var criticalAura = PjskEffectLoader.Parse(File.ReadAllText(Path.Combine(assetsDir, "fx_note_critical_normal_aura.json")));
+            var criticalGen = PjskEffectLoader.Parse(File.ReadAllText(Path.Combine(assetsDir, "fx_note_critical_normal_gen.json")));
+            var laneDefault = PjskEffectLoader.Parse(File.ReadAllText(Path.Combine(assetsDir, "fx_lane_default.json")));
+            var normalAura = PjskEffectLoader.Parse(File.ReadAllText(Path.Combine(assetsDir, "fx_note_normal_aura.json")));
+            var normalGen = PjskEffectLoader.Parse(File.ReadAllText(Path.Combine(assetsDir, "fx_note_normal_gen.json")));
+            return new PjskEffectAssets(atlas, laneCritical, criticalAura, criticalGen, laneDefault, normalAura, normalGen);
         }
         catch (Exception ex)
         {
@@ -258,6 +268,9 @@ internal sealed class PjskRippleOverlay : Control, IRippleEffect
     private sealed record PjskEffectAssets(
         Bitmap Atlas,
         PjskParticleDef LaneCritical,
-        PjskParticleDef CriticalNormalAura,
-        PjskParticleDef CriticalNormalGen);
+        PjskParticleDef CriticalAura,
+        PjskParticleDef CriticalGen,
+        PjskParticleDef LaneDefault,
+        PjskParticleDef NormalAura,
+        PjskParticleDef NormalGen);
 }

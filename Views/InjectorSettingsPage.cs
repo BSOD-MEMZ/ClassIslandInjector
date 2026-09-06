@@ -222,6 +222,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
     private readonly ComboBox _rippleType = Combo(RippleTypes);
     private readonly ComboBox _pjskDirection = Combo(PjskRippleDirections);
+    private readonly ComboBox _pjskNoteStyle = Combo(PjskNoteStyles);
+    private readonly Spin _pjskMaxWidth = Spinner(0, 2000, 10, "0");
     private readonly ColorPicker _rippleColor = ColorPicker();
     private readonly Spin _rippleDuration = Spinner(0.1, 10, 0.05);
     private readonly Spin _rippleThickness = Spinner(0.5, 40, 0.5);
@@ -358,6 +360,12 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     [
         new(PjskRippleDirection.Up, "向上（原版）"),
         new(PjskRippleDirection.Down, "向下（镜像）"),
+    ];
+
+    private static readonly Choice<PjskNoteStyle>[] PjskNoteStyles =
+    [
+        new(PjskNoteStyle.Critical, "绝赞（金黄）"),
+        new(PjskNoteStyle.Normal, "普通（蓝紫）"),
     ];
 
     private static readonly Choice<ClickEffectType>[] ClickEffectTypes =
@@ -1223,9 +1231,13 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         var cinematicBlurItem = Item("模糊半径", "起始模糊半径。", _cinematicBlur);
         var cinematicFlashItem = Item("闪光强度", "中心白光的亮度扩散强度，0 为关闭闪光。", _cinematicFlash);
         var pjskDirectionItem = Item("特效方向", "pjsk 强调特效相对判定线（主界面）的喷射方向。", _pjskDirection);
+        var pjskStyleItem = Item("note 效果样式", "note 击打效果的配色样式：绝赞为金黄色，普通为蓝紫色。", _pjskNoteStyle);
+        var pjskMaxWidthItem = Item("特效最大宽度", "特效横向铺开的宽度上限（像素），0 = 跟随主界面宽度。", _pjskMaxWidth);
         var rippleGroup = SwitchableGroup("\uEFFF", "提醒 Ripple", "选择提醒时的扩散效果，高级特效视觉效果更强。", _rippleEnabled,
             Item("Ripple 类型", "选择提醒时的扩散效果。", _rippleType),
             pjskDirectionItem,
+            pjskStyleItem,
+            pjskMaxWidthItem,
             rippleColorItem, rippleDurationItem, rippleThicknessItem, rippleOpacityItem, rippleConstraintItem, rippleConstraintRadiusItem,
             cinematicShakeItem, cinematicBlurItem, cinematicFlashItem);
         VisibleWhenNotAny(rippleColorItem, _rippleType, RippleType.Hanabi, RippleType.Explode, RippleType.Cinematic, RippleType.Pjsk);
@@ -1234,6 +1246,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         VisibleWhenNotAny(rippleConstraintItem, _rippleType, RippleType.Cinematic, RippleType.Pjsk);
         VisibleWhenNotAny(rippleConstraintRadiusItem, _rippleType, _rippleConstraint, RippleType.Cinematic, RippleType.Pjsk);
         VisibleWhen(pjskDirectionItem, _rippleType, RippleType.Pjsk);
+        VisibleWhen(pjskStyleItem, _rippleType, RippleType.Pjsk);
+        VisibleWhen(pjskMaxWidthItem, _rippleType, RippleType.Pjsk);
         VisibleWhen(cinematicShakeItem, _rippleType, RippleType.Cinematic);
         VisibleWhen(cinematicBlurItem, _rippleType, RippleType.Cinematic);
         VisibleWhen(cinematicFlashItem, _rippleType, RippleType.Cinematic);
@@ -3697,6 +3711,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _carouselAnimationOffset.DoubleValue = settings.CarouselAnimationOffset;
         Select(_rippleType, RippleTypes, settings.RippleType);
         Select(_pjskDirection, PjskRippleDirections, settings.PjskRippleDirection);
+        Select(_pjskNoteStyle, PjskNoteStyles, settings.PjskNoteStyle);
+        _pjskMaxWidth.DoubleValue = settings.PjskMaxWidth;
         _rippleEnabled.IsChecked = settings.RippleType != RippleType.None;
         _rippleColor.Color = ReadColor(settings.RippleColor, Color.FromArgb(0xAA, 0x7D, 0xD3, 0xFC));
         _rippleDuration.DoubleValue = settings.RippleDurationSeconds;
@@ -3879,6 +3895,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                 ? Selected(_rippleType, RippleType.None)
                 : RippleType.None;
             settings.PjskRippleDirection = Selected(_pjskDirection, PjskRippleDirection.Up);
+            settings.PjskNoteStyle = Selected(_pjskNoteStyle, PjskNoteStyle.Critical);
+            settings.PjskMaxWidth = _pjskMaxWidth.DoubleValue;
             settings.RippleColor = _rippleColor.Color.ToString();
             settings.RippleDurationSeconds = _rippleDuration.DoubleValue;
             settings.RippleThickness = _rippleThickness.DoubleValue;

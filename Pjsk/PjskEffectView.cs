@@ -2,12 +2,22 @@ using System.Numerics;
 
 namespace ClassIslandInjector.Pjsk;
 
-/// <summary>单个待渲染粒子四边形（NDC 坐标 + 图集 UV 像素矩形），等价原 EffectOutputQuad。</summary>
+/// <summary>note 击打效果样式（对应游戏内判定配色）。</summary>
+internal enum PjskStyleKind
+{
+    /// <summary>普通 note（蓝紫）。</summary>
+    Normal = 0,
+    /// <summary>绝赞 note（金黄，游戏内 critical）。</summary>
+    Critical = 1
+}
+
+/// <summary>单个待渲染粒子四边形（世界坐标角点 + 图集 UV 像素矩形），等价原 EffectOutputQuad 的
+/// 粒子矩阵变换阶段；透视投影（视图 × 投影）由渲染方完成，因此必须保留 Z。</summary>
 internal readonly record struct PjskEffectQuad(
-    Vector2 Corner0,
-    Vector2 Corner1,
-    Vector2 Corner2,
-    Vector2 Corner3,
+    Vector3 Corner0,
+    Vector3 Corner1,
+    Vector3 Corner2,
+    Vector3 Corner3,
     int UvX1,
     int UvY1,
     int UvX2,
@@ -17,33 +27,39 @@ internal readonly record struct PjskEffectQuad(
     bool FlipUvs);
 
 /// <summary>
-/// 特效视图：管理发射器对象池并触发「critical tap」三件套（lane 光束 / 地面 aura / 爆花 gen），
-/// 逐行移植自 EffectView.cpp 的 critical 分支。判定线锚定由调用方通过世界坐标原点完成。
+/// 特效视图：管理发射器对象池并触发单次「note 命中」三件套——1 道 lane 光束、
+/// 1 个地面 aura、1 个中心爆花 gen（与原 addNoteEffects 的单宽度 note 分派一致）。
+/// 普通与绝赞两套样式各自独立成池。判定线锚定由调用方通过世界坐标原点完成。
 /// </summary>
 internal sealed class PjskEffectView
 {
-    private const float EffectWidthRatio = 0.84f;
+    /// <summary>lane / 世界 X 换算比例（原 EFFECT_WIDTH_RATIO，lane 间距）。</summary>
+    public const float EffectWidthRatio = 0.84f;
 
-    /// <summary>pjsk 谱面标准 8 轨；整个岛宽度视作完整谱面宽度。</summary>
-    public const int LaneCount = 8;
+    /// <summary>pjsk 谱面 14 条 lane 的世界跨度（14 × 0.84），渲染方以此对齐主界面宽度。</summary>
+    public const float PlayfieldSpanWorldUnits = 14 * EffectWidthRatio;
+
+    private const int PoolSize = 12;
 
     private readonly Dictionary<int, PjskEffectPool> _pools = new();
 
-    private PjskParticleDef? _laneCritical;
-    private PjskParticleDef? _criticalNormalAura;
-    private PjskParticleDef? _criticalNormalGen;
+    /// <summary>触发时使用的样式（Init 后、Trigger 前设置）。</summary>
+    public PjskStyleKind Style { get; set; } = PjskStyleKind.Critical;
 
-    public void Init(PjskParticleDef laneCritical, PjskParticleDef criticalNormalAura, PjskParticleDef criticalNormalGen)
+    /// <summary>池键：0..2 = 绝赞的 lane/aura/gen，3..5 = 普通的 lane/aura/gen。</summary>
+    private static int PoolKey(PjskStyleKind style, int kind) => (style == PjskStyleKind.Critical ? 0 : 3) + kind;
+
+    /// <summary>加载两套样式的定义并建立对象池（池建立时即绑定定义，Play 仅 stop/start）。</summary>
+    public void Init(PjskParticleDef laneCritical, PjskParticleDef criticalAura, PjskParticleDef criticalGen,
+        PjskParticleDef laneNormal, PjskParticleDef normalAura, PjskParticleDef normalGen)
     {
-        _laneCritical = laneCritical;
-        _criticalNormalAura = criticalNormalAura;
-        _criticalNormalGen = criticalNormalGen;
         _pools.Clear();
-        // 与原 EffectPool.setup 一致：池建立时就把每个发射器实例与定义绑定并 init（构建发射器树），
-        // Play 仅负责 stop/start；否则 EmitterRoot.Ref 为 null，Start 直接 NRE。
-        _pools[0] = new PjskEffectPool(laneCritical, 12);
-        _pools[1] = new PjskEffectPool(criticalNormalAura, 12);
-        _pools[2] = new PjskEffectPool(criticalNormalGen, 12);
+        _pools[PoolKey(PjskStyleKind.Critical, 0)] = new PjskEffectPool(laneCritical, PoolSize);
+        _pools[PoolKey(PjskStyleKind.Critical, 1)] = new PjskEffectPool(criticalAura, PoolSize);
+        _pools[PoolKey(PjskStyleKind.Critical, 2)] = new PjskEffectPool(criticalGen, PoolSize);
+        _pools[PoolKey(PjskStyleKind.Normal, 0)] = new PjskEffectPool(laneNormal, PoolSize);
+        _pools[PoolKey(PjskStyleKind.Normal, 1)] = new PjskEffectPool(normalAura, PoolSize);
+        _pools[PoolKey(PjskStyleKind.Normal, 2)] = new PjskEffectPool(normalGen, PoolSize);
     }
 
     public void Reset()
@@ -55,48 +71,21 @@ internal sealed class PjskEffectView
     }
 
     /// <summary>
-    /// 触发一次 critical tap 效果。与原 addNoteEffects 的 critical tap 分支一致：
-    /// 每条 lane 一个 aura + 一个 lane 光束，中心一个 gen 爆花。spawnAtSec 为触发时间（秒）。
+    /// 触发一次单宽度 note 命中：中心 1 道 lane 光束 + 1 个 aura + 1 个爆花。
+    /// 对应原 addNoteEffects 对 1 lane note 的分派（普通 note 无 lane 光束的部分由数据自身控制）。
     /// </summary>
-    public void TriggerCriticalTap(float spawnAtSec)
+    public void TriggerHit(float spawnAtSec)
     {
-        if (_laneCritical == null || _criticalNormalAura == null || _criticalNormalGen == null)
-        {
-            return;
-        }
-
-        for (var lane = 0; lane < LaneCount; lane++)
-        {
-            var laneX = (lane - (LaneCount - 1) / 2f) * EffectWidthRatio;
-            AddAuraEffect(_criticalNormalAura, laneX, spawnAtSec);
-            AddLaneEffect(_laneCritical, laneX, spawnAtSec);
-        }
-
-        AddGenEffect(_criticalNormalGen, 0f, spawnAtSec);
+        PlayAt(PoolKey(Style, 0), spawnAtSec);
+        PlayAt(PoolKey(Style, 1), spawnAtSec);
+        PlayAt(PoolKey(Style, 2), spawnAtSec);
     }
 
-    /// <summary>aura：每条 lane 独立一个发射器（对应原 addAuraEffect 的逐 lane 循环）。</summary>
-    private void AddAuraEffect(PjskParticleDef def, float xPos, float time)
+    private void PlayAt(int poolKey, float spawnAtSec)
     {
-        var controller = _pools[1].GetNext();
-        controller.WorldX = xPos * EffectWidthRatio;
-        controller.Play(time, -1);
-    }
-
-    /// <summary>lane 光束：每条 lane 独立一个发射器（对应原 addLaneEffect）。</summary>
-    private void AddLaneEffect(PjskParticleDef def, float xPos, float time)
-    {
-        var controller = _pools[0].GetNext();
-        controller.WorldX = xPos * EffectWidthRatio;
-        controller.Play(time, -1);
-    }
-
-    /// <summary>gen 爆花：中心一个发射器（对应原 addEffect）。</summary>
-    private void AddGenEffect(PjskParticleDef def, float xPos, float time)
-    {
-        var controller = _pools[2].GetNext();
-        controller.WorldX = xPos * EffectWidthRatio;
-        controller.Play(time, -1);
+        var controller = _pools[poolKey].GetNext();
+        controller.WorldX = 0;
+        controller.Play(spawnAtSec, -1);
     }
 
     /// <summary>推进所有活跃发射器（对应 updateEffects）。</summary>
@@ -162,7 +151,7 @@ internal sealed class PjskEffectView
             var frame = Math.Clamp((int)frameFloat, 0, Math.Max(0, frameCount - 1));
             var row = frame / def.TextureSplitX;
             var col = frame % def.TextureSplitX;
-            var atlasSize = 1024;
+            const int atlasSize = 1024;
             var cellWidth = atlasSize / def.TextureSplitX;
             var cellHeight = atlasSize / def.TextureSplitY;
             var x1 = col * cellWidth;
@@ -170,8 +159,9 @@ internal sealed class PjskEffectView
             var y1 = row * cellHeight;
             var y2 = y1 + cellHeight;
 
-            // 与 drawQuadWithBlend 相同：四个公告板角点依次过 粒子矩阵 * 视图 * 投影。
-            var corners = new Vector2[4];
+            // 与 drawQuadWithBlend 相同：四个公告板角点依次过粒子矩阵得到世界坐标。
+            // 注意必须保留 Z（透视投影需要深度），由渲染方再乘 视图 × 投影。
+            var corners = new Vector3[4];
             for (var i = 0; i < 4; i++)
             {
                 var local = i switch
@@ -182,13 +172,8 @@ internal sealed class PjskEffectView
                     _ => new Vector4(-0.5f, 0.5f, 0f, 1f)
                 };
                 var value = Vector4.Transform(local, p.Matrix);
-                var w = value.W;
-                if (MathF.Abs(w) <= 0.000001f)
-                {
-                    w = 1f;
-                }
-
-                corners[i] = new Vector2(value.X / w, value.Y / w);
+                var w = MathF.Abs(value.W) > 0.000001f ? value.W : 1f;
+                corners[i] = new Vector3(value.X / w, value.Y / w, value.Z / w);
             }
 
             output.Add(new PjskEffectQuad(

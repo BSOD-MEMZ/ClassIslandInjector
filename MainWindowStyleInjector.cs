@@ -4498,7 +4498,11 @@ internal sealed class MainWindowStyleInjector : IDisposable
             // 上 = 特效从主界面底边向上喷射（pjsk 原版观感）；下 = 从顶边向下镜像喷射。
             var up = _settings.PjskRippleDirection == PjskRippleDirection.Up;
             var (pjskAnchor, pjskIslandWidth) = GetPjskAnchor(effectWindow, up);
-            var pjsk = new PjskRippleOverlay(pjskAnchor, pjskIslandWidth, up, _settings.RippleOpacity)
+            // 默认跟随主界面宽度；用户设置最大宽度时取二者较小值。
+            var pjskWidth = _settings.PjskMaxWidth > 0
+                ? Math.Min(pjskIslandWidth, _settings.PjskMaxWidth)
+                : pjskIslandWidth;
+            var pjsk = new PjskRippleOverlay(pjskAnchor, pjskWidth, up, _settings.PjskNoteStyle, _settings.RippleOpacity)
             {
                 HorizontalAlignment = HorizontalAlignment.Stretch,
                 VerticalAlignment = VerticalAlignment.Stretch
