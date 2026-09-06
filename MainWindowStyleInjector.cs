@@ -3663,9 +3663,12 @@ internal sealed class MainWindowStyleInjector : IDisposable
             {
                 _spectrumCapture = new AudioSpectrumCapture();
             }
-            catch
+            catch (Exception ex)
             {
                 _spectrumCapture = null;
+                // 静默降级但留痕：行级宿主将没有任何 Child/Background，频谱整块不可见，
+                // 不留日志的话用户只看到「选了没反应」（Issue #6）。
+                DebugLog($"StartSpectrum: 回环捕获初始化失败，频谱不可见。{ex.GetType().Name}: {ex.Message}");
                 return;
             }
         }
@@ -5259,7 +5262,18 @@ internal sealed class MainWindowStyleInjector : IDisposable
             // （本地值优先级高于样式 Setter）宿主 line-background 样式的圆角被永久
             // 覆盖，此后每次装饰重应用都读到 0、还原 0，主界面与覆盖层全部退化为直角。
             // 插件不接管 CornerRadius，这里清除本地值让样式绑定（RadiusX 驱动）生效。
-            borderControl.ClearValue(Border.CornerRadiusProperty);
+            //
+            // ★ 但只对「样式驱动圆角」的背景 Border（BackgroundBorder / 分体
+            // line-background）清本地值。OverlayMask / BackgroundBorderOverlayMask 的
+            // 圆角是宿主模板 XAML 直接写在元素上的（= 本地值），没有任何样式 Setter
+            // 兜底——ClearValue 会把它清成 0，提醒遮罩退化成直角（Issue #6）。遮罩圆角
+            // 由插件写入宿主 RadiusX 后随 attached 属性绑定联动，无需也不能在这里清。
+            var isMaskBorder = borderControl.Name == HostContract.OverlayMask ||
+                               borderControl.Name == HostContract.BackgroundBorderOverlayMask;
+            if (!isMaskBorder)
+            {
+                borderControl.ClearValue(Border.CornerRadiusProperty);
+            }
 
             // 分体模式（IsIslandSeperated）下宿主隐藏 Border#BackgroundBorder，
             // 真实背景由每行根组件模板的 Border.line-background 提供；两者都按背景装饰处理。

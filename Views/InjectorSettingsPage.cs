@@ -356,19 +356,19 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         new(RippleType.Explode, "爆炸（高级）"),
         new(RippleType.Particle, "粒子"),
         new(RippleType.Cinematic, "屏幕涟漪（高级）"),
-        new(RippleType.Pjsk, "pjsk 强调"),
+        new(RippleType.Pjsk, "PJSK判定（高级）"),
     ];
 
     private static readonly Choice<PjskRippleDirection>[] PjskRippleDirections =
     [
-        new(PjskRippleDirection.Up, "向上（原版）"),
-        new(PjskRippleDirection.Down, "向下（镜像）"),
+        new(PjskRippleDirection.Up, "向上"),
+        new(PjskRippleDirection.Down, "向下"),
     ];
 
     private static readonly Choice<PjskNoteStyle>[] PjskNoteStyles =
     [
-        new(PjskNoteStyle.Critical, "绝赞（金黄）"),
-        new(PjskNoteStyle.Normal, "普通（蓝紫）"),
+        new(PjskNoteStyle.Critical, "绝赞"),
+        new(PjskNoteStyle.Normal, "普通"),
     ];
 
     private static readonly Choice<ClickEffectType>[] ClickEffectTypes =
@@ -754,6 +754,12 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                 return;
             }
 
+            // 与 WireTutorialExpander 相同：教学未运行时不做任何推进 / 回调（Issue #6）。
+            if (!HostTutorial.IsTutorialRunning())
+            {
+                return;
+            }
+
             HostTutorial.PushToNextSentenceByTag(tag);
             after?.Invoke();
         };
@@ -765,6 +771,15 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         expander.PropertyChanged += (_, e) =>
         {
             if (e.Property != SettingsExpander.IsExpandedProperty || !expander.IsExpanded || _suppressLivePreview || _suppressTutorialPush)
+            {
+                return;
+            }
+
+            // 教学未运行时必须整体短路：after 回调是教学辅助逻辑（自动展开开关 /
+            // 「已是频谱则重置为网格线」彩蛋），曾经无条件执行——用户平时展开「底纹
+            // 纹理」组就会被静默重置选择，并经实时预览把改动落盘（Issue #6 的
+            // 「动态频谱存不上」）。
+            if (!HostTutorial.IsTutorialRunning())
             {
                 return;
             }
@@ -1233,8 +1248,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         var cinematicShakeItem = Item("晃动幅度", "提醒时画面晃动的最远位移（像素），0 为关闭晃动。", _cinematicShake);
         var cinematicBlurItem = Item("模糊半径", "起始模糊半径。", _cinematicBlur);
         var cinematicFlashItem = Item("闪光强度", "中心白光的亮度扩散强度，0 为关闭闪光。", _cinematicFlash);
-        var pjskDirectionItem = Item("特效方向", "pjsk 强调特效相对判定线（主界面）的喷射方向。", _pjskDirection);
-        var pjskStyleItem = Item("note 效果样式", "note 击打效果的配色样式：绝赞为金黄色，普通为蓝紫色。", _pjskNoteStyle);
+        var pjskDirectionItem = Item("特效方向", "PJSK 强调特效相对判定线（主界面）的喷射方向。", _pjskDirection);
+        var pjskStyleItem = Item("note 效果样式", "note 击打效果的配色样式。", _pjskNoteStyle);
         var pjskMaxWidthItem = Item("特效最大宽度", "特效横向铺开的宽度上限（像素），0 = 跟随主界面宽度。", _pjskMaxWidth);
         var pjskJudgeItem = Item("显示 PERFECT 字样", "特效期间在判定线上方显示 PERFECT 判定字样。", _pjskShowJudge);
         var rippleGroup = SwitchableGroup("\uEFFF", "提醒 Ripple", "选择提醒时的扩散效果，高级特效视觉效果更强。", _rippleEnabled,

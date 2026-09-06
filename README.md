@@ -36,9 +36,10 @@
 
 - **列表翻页动画**：自定义轮播容器、上课提醒横幅等列表的上翻切换动画
 
-- **提醒特效**：收到提醒时有脉冲、弹跳、抖动、闪烁等强调动画，还有线性、放射、粒子、舞萌花火、爆炸、**屏幕涟漪**等各种 Ripple，甚至有一个覆盖整屏的**全屏流光效果**
+- **提醒特效**：收到提醒时有脉冲、弹跳、抖动、闪烁等强调动画，还有线性、放射、粒子、舞萌花火、爆炸、pjsk判定、屏幕涟漪等各种 Ripple，甚至有一个覆盖整屏的**全屏流光效果**
 
 ![截图](./Assets/Readme/hanabi.gif)
+![截图](./Assets/Readme/pjsk.gif)
 ![截图](./Assets/Readme/superripple.jpg)
 
 - **即将上课倒计时**：快上课时，屏幕上会滑过箭头 `>>`、扩散光环、扫描线或**光带**，还可以叠加红色警告边框
@@ -108,9 +109,11 @@
 
 - **Windows.Media.Control（SMTC）**：调用 Windows 系统媒体会话（WinRT）API，获取正在播放的媒体信息、播放状态与专辑封面。
 - **Fluent System Icons**（Microsoft）：界面图标，MIT 许可证。
-- **sekai-stickers 贴纸库**（[TheOriginalAyaka/sekai-stickers](https://github.com/TheOriginalAyaka/sekai-stickers)）：编辑器「添加贴纸」功能按需从该仓库在线拉取贴纸列表与缩略图（缓存到本地配置目录，不随插件分发）。贴纸为社区粉丝自制，仅供个人使用，相关角色形象版权归原版权方（SEGA / Colorful Palette）所有。
+- **sekai-stickers 贴纸库**（[TheOriginalAyaka/sekai-stickers](https://github.com/TheOriginalAyaka/sekai-stickers)）：编辑器贴纸功能
 - **hanabi 效果**（[LingFeng-bbben/MajdataView](https://github.com/LingFeng-bbben/MajdataView/)）：舞萌 hanabi 效果贴图。
-- **FFmpeg（原生共享库）**：动态视频背景、素材压缩转码与视频剪辑渲染所需。原生库不随插件分发，安装器会按需从默认源 / 自定义镜像下载到用户配置目录，也支持手动放置。
+- **pjsk 效果**（[watagashi-uni/sekai-mmw-preview-web](https://github.com/watagashi-uni/sekai-mmw-preview-web/)）：プロジェクトセカイ 风格强调效果。
+- **FFmpeg（原生共享库）**：动态视频背景、素材压缩转码与视频剪辑渲染所需。
 ### 自带素材
 
 - `Assets/` 目录下的示例图片、教程横幅与演示音效为本插件自带素材，随插件分发，仅用于功能演示与内置教程，Music 目录下的示例音乐归原版权方所有。
+贴纸为社区粉丝自制，仅供个人使用，相关角色形象版权归原版权方（SEGA / Colorful Palette）所有。
