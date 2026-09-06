@@ -36,15 +36,18 @@ internal sealed class PjskRippleOverlay : Control, IRippleEffect
     private readonly Point _anchor;
     private readonly bool _up;
     private readonly double _effectWidth;
+    private readonly bool _showJudge;
     private readonly PjskEffectView _view = new();
     private readonly Matrix4x4 _inverseView;
     private readonly List<PjskEffectQuad> _quads = [];
 
-    public PjskRippleOverlay(Point anchor, double effectWidth, bool up, PjskNoteStyle style, double opacityScale = 1)
+    public PjskRippleOverlay(Point anchor, double effectWidth, bool up, PjskNoteStyle style,
+        bool showJudge, double opacityScale = 1)
     {
         _anchor = anchor;
         _up = up;
         _effectWidth = Math.Max(60, effectWidth);
+        _showJudge = showJudge;
         Opacity = Math.Clamp(opacityScale, 0, 1);
         IsHitTestVisible = false;
         ClipToBounds = false;
@@ -115,7 +118,8 @@ internal sealed class PjskRippleOverlay : Control, IRippleEffect
 
         _quads.Clear();
         _view.CollectQuads(_quads);
-        if (_quads.Count == 0)
+
+        if (_quads.Count == 0 && !_showJudge)
         {
             return;
         }
@@ -178,6 +182,42 @@ internal sealed class PjskRippleOverlay : Control, IRippleEffect
                 using var opacity = context.PushOpacity(quad.Alpha);
                 using var transformPush = context.PushTransform(transform);
                 context.DrawImage(assets.Atlas, sourceRect, new Rect(0, 0, 1, 1));
+            }
+        }
+
+        // PERFECT 判定字样：判定线正上方淡入淡出，无位移（原版没有上浮动画）。
+        if (_showJudge && assets.Judge != null)
+        {
+            var progress = (DateTime.UtcNow - _startedAt).TotalSeconds;
+            double alpha;
+            if (progress < 0.08)
+            {
+                alpha = progress / 0.08;
+            }
+            else if (progress < 0.45)
+            {
+                alpha = 1;
+            }
+            else if (progress < 0.75)
+            {
+                alpha = 1 - (progress - 0.45) / 0.30;
+            }
+            else
+            {
+                alpha = 0;
+            }
+
+            if (alpha > 0.01)
+            {
+                var judgeW = Math.Max(32, _effectWidth * 0.11);
+                var judgeH = judgeW * 81.0 / 310.0;
+                var x = _anchor.X - judgeW / 2;
+                // 上：字样在判定线上方；下：镜像到线下方。
+                var y = _up ? _anchor.Y - 30 - judgeH : _anchor.Y + 30;
+                using (context.PushOpacity(alpha))
+                {
+                    context.DrawImage(assets.Judge, new Rect(x, y, judgeW, judgeH));
+                }
             }
         }
     }
@@ -248,13 +288,20 @@ internal sealed class PjskRippleOverlay : Control, IRippleEffect
 
             using var stream = File.OpenRead(atlasPath);
             var atlas = new Bitmap(stream);
+            Bitmap? judge = null;
+            var judgePath = Path.Combine(assetsDir, "judge_perfect.png");
+            if (File.Exists(judgePath))
+            {
+                using var judgeStream = File.OpenRead(judgePath);
+                judge = new Bitmap(judgeStream);
+            }
             var laneCritical = PjskEffectLoader.Parse(File.ReadAllText(Path.Combine(assetsDir, "fx_lane_critical.json")));
             var criticalAura = PjskEffectLoader.Parse(File.ReadAllText(Path.Combine(assetsDir, "fx_note_critical_normal_aura.json")));
             var criticalGen = PjskEffectLoader.Parse(File.ReadAllText(Path.Combine(assetsDir, "fx_note_critical_normal_gen.json")));
             var laneDefault = PjskEffectLoader.Parse(File.ReadAllText(Path.Combine(assetsDir, "fx_lane_default.json")));
             var normalAura = PjskEffectLoader.Parse(File.ReadAllText(Path.Combine(assetsDir, "fx_note_normal_aura.json")));
             var normalGen = PjskEffectLoader.Parse(File.ReadAllText(Path.Combine(assetsDir, "fx_note_normal_gen.json")));
-            return new PjskEffectAssets(atlas, laneCritical, criticalAura, criticalGen, laneDefault, normalAura, normalGen);
+            return new PjskEffectAssets(atlas, judge, laneCritical, criticalAura, criticalGen, laneDefault, normalAura, normalGen);
         }
         catch (Exception ex)
         {
@@ -267,6 +314,7 @@ internal sealed class PjskRippleOverlay : Control, IRippleEffect
 
     private sealed record PjskEffectAssets(
         Bitmap Atlas,
+        Bitmap? Judge,
         PjskParticleDef LaneCritical,
         PjskParticleDef CriticalAura,
         PjskParticleDef CriticalGen,

@@ -189,6 +189,8 @@ public static class InjectorSettingCatalog
                     [KV(PjskNoteStyle.Critical, "绝赞（金黄）"), KV(PjskNoteStyle.Normal, "普通（蓝紫）")]),
                 Spec("PjskMaxWidth", "pjsk 特效最大宽度", "\uEFFF", SettingValueKind.Double, 0, 2000, "0",
                     "特效横向铺开的宽度上限（像素），0 = 跟随主界面宽度。"),
+                Spec("PjskShowJudge", "pjsk 显示 PERFECT 字样", "\uEFFF", SettingValueKind.Bool,
+                    "特效期间在判定线上方显示 PERFECT 判定字样。"),
                 Spec("RippleColor", "Ripple 颜色", "\uEFFF", SettingValueKind.String,
                     "支持透明度的提醒扩散颜色（如 #AA7DD3FC）。"),
                 Spec("RippleDurationSeconds", "Ripple 时长", "\uEFFF", SettingValueKind.Double, 0.1, 10, "0.##",

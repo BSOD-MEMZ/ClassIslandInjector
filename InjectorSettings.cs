@@ -749,6 +749,7 @@ public sealed class InjectorSettings
     private PjskRippleDirection _pjskRippleDirection = PjskRippleDirection.Up;
     private PjskNoteStyle _pjskNoteStyle = PjskNoteStyle.Critical;
     private double _pjskMaxWidth;
+    private bool _pjskShowJudge;
     private string _rippleColor = "#AA7DD3FC";
     private double _rippleDurationSeconds = 0.65;
     private double _rippleThickness = 3;
@@ -937,6 +938,9 @@ public sealed class InjectorSettings
 
     /// <summary>pjsk note 击打效果样式：普通（蓝紫）或绝赞（金黄）。</summary>
     public PjskNoteStyle PjskNoteStyle { get => _pjskNoteStyle; set => Set(ref _pjskNoteStyle, value); }
+
+    /// <summary>pjsk 特效期间是否显示 PERFECT 判定字样（默认关）。</summary>
+    public bool PjskShowJudge { get => _pjskShowJudge; set => Set(ref _pjskShowJudge, value); }
 
     /// <summary>pjsk 强调特效的最大宽度（像素）。0 = 跟随主界面宽度；正值时取主界面宽度与该值的最小者。</summary>
     public double PjskMaxWidth { get => _pjskMaxWidth; set => Set(ref _pjskMaxWidth, Math.Clamp(value, 0, 2000)); }
@@ -1142,6 +1146,7 @@ public sealed class InjectorSettings
         PjskRippleDirection = source.PjskRippleDirection;
         PjskNoteStyle = source.PjskNoteStyle;
         PjskMaxWidth = source.PjskMaxWidth;
+        PjskShowJudge = source.PjskShowJudge;
         RippleColor = source.RippleColor;
         DynamicBorderColorEnabled = source.DynamicBorderColorEnabled;
         DynamicShadowColorEnabled = source.DynamicShadowColorEnabled;

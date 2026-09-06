@@ -56,6 +56,9 @@
   </Target>
 
   <ItemGroup>
+    <!-- README.md 引用的 Assets/Readme/ 截图仅用于仓库展示，禁止进入输出目录与 cipx 包体（节省空间）。 -->
+    <None Remove="Assets\Readme\**" />
+    <Content Remove="Assets\Readme\**" />
     <None Update="manifest.yml" CopyToOutputDirectory="PreserveNewest" />
     <None Update="README.md" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="icon.png" CopyToOutputDirectory="PreserveNewest" />
@@ -64,7 +67,6 @@
     <Content Include="Defaults\contract-catalog.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Defaults\contract-index.sample.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\Firework.png" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="Assets\Firework_new.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\ColorBall.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\explode.gif" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\album.jpg" CopyToOutputDirectory="PreserveNewest" />

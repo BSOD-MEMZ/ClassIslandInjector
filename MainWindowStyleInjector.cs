@@ -3553,8 +3553,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
     }
 
     /// <summary>
-    /// 构造 Aero 底纹层（横向平铺条纹 + 左右两端光晕）。
-    /// 条纹按当前可用高度等比缩放、纵向铺满；两端光晕按相同缩放比例置于左右边缘。
+    /// 构造 Aero 底纹层。
+    /// 条纹（aerostripe）按高度等比缩放后横向平铺整个宿主；左右光晕（aeroleft/aeroright）
+    /// 按相同缩放比例叠在条纹之上、贴宿主左右边缘。
     /// </summary>
     private AeroLayerGrid? BuildAeroLayer(double height)
     {
@@ -3583,8 +3584,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
             Background = stripe,
             IsHitTestVisible = false,
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Stretch,
-            Margin = new Thickness(glowW, 0, glowW, 0)
+            VerticalAlignment = VerticalAlignment.Stretch
         };
 
         var leftImg = new Image
@@ -3620,9 +3620,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
             StripeAspect = stripeAspect,
             GlowAspect = glowAspect
         };
-        // Z 序：左光晕 → 条纹 → 右光晕。光晕与条纹通过 Margin 自然错位不重叠。
-        layer.Children.Add(leftImg);
+        // Z 序：条纹平铺整个岛 → 左右光晕叠加在条纹之上。
         layer.Children.Add(stripeBorder);
+        layer.Children.Add(leftImg);
         layer.Children.Add(rightImg);
         return layer;
     }
@@ -3639,10 +3639,6 @@ internal sealed class MainWindowStyleInjector : IDisposable
         var glowW = h * aero.GlowAspect;
         var tileW = h * aero.StripeAspect;
         aero.StripeBrush.DestinationRect = new RelativeRect(0, 0, tileW, h, RelativeUnit.Absolute);
-        if (aero.StripeBorder != null)
-        {
-            aero.StripeBorder.Margin = new Thickness(glowW, 0, glowW, 0);
-        }
 
         if (aero.LeftGlow != null)
         {
@@ -4502,7 +4498,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
             var pjskWidth = _settings.PjskMaxWidth > 0
                 ? Math.Min(pjskIslandWidth, _settings.PjskMaxWidth)
                 : pjskIslandWidth;
-            var pjsk = new PjskRippleOverlay(pjskAnchor, pjskWidth, up, _settings.PjskNoteStyle, _settings.RippleOpacity)
+            var pjsk = new PjskRippleOverlay(pjskAnchor, pjskWidth, up, _settings.PjskNoteStyle,
+                _settings.PjskShowJudge, _settings.RippleOpacity)
             {
                 HorizontalAlignment = HorizontalAlignment.Stretch,
                 VerticalAlignment = VerticalAlignment.Stretch

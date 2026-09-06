@@ -224,6 +224,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly ComboBox _pjskDirection = Combo(PjskRippleDirections);
     private readonly ComboBox _pjskNoteStyle = Combo(PjskNoteStyles);
     private readonly Spin _pjskMaxWidth = Spinner(0, 2000, 10, "0");
+    private readonly ToggleSwitch _pjskShowJudge = Toggle();
+    /// <summary>pjsk 选项自动保存的防抖计时器（避免 Spinner 拖动期间高频落盘）。</summary>
+    private DispatcherTimer? _pjskAutoSaveTimer;
     private readonly ColorPicker _rippleColor = ColorPicker();
     private readonly Spin _rippleDuration = Spinner(0.1, 10, 0.05);
     private readonly Spin _rippleThickness = Spinner(0.5, 40, 0.5);
@@ -1233,11 +1236,13 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         var pjskDirectionItem = Item("特效方向", "pjsk 强调特效相对判定线（主界面）的喷射方向。", _pjskDirection);
         var pjskStyleItem = Item("note 效果样式", "note 击打效果的配色样式：绝赞为金黄色，普通为蓝紫色。", _pjskNoteStyle);
         var pjskMaxWidthItem = Item("特效最大宽度", "特效横向铺开的宽度上限（像素），0 = 跟随主界面宽度。", _pjskMaxWidth);
+        var pjskJudgeItem = Item("显示 PERFECT 字样", "特效期间在判定线上方显示 PERFECT 判定字样。", _pjskShowJudge);
         var rippleGroup = SwitchableGroup("\uEFFF", "提醒 Ripple", "选择提醒时的扩散效果，高级特效视觉效果更强。", _rippleEnabled,
             Item("Ripple 类型", "选择提醒时的扩散效果。", _rippleType),
             pjskDirectionItem,
             pjskStyleItem,
             pjskMaxWidthItem,
+            pjskJudgeItem,
             rippleColorItem, rippleDurationItem, rippleThicknessItem, rippleOpacityItem, rippleConstraintItem, rippleConstraintRadiusItem,
             cinematicShakeItem, cinematicBlurItem, cinematicFlashItem);
         VisibleWhenNotAny(rippleColorItem, _rippleType, RippleType.Hanabi, RippleType.Explode, RippleType.Cinematic, RippleType.Pjsk);
@@ -1248,7 +1253,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         VisibleWhen(pjskDirectionItem, _rippleType, RippleType.Pjsk);
         VisibleWhen(pjskStyleItem, _rippleType, RippleType.Pjsk);
         VisibleWhen(pjskMaxWidthItem, _rippleType, RippleType.Pjsk);
+        VisibleWhen(pjskJudgeItem, _rippleType, RippleType.Pjsk);
         VisibleWhen(cinematicShakeItem, _rippleType, RippleType.Cinematic);
+        WirePjskImmediateSave();
         VisibleWhen(cinematicBlurItem, _rippleType, RippleType.Cinematic);
         VisibleWhen(cinematicFlashItem, _rippleType, RippleType.Cinematic);
         AutoSelectOnEnable(_rippleEnabled, _rippleType, RippleTypes);
@@ -1850,6 +1857,42 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _backgroundTextureType.SelectionChanged += (_, _) => Changed();
         _backgroundTextureColor.PropertyChanged += (_, e) => { if (e.Property == Avalonia.Controls.ColorPicker.ColorProperty) Changed(); };
         _backgroundTextureSize.PropertyChanged += (_, _) => Changed();
+    }
+
+    /// <summary>
+    /// pjsk 强调选项即时保存：Ripple 是一次性触发效果、没有实时预览，
+    /// 相关控件改动经 200ms 防抖直接 SaveAndApply，无需离开页面再回来。
+    /// </summary>
+    private void WirePjskImmediateSave()
+    {
+        _pjskAutoSaveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
+        _pjskAutoSaveTimer.Tick += (_, _) =>
+        {
+            _pjskAutoSaveTimer.Stop();
+            if (!_suppressLivePreview)
+            {
+                SaveAndApply();
+            }
+        };
+
+        void Changed()
+        {
+            if (_suppressLivePreview)
+            {
+                return;
+            }
+
+            _pjskAutoSaveTimer.Stop();
+            _pjskAutoSaveTimer.Start();
+        }
+
+        _rippleEnabled.PropertyChanged += (_, e) => { if (e.Property == ToggleSwitch.IsCheckedProperty) Changed(); };
+        _rippleType.SelectionChanged += (_, _) => Changed();
+        _pjskDirection.SelectionChanged += (_, _) => Changed();
+        _pjskNoteStyle.SelectionChanged += (_, _) => Changed();
+        _pjskMaxWidth.PropertyChanged += (_, _) => Changed();
+        _rippleOpacity.PropertyChanged += (_, _) => Changed();
+        _pjskShowJudge.PropertyChanged += (_, e) => { if (e.Property == ToggleSwitch.IsCheckedProperty) Changed(); };
     }
 
     /// <summary>
@@ -3713,6 +3756,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         Select(_pjskDirection, PjskRippleDirections, settings.PjskRippleDirection);
         Select(_pjskNoteStyle, PjskNoteStyles, settings.PjskNoteStyle);
         _pjskMaxWidth.DoubleValue = settings.PjskMaxWidth;
+        _pjskShowJudge.IsChecked = settings.PjskShowJudge;
         _rippleEnabled.IsChecked = settings.RippleType != RippleType.None;
         _rippleColor.Color = ReadColor(settings.RippleColor, Color.FromArgb(0xAA, 0x7D, 0xD3, 0xFC));
         _rippleDuration.DoubleValue = settings.RippleDurationSeconds;
@@ -3897,6 +3941,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.PjskRippleDirection = Selected(_pjskDirection, PjskRippleDirection.Up);
             settings.PjskNoteStyle = Selected(_pjskNoteStyle, PjskNoteStyle.Critical);
             settings.PjskMaxWidth = _pjskMaxWidth.DoubleValue;
+            settings.PjskShowJudge = _pjskShowJudge.IsChecked == true;
             settings.RippleColor = _rippleColor.Color.ToString();
             settings.RippleDurationSeconds = _rippleDuration.DoubleValue;
             settings.RippleThickness = _rippleThickness.DoubleValue;
