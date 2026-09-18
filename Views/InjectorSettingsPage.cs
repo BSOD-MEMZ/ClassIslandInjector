@@ -1260,7 +1260,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _albumColorTransition.Name = "SmtcTransitionSpin";
         panel.Children.Add(_smtcDynamicGroup);
 
-        AddSection(panel, "\uE254", "边框与阴影");
+        AddSection(panel, "\uE254", "边框、阴影和文字");
         var shadowColorItem = Item("阴影颜色", "支持透明度的阴影颜色。", _shadowColor);
         _shadowGroup = SwitchableGroup("\uE472", "阴影", "为 ClassIsland 添加投影效果。", _shadow,
             Item("动态取色", "阴影色调跟随专辑封面莫奈取色。", _dynamicShadowColor),
@@ -1287,19 +1287,19 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _textFixedColorItem = Item("字色", "文字使用的固定颜色。", _textColor);
         _textLightColorItem = Item("深色背景字色", "背景较暗（亮度低于阈值）时使用的字色。", _textLightColor);
         _textDarkColorItem = Item("浅色背景字色", "背景较亮（亮度高于阈值）时使用的字色。", _textDarkColor);
-        _textThresholdItem = Item("反色阈值", "背景相对亮度高于该值时使用浅色背景字色，否则使用深色背景字色（0.55 约为中间灰）。", _textInvertThreshold);
+        _textThresholdItem = Item("反色阈值", "背景相对亮度高于该值时使用浅色背景字色。", _textInvertThreshold);
         _textOutlineColorItem = Item("勾边颜色", "文字勾边（轮廓）的颜色，建议用与字色反差大的颜色。", _textOutlineColor);
-        _textGroup = SwitchableGroup("\uF263", "文字美化", "自定义主界面文字的字体、字号、字色与勾边；「跟随背景自动反色」可保证浅底黑字、深底白字，文字始终醒目。",
+        _textGroup = SwitchableGroup("\uF263", "文字美化", "自定义主界面文字的字体、字号、字色与勾边。",
             _textStylingEnabled,
-            Item("字体", "从系统已安装字体中选择；「保持宿主原字体」表示不做替换。", _textFontFamily),
-            Item("字号", "主界面标准文字的字号（像素）。0 = 保持宿主原字号。", _textFontSize),
-            Item("字号缩放", "未指定字号时按此比例整体缩放宿主原字号（1 = 不缩放）。", _textFontScale),
+            Item("字体", "从系统已安装字体中选择。", _textFontFamily),
+            Item("字号", "主界面标准文字的字号（像素）。", _textFontSize),
+            Item("字号缩放", "未指定字号时按此比例整体缩放宿主原字号。", _textFontScale),
             Item("字色来源", "保持原样 / 使用固定颜色 / 跟随背景自动反色。", _textColorMode),
             _textLightColorItem,
             _textDarkColorItem,
             _textThresholdItem,
             _textFixedColorItem,
-            Item("勾边宽度", "为文字添加轮廓以提升可读性，0 = 不勾边。", _textOutlineThickness),
+            Item("勾边宽度", "为文字添加轮廓以提升可读性。", _textOutlineThickness),
             _textOutlineColorItem,
             Item("仅主界面生效", "开启后只美化主界面文字，提醒等其它区域的文字保持宿主原样。", _textMainWindowOnly));
         _textGroup.Name = "TextGroup";
