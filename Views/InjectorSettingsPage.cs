@@ -188,7 +188,17 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
     // ===== 主界面文字美化（Issue #7）=====
     private readonly ToggleSwitch _textStylingEnabled = Toggle();
-    private readonly TextBox _textFontFamily = new() { MinWidth = 200, Watermark = "留空 = 保持原字体" };
+    /// <summary>
+    /// 字体选择：Avalonia 11.3 / FluentAvalonia 2.4.1 / ClassIsland.Core 都没有内置字体选择器
+    /// （仅有 FontFamily 类型与 FontIcon 控件），因此枚举系统字体自行搭一个组合框。
+    /// 首项为空值 = 保持宿主原字体，其余项显示字体名并以该字体本身作预览。
+    /// </summary>
+    private readonly ComboBox _textFontFamily = new()
+    {
+        MinWidth = 240,
+        MaxDropDownHeight = 360,
+        HorizontalContentAlignment = HorizontalAlignment.Left
+    };
     private readonly Spin _textFontSize = Spinner(0, 96, 1, "0");
     private readonly Spin _textFontScale = Spinner(0.3, 3, 0.05);
     private readonly ComboBox _textColorMode = Combo(TextColorModes);
@@ -306,7 +316,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     };
     private readonly ToggleSwitch _presetAssociation = Toggle();
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.8 };
-    /// <summary>实时预览开关：开启后设置项修改立即保存应用（可视化编辑器仍为手动保存）。默认开启。</summary>
+    /// <summary>实时预览开关：开启后设置项修改立即保存应用。默认开启。</summary>
     private readonly ToggleSwitch _livePreview = new()
     {
         IsChecked = true,
@@ -316,12 +326,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     };
     /// <summary>实时预览防抖定时器，避免拖动控件时高频写盘。</summary>
     private readonly DispatcherTimer _livePreviewTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
-    /// <summary>抑制实时预览（程序性修改控件时置 true，如加载 / 撤销 / 编辑器操作）。</summary>
+    /// <summary>抑制实时预览（程序性修改控件时置 true，如加载 / 撤销）。</summary>
     private bool _suppressLivePreview;
-    private IslandVisualEditorWindow? _visualEditorWindow;
-    private readonly List<IslandPreviewState> _editorUndo = [];
-    private readonly List<IslandPreviewState> _editorRedo = [];
-    private bool _editorDirty;
 
     private static readonly Choice<VideoFillFit>[] VideoFillFits =
     [
@@ -485,10 +491,16 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         new(TextColorMode.AutoInvert, "跟随背景自动反色"),
     ];
 
+    /// <summary>
+    /// 是否在「用户预设」里显示「预设商店」入口。暂时置 false 隐藏；
+    /// 商店服务、窗口与下载安装链路均保留，改回 true 即可恢复入口。
+    /// 用 static readonly（而非 const）以避免编译器把整段分支判为不可达代码（CS0162）。
+    /// </summary>
+    private static readonly bool StoreEntryVisible = false;
+
     public InjectorSettingsPage()
     {
         Content = BuildContent();
-        WireVisualEditor();
         WireLivePreview();
         WireBackgroundBrush();
         WireTextureBrush();
@@ -1079,8 +1091,13 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         panel.Children.Add(_smtcTutorialInfoBar);
 
         AddSection(panel, "\uF42F", "用户预设");
-        // 各预设操作图标各不相同，避免“用户预设”大类里图标重复：商店 / 保存 / 套用 / 导出导入 / 文件关联。
-        panel.Children.Add(Setting("\uEF87", "预设商店", "联机浏览社区预设：首页精选轮播、热门排行、搜索与排序，点「获取」即可下载安装（安装前会展示作者等元数据供确认）。", PresetStoreFooter()));
+        // 各预设操作图标各不相同，避免“用户预设”大类里图标重复：保存 / 套用 / 导出导入 / 文件关联。
+        // 注意：「预设商店」入口暂时隐藏（StoreEntryVisible 置 false）。商店服务（PresetStoreService）、
+        // 窗口与 .cizip 导入导出链路全部保留可用，只是不在此处暴露入口——恢复时把下面的条件去掉即可。
+        if (StoreEntryVisible)
+        {
+            panel.Children.Add(Setting("\uEF87", "预设商店", "联机浏览社区预设：首页精选轮播、热门排行、搜索与排序，点「获取」即可下载安装（安装前会展示作者等元数据供确认）。", PresetStoreFooter()));
+        }
         panel.Children.Add(Setting("\uEEB5", "保存当前为预设", "把插件当前全部设置项保存为一个命名预设（同名覆盖）", PresetSaveFooter()));
         panel.Children.Add(Setting("\uE104", "套用 / 删除预设", "套用会把全部设置项替换为该预设保存时的状态。", PresetManageFooter()));
         panel.Children.Add(Setting("\uE0E4", "导出 / 导入预设", "把预设（含底图等静态资源与作者信息）导出为 .cizip 文件分享给别人，或从别人分享的 .cizip 导入预设。", PresetExchangeFooter()));
@@ -1272,9 +1289,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _textDarkColorItem = Item("浅色背景字色", "背景较亮（亮度高于阈值）时使用的字色。", _textDarkColor);
         _textThresholdItem = Item("反色阈值", "背景相对亮度高于该值时使用浅色背景字色，否则使用深色背景字色（0.55 约为中间灰）。", _textInvertThreshold);
         _textOutlineColorItem = Item("勾边颜色", "文字勾边（轮廓）的颜色，建议用与字色反差大的颜色。", _textOutlineColor);
-        _textGroup = SwitchableGroup("\uE8D2", "文字美化", "自定义主界面文字的字体、字号、字色与勾边；「跟随背景自动反色」可保证浅底黑字、深底白字，文字始终醒目。",
+        _textGroup = SwitchableGroup("\uF263", "文字美化", "自定义主界面文字的字体、字号、字色与勾边；「跟随背景自动反色」可保证浅底黑字、深底白字，文字始终醒目。",
             _textStylingEnabled,
-            Item("字体", "填写字体名称（如 Microsoft YaHei）。留空保持宿主原字体。", _textFontFamily),
+            Item("字体", "从系统已安装字体中选择；「保持宿主原字体」表示不做替换。", _textFontFamily),
             Item("字号", "主界面标准文字的字号（像素）。0 = 保持宿主原字号。", _textFontSize),
             Item("字号缩放", "未指定字号时按此比例整体缩放宿主原字号（1 = 不缩放）。", _textFontScale),
             Item("字色来源", "保持原样 / 使用固定颜色 / 跟随背景自动反色。", _textColorMode),
@@ -1287,6 +1304,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("仅主界面生效", "开启后只美化主界面文字，提醒等其它区域的文字保持宿主原样。", _textMainWindowOnly));
         _textGroup.Name = "TextGroup";
         panel.Children.Add(_textGroup);
+        PopulateFontFamilyCombo();
         WireTextColorModeVisibility();
 
         AddSection(panel, "\uE82B", "动画");
@@ -1449,7 +1467,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             IsOpen = true,
             IsClosable = false
         });
-        panel.Children.Add(Setting("\uE288", "打开可视化编辑器（已弃用）", "在独立窗口中像做 PPT 一样编辑 ClassIsland 主界面样式，但存在严重兼容性问题，已被弃用。", Button("打开编辑器", OpenVisualEditor)));
         panel.Children.Add(new InfoBar
         {
             Severity = InfoBarSeverity.Warning,
@@ -3506,21 +3523,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _status.Text = "已删除所有数据，主界面已恢复为原生状态；现在可以通过 ClassIsland 的插件管理安全卸载本插件。";
     }
 
-    private void WireVisualEditor()
-    {
-        foreach (var control in new Control[]
-                 {
-                     _opacity, _rotation, _offsetX, _offsetY, _cornerRadius,
-                     _customBackground, _backgroundColor, _dynamicBackgroundColor, _dynamicBorderColor, _dynamicShadowColor,
-                     _albumColorPollingInterval, _albumColorTransition, _gradient, _gradientEndColor,
-                     _shadow, _shadowColor, _shadowBlur, _shadowOffsetX, _shadowOffsetY, _shadowOpacity,
-                     _border, _borderColor, _borderThickness
-                 })
-        {
-            control.PropertyChanged += (_, _) => RefreshVisualEditor();
-        }
-    }
-
     /// <summary>
     /// 为全部设置输入控件挂接实时预览：开启开关时，任意控件值变化经防抖后立即保存应用。
     /// </summary>
@@ -3575,9 +3577,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         }
     }
 
-    /// <summary>
-    /// 触发实时预览保存（带防抖）。程序性修改（加载 / 撤销 / 编辑器操作）时被抑制。
-    /// </summary>
+    /// <summary>触发实时预览保存（带防抖）。程序性修改（加载 / 撤销）时被抑制。</summary>
     private void TriggerLivePreview()
     {
         if (!_livePreview.IsChecked == true || _suppressLivePreview)
@@ -3587,239 +3587,6 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
         _livePreviewTimer.Stop();
         _livePreviewTimer.Start();
-    }
-
-    private void RefreshVisualEditor()
-    {
-        var state = new IslandPreviewState(
-            _opacity.Value,
-            _rotation.DoubleValue,
-            _offsetX.DoubleValue,
-            _offsetY.DoubleValue,
-            _cornerRadius.DoubleValue,
-            _customBackground.IsChecked == true,
-            _backgroundColor.Color,
-            _gradient.IsChecked == true,
-            _gradientEndColor.Color,
-            Selected(_gradientDirection, GradientDirection.TopLeftToBottomRight),
-            _shadow.IsChecked == true,
-            _shadowColor.Color,
-            _shadowBlur.DoubleValue,
-            _shadowOffsetX.DoubleValue,
-            _shadowOffsetY.DoubleValue,
-            _shadowOpacity.Value,
-            _border.IsChecked == true,
-            _borderColor.Color,
-            _borderThickness.DoubleValue);
-        _visualEditorWindow?.Editor.Update(state);
-        _visualEditorWindow?.UpdateInspector(state);
-    }
-
-    private void OpenVisualEditor()
-    {
-        if (_visualEditorWindow is { IsVisible: true })
-        {
-            _visualEditorWindow.Activate();
-            return;
-        }
-
-        var window = new IslandVisualEditorWindow();
-        _visualEditorWindow = window;
-        _editorUndo.Clear();
-        _editorRedo.Clear();
-        _editorDirty = false;
-        window.UpdateUndoState(false, false);
-        // 编辑器采用暂存式编辑：期间禁止实时预览，避免把未保存的预览直接应用到主界面。
-        _suppressLivePreview = true;
-
-        // 画布手势：手势开始时记录撤销快照；拖动期间只改控件做实时预览（不保存）。
-        window.Editor.EditStarted += (_, _) => PushEditorUndo();
-        window.Editor.TransformEdited += (_, e) =>
-        {
-            _offsetX.DoubleValue = e.OffsetX;
-            _offsetY.DoubleValue = e.OffsetY;
-            _rotation.DoubleValue = e.Rotation;
-        };
-        window.Editor.CornerRadiusEdited += (_, e) => _cornerRadius.DoubleValue = e.Value;
-
-        // 顶部操作：保存 / 撤销 / 重做。
-        window.SaveRequested += (_, _) => SaveEditor();
-        window.UndoRequested += (_, _) => UndoEditorEdit();
-        window.RedoRequested += (_, _) => RedoEditorEdit();
-
-        // 检查器：每个编辑项作为一步可撤销更改（暂存，未保存前不写盘）。
-        window.BackgroundColorEdited += color =>
-        {
-            PushEditorUndo();
-            _customBackground.IsChecked = true;
-            _dynamicBackgroundColor.IsChecked = false;
-            _backgroundColor.Color = color;
-        };
-        window.GradientEdited += enabled => { PushEditorUndo(); _gradient.IsChecked = enabled; };
-        window.GradientEndColorEdited += color => { PushEditorUndo(); _gradientEndColor.Color = color; };
-        window.ShadowEdited += enabled => { PushEditorUndo(); _shadow.IsChecked = enabled; };
-        window.ShadowColorEdited += color => { PushEditorUndo(); _dynamicShadowColor.IsChecked = false; _shadowColor.Color = color; };
-        window.ShadowBlurEdited += value => { PushEditorUndo(); _shadowBlur.DoubleValue = value; };
-        window.ShadowOpacityEdited += value => { PushEditorUndo(); _shadowOpacity.Value = value; };
-        window.OpacityEdited += value => { PushEditorUndo(); _opacity.Value = value; };
-        window.CornerRadiusEdited += value => { PushEditorUndo(); _cornerRadius.DoubleValue = value; };
-        window.BackgroundEdited += enabled => { PushEditorUndo(); _customBackground.IsChecked = enabled; };
-        window.RotationEdited += value => { PushEditorUndo(); _rotation.DoubleValue = value; };
-        window.OffsetXEdited += value => { PushEditorUndo(); _offsetX.DoubleValue = value; };
-        window.OffsetYEdited += value => { PushEditorUndo(); _offsetY.DoubleValue = value; };
-        window.BorderEdited += enabled => { PushEditorUndo(); _border.IsChecked = enabled; };
-        window.BorderColorEdited += color => { PushEditorUndo(); _border.IsChecked = true; _dynamicBorderColor.IsChecked = false; _borderColor.Color = color; };
-        window.BorderThicknessEdited += value => { PushEditorUndo(); _border.IsChecked = true; _borderThickness.DoubleValue = value; };
-        window.ShadowOffsetXEdited += value => { PushEditorUndo(); _shadowOffsetX.DoubleValue = value; };
-        window.ShadowOffsetYEdited += value => { PushEditorUndo(); _shadowOffsetY.DoubleValue = value; };
-
-        // 关闭前询问是否保存。
-        window.Closing += OnEditorClosing;
-        window.Closed += (_, _) =>
-        {
-            _visualEditorWindow = null;
-            _suppressLivePreview = false;
-        };
-        RefreshVisualEditor();
-        window.Show();
-    }
-
-    /// <summary>
-    /// 捕获编辑器可编辑的全部设置项当前值（即撤销/重做的快照）。
-    /// </summary>
-    private IslandPreviewState CaptureEditorState() => new(
-        _opacity.Value, _rotation.DoubleValue, _offsetX.DoubleValue, _offsetY.DoubleValue,
-        _cornerRadius.DoubleValue,
-        _customBackground.IsChecked == true, _backgroundColor.Color, _gradient.IsChecked == true, _gradientEndColor.Color,
-        Selected(_gradientDirection, GradientDirection.TopLeftToBottomRight),
-        _shadow.IsChecked == true, _shadowColor.Color, _shadowBlur.DoubleValue, _shadowOffsetX.DoubleValue, _shadowOffsetY.DoubleValue,
-        _shadowOpacity.Value, _border.IsChecked == true, _borderColor.Color, _borderThickness.DoubleValue);
-
-    private void PushEditorUndo()
-    {
-        _editorUndo.Add(CaptureEditorState());
-        if (_editorUndo.Count > 100)
-        {
-            _editorUndo.RemoveAt(0);
-        }
-
-        _editorRedo.Clear();
-        _editorDirty = true;
-        _visualEditorWindow?.UpdateUndoState(true, false);
-    }
-
-    private void RestoreEditorState(IslandPreviewState state)
-    {
-        _opacity.Value = state.Opacity;
-        _rotation.DoubleValue = state.Rotation;
-        _offsetX.DoubleValue = state.OffsetX;
-        _offsetY.DoubleValue = state.OffsetY;
-        _cornerRadius.DoubleValue = state.CornerRadius;
-        _customBackground.IsChecked = state.CustomBackground;
-        _backgroundColor.Color = state.BackgroundColor;
-        _gradient.IsChecked = state.Gradient;
-        _gradientEndColor.Color = state.GradientEndColor;
-        Select(_gradientDirection, GradientDirections, state.GradientDirection);
-        _shadow.IsChecked = state.ShadowEnabled;
-        _shadowColor.Color = state.ShadowColor;
-        _shadowBlur.DoubleValue = state.ShadowBlur;
-        _shadowOffsetX.DoubleValue = state.ShadowOffsetX;
-        _shadowOffsetY.DoubleValue = state.ShadowOffsetY;
-        _shadowOpacity.Value = state.ShadowOpacity;
-        _border.IsChecked = state.BorderEnabled;
-        _borderColor.Color = state.BorderColor;
-        _borderThickness.DoubleValue = state.BorderThickness;
-        // 撤销/重做后工作区与已保存状态不再一致，关闭时应再次询问。
-        _editorDirty = true;
-        RefreshVisualEditor();
-    }
-
-    private void UndoEditorEdit()
-    {
-        if (_editorUndo.Count == 0)
-        {
-            return;
-        }
-
-        _editorRedo.Add(CaptureEditorState());
-        var state = _editorUndo[^1];
-        _editorUndo.RemoveAt(_editorUndo.Count - 1);
-        RestoreEditorState(state);
-        _visualEditorWindow?.UpdateUndoState(_editorUndo.Count > 0, true);
-    }
-
-    private void RedoEditorEdit()
-    {
-        if (_editorRedo.Count == 0)
-        {
-            return;
-        }
-
-        _editorUndo.Add(CaptureEditorState());
-        var state = _editorRedo[^1];
-        _editorRedo.RemoveAt(_editorRedo.Count - 1);
-        RestoreEditorState(state);
-        _visualEditorWindow?.UpdateUndoState(true, _editorRedo.Count > 0);
-    }
-
-    private void SaveEditor()
-    {
-        _editorRedo.Clear();
-        _editorDirty = false;
-        SaveAndApply();
-        _visualEditorWindow?.UpdateUndoState(_editorUndo.Count > 0, false);
-        _status.Text = "已保存编辑器更改并应用到主界面。";
-    }
-
-    private void DiscardEditorEdits()
-    {
-        LoadFromSettings();
-        RefreshVisualEditor();
-        _editorUndo.Clear();
-        _editorRedo.Clear();
-        _editorDirty = false;
-        _visualEditorWindow?.UpdateUndoState(false, false);
-    }
-
-    private async void OnEditorClosing(object? sender, WindowClosingEventArgs e)
-    {
-        if (_visualEditorWindow == null || !_editorDirty)
-        {
-            return;
-        }
-
-        e.Cancel = true;
-        var dialog = new ContentDialog
-        {
-            Title = "保存更改？",
-            Content = "可视化编辑器中有尚未保存的更改。",
-            PrimaryButtonText = "保存",
-            SecondaryButtonText = "不保存",
-            CloseButtonText = "取消",
-            DefaultButton = ContentDialogButton.Primary
-        };
-        // 宿主用正在关闭的编辑器窗口，而不是设置页/主界面。
-        var result = sender is Window closingWindow
-            ? await dialog.ShowAsync(closingWindow)
-            : await ShowDialogAsync(dialog);
-        if (result == ContentDialogResult.Primary)
-        {
-            SaveEditor();
-            _editorDirty = false;
-            if (sender is Window w)
-            {
-                w.Close();
-            }
-        }
-        else if (result == ContentDialogResult.Secondary)
-        {
-            DiscardEditorEdits();
-            _editorDirty = false;
-            if (sender is Window w)
-            {
-                w.Close();
-            }
-        }
     }
 
     private void LoadFromSettings()
@@ -3906,7 +3673,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _borderThickness.DoubleValue = settings.BorderThickness;
         // 主界面文字美化（Issue #7）。
         _textStylingEnabled.IsChecked = settings.TextStylingEnabled;
-        _textFontFamily.Text = settings.TextFontFamily;
+        SelectFontFamily(settings.TextFontFamily);
         _textFontSize.DoubleValue = settings.TextFontSize;
         _textFontScale.DoubleValue = settings.TextFontScale;
         Select(_textColorMode, TextColorModes, settings.TextColorMode);
@@ -4092,7 +3859,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.BorderThickness = _borderThickness.DoubleValue;
             // 主界面文字美化（Issue #7）。
             settings.TextStylingEnabled = _textStylingEnabled.IsChecked == true;
-            settings.TextFontFamily = _textFontFamily.Text ?? string.Empty;
+            settings.TextFontFamily = _textFontFamily.SelectedItem is FontChoice fontChoice
+                ? fontChoice.Value
+                : string.Empty;
             settings.TextFontSize = _textFontSize.DoubleValue;
             settings.TextFontScale = _textFontScale.DoubleValue;
             settings.TextColorMode = Selected(_textColorMode, TextColorMode.KeepHost);
@@ -4433,6 +4202,85 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         MinWidth = 220,
         HorizontalContentAlignment = HorizontalAlignment.Left
     };
+
+    /// <summary>
+    /// 系统已安装字体名缓存（惰性枚举）。Avalonia 没有内置字体选择器，只能自己从
+    /// <see cref="FontManager"/> 取系统字体后填充组合框。
+    /// </summary>
+    private static IReadOnlyList<string>? _systemFontNames;
+
+    private static IReadOnlyList<string> GetSystemFontNames()
+    {
+        if (_systemFontNames != null)
+        {
+            return _systemFontNames;
+        }
+
+        try
+        {
+            _systemFontNames = FontManager.Current.SystemFonts
+                .Select(f => f.Name)
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(n => n, StringComparer.CurrentCultureIgnoreCase)
+                .ToArray();
+        }
+        catch (Exception ex)
+        {
+            MainWindowStyleInjector.DebugLog($"GetSystemFontNames 失败: {ex.GetType().Name}: {ex.Message}");
+            _systemFontNames = [];
+        }
+
+        return _systemFontNames;
+    }
+
+    /// <summary>字体下拉项：Value 为字体名（空串 = 保持宿主原字体），每项用自身字体渲染预览。</summary>
+    private sealed record FontChoice(string Value, string Text);
+
+    /// <summary>
+    /// 把持久化的字体名同步到组合框选中项。若该字体不在系统字体列表里
+    /// （换机器 / 字体已卸载），临时插入一项，避免静默清空用户配置。
+    /// </summary>
+    private void SelectFontFamily(string? family)
+    {
+        family = family?.Trim() ?? string.Empty;
+        if (_textFontFamily.ItemsSource is not List<FontChoice> items)
+        {
+            return;
+        }
+
+        var match = items.FirstOrDefault(c => string.Equals(c.Value, family, StringComparison.OrdinalIgnoreCase));
+        if (match == null)
+        {
+            match = new FontChoice(family, family);
+            items.Add(match);
+        }
+
+        _textFontFamily.SelectedItem = match;
+    }
+
+    /// <summary>装载系统字体到文字美化的字体组合框（保持宿主原字体排在第一项）。</summary>
+    private void PopulateFontFamilyCombo()
+    {
+        var items = new List<FontChoice> { new(string.Empty, "保持宿主原字体") };
+        items.AddRange(GetSystemFontNames().Select(n => new FontChoice(n, n)));
+        _textFontFamily.ItemsSource = items;
+        _textFontFamily.ItemTemplate = new FuncDataTemplate<FontChoice>((choice, _) =>
+        {
+            var text = new TextBlock
+            {
+                Text = choice?.Text ?? string.Empty,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            // 每项用自己的字体渲染，方便直接看出字体长相；首项用宿主默认字体。
+            if (choice is { Value.Length: > 0 })
+            {
+                try { text.FontFamily = new FontFamily(choice.Value); } catch { }
+            }
+
+            return text;
+        });
+    }
 
     private static StackPanel ColorFooter(ColorPicker picker, ToggleSwitch toggle) => new()
     {

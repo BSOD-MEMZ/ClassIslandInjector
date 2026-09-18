@@ -24,7 +24,7 @@
 | `VideoProject.cs` / `VideoProjectPlayer.cs` / `Views/VideoEditorWindow.cs`               | 视频工程（多片段拼接/变换）与 PR 风格视频编辑器（素材库/舞台/属性/时间轴）            || `PresetExchange.cs`                                                                              | 预设交换：把用户预设（含静态资源）导出为 .cizip / 从 .cizip 导入；包内 metadata.json / preview.png 商店展示字段 |
 | `PresetStoreService.cs`                                                                          | 预设商店联机服务：索引抓取（15min 磁盘缓存 + 离线回退）、预览图缓存、.cizip 下载（进度）、已安装记录（installed.json）、版本兼容检查 |
 | `Views/PresetStoreWindow.cs` + `Views/PresetStoreCard.cs`                                        | 预设商店窗口（1:1 仿新版微软商店）：自定义标题栏 + 左窄导航（首页/全部/热门/我的）+ Banner 轮播 + 横向卡行 + 网格浏览 + 详情页 || `Views/InjectorSettingsPage.cs`                                                                 | 设置页 UI（FluentAvalonia`SettingsExpander`/`InfoBar`/`ContentDialog`）             |
-| `Views/IslandVisualEditor.cs`                                                                   | 可视化编辑器窗口 + 直接操作画布                                                           |
+| `Views/InjectorSettingsPage.cs`                                                                 | 设置页 UI（FluentAvalonia`SettingsExpander`/`InfoBar`/`ContentDialog`）             |
 | `CountdownArrowOverlay.cs` / `IslandRippleOverlay.cs` / `SuppressingTopmostEffectPlayer.cs` | 覆盖层效果组件                                                                            |
 | `Defaults/Overrides.axaml`                                                                      | 默认覆盖样式表（首次运行复制到配置目录，用户可热重载编辑）                                |
 | `manifest.yml`                                                                                  | 插件清单                                                                                  |
