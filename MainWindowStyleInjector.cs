@@ -202,6 +202,12 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private readonly List<SpectrumTextureOverlay> _spectrumOverlays = [];
     /// <summary>频谱诊断日志节流时间戳。</summary>
     private DateTime _lastSpectrumLog = DateTime.MinValue;
+    /// <summary>正在按新默认输出设备重建回环捕获（防止 RecordingStopped 回调递归重建）。</summary>
+    private bool _spectrumResetting;
+    /// <summary>频谱覆盖层是否已挂到宿主（诊断日志用）。</summary>
+    private bool _spectrumOverlayAttachedLogged;
+    /// <summary>主界面文字美化应用器（字体 / 字号 / 字色 / 勾边）。</summary>
+    private readonly TextStylingInjector _textStyling = new();
     // 默认颜色常量：多处在代码里重复的初始色，收敛为常量。
     private static readonly Color DefaultBackgroundColor = Color.FromArgb(0xCC, 0x20, 0x20, 0x20);
     private static readonly Color DefaultBorderColor = Color.FromArgb(0x99, 0xFF, 0xFF, 0xFF);
@@ -319,6 +325,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         ApplyWallpaper();
         ApplyVideoFill();
         ApplyTextureHost();
+        ApplyTextStyling();
         ApplyDynamicThemeColorState();
         ApplyMouseHoverKeepVisible();
         ApplyClickEffectState();
@@ -1427,6 +1434,40 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
         DebugLog("OnHostSplitSettingChanged: 分体主界面开关变化，重应用装饰");
         Dispatcher.UIThread.Post(Apply, DispatcherPriority.Background);
+        // 通知设置页：主界面配置方式已切换，页面需重新判定分体/非分体语义
+        // （否则 _splitPage 停留在旧模式 → 画笔写错目标 → 「底色填充失效」，Issue #8）。
+        Dispatcher.UIThread.Post(RaiseLayoutModeChanged, DispatcherPriority.Background);
+    }
+
+    /// <summary>
+    /// 主界面配置方式（单块 ↔ 分体 / 行级分体）变化时触发。
+    /// 设置页订阅它以重建分体块列表并刷新画笔状态，避免页面停留在旧布局语义。
+    /// </summary>
+    public static event Action? LayoutModeChanged;
+
+    /// <summary>当前主界面是否处于分体模式（含行级分体：存在分体块背景即视为分体）。</summary>
+    public static bool IsSplitLayoutActive()
+    {
+        try
+        {
+            return IsSeparatedMode() || EnumerateSplitBlocks().Count > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void RaiseLayoutModeChanged()
+    {
+        try
+        {
+            LayoutModeChanged?.Invoke();
+        }
+        catch
+        {
+            // 订阅方（设置页）异常不影响注入器。
+        }
     }
 
     private void UnsubscribeSplitSwitch()
@@ -1682,6 +1723,13 @@ internal sealed class MainWindowStyleInjector : IDisposable
         if (_shadowEffect != null && _settings.ShadowEnabled)
         {
             _shadowEffect.Color = shadow;
+        }
+
+        // 自动反色：背景色变化（SMTC 动态取色 / 过渡动画）时文字颜色必须跟着变，
+        // 否则会出现「浅色专辑封面 + 白字」这种看不清的组合（Issue #7 的核心诉求）。
+        if (_settings.TextStylingEnabled && _settings.TextColorMode == TextColorMode.AutoInvert)
+        {
+            ApplyTextStyling();
         }
     }
 
@@ -3239,6 +3287,111 @@ internal sealed class MainWindowStyleInjector : IDisposable
         return new Size(maxX - minX, maxY - minY);
     }
 
+    // ============ 主界面文字美化（Issue #7）============
+
+    /// <summary>
+    /// 应用主界面文字美化（字体 / 字号 / 字色 / 勾边）。自动反色需要知道每段文字背后的
+    /// 真实背景色，这里按「所在分体块优先、否则主界面底色」解析，并叠加 SMTC 动态色，
+    /// 所以动态取色切换背景时文字会随之反色（浅底黑字、深底白字）。
+    /// </summary>
+    private void ApplyTextStyling()
+    {
+        if (_mainWindow == null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!_settings.TextStylingEnabled)
+            {
+                _textStyling.RestoreAll();
+                return;
+            }
+
+            var descendants = _mainWindow.GetVisualDescendants().OfType<Control>().ToArray();
+            var islandGrid = _mainWindow.FindControl<Control>(HostContract.GridRoot);
+            _textStyling.Apply(_settings, descendants, c => IsInMainWindow(c, islandGrid), ResolveEffectiveBackground);
+        }
+        catch (Exception ex)
+        {
+            // 文字美化失败不影响其余注入功能。
+            DebugLog($"ApplyTextStyling 失败: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>判断控件是否位于主界面内（决定「仅主界面文字」过滤）。</summary>
+    private static bool IsInMainWindow(Control control, Control? islandGrid)
+    {
+        if (islandGrid == null)
+        {
+            return true;
+        }
+
+        for (Visual? v = control; v != null; v = v.GetVisualParent())
+        {
+            if (ReferenceEquals(v, islandGrid))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 解析控件所属区域的有效背景色（自动反色用）：
+    /// 分体块 → 该块专属配色或全局底色；非分体 → 全局底色（或底图主色 / SMTC 动态色）。
+    /// </summary>
+    private Color? ResolveEffectiveBackground(Control control)
+    {
+        // 分体：回溯到本块背景 Border，取该块的有效底色。
+        var blockBorder = control.GetVisualAncestors().OfType<Border>().FirstOrDefault(IsSplitComponentBackground);
+        if (blockBorder != null)
+        {
+            var blockId = GetSplitBlockComponentId(blockBorder);
+            if (!string.IsNullOrEmpty(blockId) &&
+                _settings.SplitBlockBackgrounds.TryGetValue(blockId, out var block) && block.Enabled)
+            {
+                if (block.UseDynamicColor && _settings.DynamicBackgroundColorEnabled)
+                {
+                    return _dynamicBackgroundColor;
+                }
+
+                if (block.GradientEnabled)
+                {
+                    // 渐变取两端均值，保证反色结果在整块上都可读。
+                    var start = ParseColorOrDefault(block.Color, DefaultBackgroundColor);
+                    var end = ParseColorOrDefault(block.GradientEndColor, start);
+                    return Lerp(start, end, 0.5);
+                }
+
+                return ParseColorOrDefault(block.Color, DefaultBackgroundColor);
+            }
+        }
+
+        // 底色跟随 SMTC 动态取色时，用当前过渡中的动态色。
+        if (_settings.DynamicBackgroundColorEnabled)
+        {
+            return _dynamicBackgroundColor;
+        }
+
+        // 底图（图片 / 视频）铺满时底色不再可见，此时不做反色（沿用浅色字，保持原有观感）。
+        if (_settings.WallpaperEnabled && !IsSeparatedMode())
+        {
+            return null;
+        }
+
+        if (_settings.GradientEnabled)
+        {
+            var start = ParseColorOrDefault(_settings.BackgroundColor, DefaultBackgroundColor);
+            var end = ParseColorOrDefault(_settings.GradientEndColor, start);
+            return Lerp(start, end, 0.5);
+        }
+
+        return ParseColorOrDefault(_settings.BackgroundColor, DefaultBackgroundColor);
+    }
+
     // ============ 背景填充纹理 ============
 
     private void ApplyTextureHost()
@@ -3653,7 +3806,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
     /// <summary>
     /// 启用动态频谱底纹：启动系统声音输出回环捕获，并保证 16ms 动画计时器保持运行。
-    /// NAudio 加载/初始化失败时静默降级（频谱保持静止，不影响其它功能）。
+    /// 失败时留诊断日志（preview-debug.log），便于排查「选了没反应」。
     /// </summary>
     private void StartSpectrum()
     {
@@ -3662,6 +3815,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
             try
             {
                 _spectrumCapture = new AudioSpectrumCapture();
+                _spectrumCapture.RecordingStopped += OnSpectrumRecordingStopped;
             }
             catch (Exception ex)
             {
@@ -3674,8 +3828,66 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         _spectrumCapture.Start();
+        if (_spectrumCapture.DiagnosticMessage is { Length: > 0 } failure)
+        {
+            // 构造成功但设备启动失败（无回环设备 / 音频服务异常 / 独占）——
+            // 这是「选动态频谱完全不动」最常见的原因，必须写进日志。
+            DebugLog($"StartSpectrum: {failure}");
+        }
+        else
+        {
+            DebugLog(
+                $"StartSpectrum: 已启动。采样率={_spectrumCapture.SampleRate} 声道={_spectrumCapture.Channels}");
+        }
+
         _spectrumActive = true;
         UpdateAnimationTimer();
+    }
+
+    /// <summary>
+    /// 回环捕获被系统中断（切换默认输出设备 / 音频服务重启 / 独占占用）时：
+    /// 留日志并安排一次重建，避免频谱永久静止。（Issue #6）
+    /// </summary>
+    private void OnSpectrumRecordingStopped(AudioSpectrumCapture sender, string reason)
+    {
+        DebugLog($"频谱捕获中断：{reason}");
+        if (!_spectrumActive || _spectrumCapture == null)
+        {
+            return;
+        }
+
+        // 在 UI 线程推迟重建：OnRecordingStopped 可能在工作线程触发，
+        // 且设备刚切换时立即重建容易再次失败。
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (!_spectrumActive || _spectrumCapture == null || _spectrumResetting)
+            {
+                return;
+            }
+
+            _spectrumResetting = true;
+            try
+            {
+                var old = _spectrumCapture;
+                _spectrumCapture = null;
+                try
+                {
+                    old.RecordingStopped -= OnSpectrumRecordingStopped;
+                    old.Dispose();
+                }
+                catch
+                {
+                    // 释放失败不影响重建。
+                }
+
+                DebugLog("频谱捕获：正在按当前默认输出设备重建…");
+                StartSpectrum();
+            }
+            finally
+            {
+                _spectrumResetting = false;
+            }
+        });
     }
 
     /// <summary>
@@ -3690,6 +3902,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
         _spectrumActive = false;
         _spectrumCapture?.Stop();
+        _spectrumOverlayAttachedLogged = false;
         UpdateAnimationTimer();
     }
 
@@ -3716,20 +3929,44 @@ internal sealed class MainWindowStyleInjector : IDisposable
             overlay.Update(color, bars, sensitivity, mirrored, autoWidth);
         }
 
+        // 覆盖层没挂上 = 宿主层被重建但未重新挂接，表现为「完全没有柱条」。
+        if (_spectrumOverlays.Count > 0)
+        {
+            _spectrumOverlayAttachedLogged = false;
+        }
+        else if (!_spectrumOverlayAttachedLogged)
+        {
+            _spectrumOverlayAttachedLogged = true;
+            DebugLog("频谱诊断: 未挂接任何覆盖层（底纹宿主未建立），柱条不会绘制。");
+        }
+
         // 节流诊断日志：排查「频谱不动」时查看配置目录 preview-debug.log。
         if ((DateTime.UtcNow - _lastSpectrumLog).TotalSeconds >= 2)
         {
             _lastSpectrumLog = DateTime.UtcNow;
             var running = _spectrumCapture?.IsRunning == true;
             var maxLevel = 0f;
-            if (running && _spectrumCapture != null)
+            var rawMax = 0f;
+            long samples = 0;
+            long blocks = 0;
+            if (_spectrumCapture != null)
             {
                 var sample = new float[32];
                 _spectrumCapture.GetLevels(sample);
                 maxLevel = sample.Max();
+                _spectrumCapture.GetRawLevels(sample);
+                rawMax = sample.Max();
+                samples = _spectrumCapture.SampleCount;
+                blocks = _spectrumCapture.BlockCount;
             }
 
-            DebugLog($"频谱诊断: active={_spectrumActive} running={running} overlays={_spectrumOverlays.Count} maxLevel={maxLevel:F3} timer={_animationTimer.IsEnabled}");
+            // 关键区分：samples=0 → 回环根本没送数据（设备/服务问题）；
+            // samples>0 但 rawMax=0 → 有数据但全是静音（播放端静音 / 音量 0）；
+            // rawMax>0 但 maxLevel=0 → FFT/聚合链路异常。
+            DebugLog(
+                $"频谱诊断: active={_spectrumActive} running={running} overlays={_spectrumOverlays.Count} " +
+                $"samples={samples} fftFrames={blocks} rawMax={rawMax:F3} smoothMax={maxLevel:F3} " +
+                $"timer={_animationTimer.IsEnabled}");
         }
     }
 
@@ -5650,6 +5887,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
         RestoreDecorations();
         _decorations.Clear();
         _shadowEffect = null;
+        // 文字美化：还原所有被接管的文字控件（字体 / 字号 / 字色 / 勾边）。
+        _textStyling.RestoreAll();
         RestoreHostShape();
         _colorTransitionActive = false;
         _dynamicColorsInitialized = false;

@@ -217,6 +217,19 @@ public enum BackgroundTexture
 }
 
 /// <summary>
+/// 主界面文字的字色来源。
+/// </summary>
+public enum TextColorMode
+{
+    /// <summary>保持宿主原字色（不做任何改动）。</summary>
+    KeepHost,
+    /// <summary>使用用户指定的固定字色。</summary>
+    Fixed,
+    /// <summary>跟随背景（底色填充 / 底图 / SMTC 动态取色）自动反色：浅底用深色字，深底用浅色字。</summary>
+    AutoInvert
+}
+
+/// <summary>
 /// 主界面底图的图片来源。
 /// </summary>
 public enum WallpaperSource
@@ -734,6 +747,19 @@ public sealed class InjectorSettings
     private bool _borderEnabled;
     private string _borderColor = "#99FFFFFF";
     private double _borderThickness = 1;
+    // 主界面文字美化（Issue #7）。
+    private bool _textStylingEnabled;
+    private string _textFontFamily = "";
+    private double _textFontSize;
+    private double _textFontScale = 1;
+    private TextColorMode _textColorMode = TextColorMode.KeepHost;
+    private string _textColor = "#FFFFFFFF";
+    private string _textLightColor = "#FFFFFFFF";
+    private string _textDarkColor = "#FF1E2024";
+    private double _textInvertThreshold = 0.55;
+    private double _textOutlineThickness;
+    private string _textOutlineColor = "#CC000000";
+    private bool _textStylingMainWindowOnly = true;
     private VisibilityAnimation _visibilityAnimation = VisibilityAnimation.None;
     private double _visibilityDurationSeconds = 0.35;
     private EmphasisAnimation _emphasisAnimation = EmphasisAnimation.None;
@@ -922,6 +948,44 @@ public sealed class InjectorSettings
     public bool BorderEnabled { get => _borderEnabled; set => Set(ref _borderEnabled, value); }
     public string BorderColor { get => _borderColor; set => Set(ref _borderColor, value?.Trim() ?? ""); }
     public double BorderThickness { get => _borderThickness; set => Set(ref _borderThickness, Math.Clamp(value, 0.25, 20)); }
+
+    // ============ 主界面文字美化（Issue #7）============
+
+    /// <summary>是否启用主界面文字美化（字体 / 字号 / 字色 / 勾边）。关闭时主界面文字保持宿主原样。</summary>
+    public bool TextStylingEnabled { get => _textStylingEnabled; set => Set(ref _textStylingEnabled, value); }
+
+    /// <summary>字体名（空 = 保持宿主原字体）。</summary>
+    public string TextFontFamily { get => _textFontFamily; set => Set(ref _textFontFamily, value?.Trim() ?? ""); }
+
+    /// <summary>字号（0 = 保持宿主原字号；否则为主界面上「正文文字」的基础字号，按原比例缩放其余文字）。</summary>
+    public double TextFontSize { get => _textFontSize; set => Set(ref _textFontSize, Math.Clamp(value, 0, 96)); }
+
+    /// <summary>字号缩放比例（1 = 不缩放；在宿主原字号基础上整体缩放，0 号字号时使用）。</summary>
+    public double TextFontScale { get => _textFontScale; set => Set(ref _textFontScale, Math.Clamp(value, 0.3, 3)); }
+
+    /// <summary>字色来源：保持原样 / 固定颜色 / 跟随背景自动反色（浅底黑字、深底白字）。</summary>
+    public TextColorMode TextColorMode { get => _textColorMode; set => Set(ref _textColorMode, value); }
+
+    /// <summary>固定字色（<see cref="TextColorMode.Fixed"/> 时生效）。</summary>
+    public string TextColor { get => _textColor; set => Set(ref _textColor, value?.Trim() ?? ""); }
+
+    /// <summary>自动反色的「浅色」字色（深色背景上显示，默认白）。</summary>
+    public string TextLightColor { get => _textLightColor; set => Set(ref _textLightColor, value?.Trim() ?? ""); }
+
+    /// <summary>自动反色的「深色」字色（浅色背景上显示，默认近黑）。</summary>
+    public string TextDarkColor { get => _textDarkColor; set => Set(ref _textDarkColor, value?.Trim() ?? ""); }
+
+    /// <summary>自动反色的亮度阈值（0-1）：背景相对亮度高于该值时用深色字，否则用浅色字。</summary>
+    public double TextInvertThreshold { get => _textInvertThreshold; set => Set(ref _textInvertThreshold, Math.Clamp(value, 0, 1)); }
+
+    /// <summary>勾边（描边）宽度（0 = 不勾边）。文字醒目度的兜底手段，深色/浅色背景都能用。</summary>
+    public double TextOutlineThickness { get => _textOutlineThickness; set => Set(ref _textOutlineThickness, Math.Clamp(value, 0, 8)); }
+
+    /// <summary>勾边颜色。</summary>
+    public string TextOutlineColor { get => _textOutlineColor; set => Set(ref _textOutlineColor, value?.Trim() ?? ""); }
+
+    /// <summary>是否只对主界面文字生效（false = 也作用于提醒等其它宿主文字）。</summary>
+    public bool TextStylingMainWindowOnly { get => _textStylingMainWindowOnly; set => Set(ref _textStylingMainWindowOnly, value); }
     public VisibilityAnimation VisibilityAnimation { get => _visibilityAnimation; set => Set(ref _visibilityAnimation, value); }
     public double VisibilityDurationSeconds { get => _visibilityDurationSeconds; set => Set(ref _visibilityDurationSeconds, Math.Clamp(value, 0.1, 10)); }
     public EmphasisAnimation EmphasisAnimation { get => _emphasisAnimation; set => Set(ref _emphasisAnimation, value); }
@@ -1131,6 +1195,18 @@ public sealed class InjectorSettings
         BorderEnabled = source.BorderEnabled;
         BorderColor = source.BorderColor;
         BorderThickness = source.BorderThickness;
+        TextStylingEnabled = source.TextStylingEnabled;
+        TextFontFamily = source.TextFontFamily;
+        TextFontSize = source.TextFontSize;
+        TextFontScale = source.TextFontScale;
+        TextColorMode = source.TextColorMode;
+        TextColor = source.TextColor;
+        TextLightColor = source.TextLightColor;
+        TextDarkColor = source.TextDarkColor;
+        TextInvertThreshold = source.TextInvertThreshold;
+        TextOutlineThickness = source.TextOutlineThickness;
+        TextOutlineColor = source.TextOutlineColor;
+        TextStylingMainWindowOnly = source.TextStylingMainWindowOnly;
         VisibilityAnimation = source.VisibilityAnimation;
         VisibilityDurationSeconds = source.VisibilityDurationSeconds;
         EmphasisAnimation = source.EmphasisAnimation;

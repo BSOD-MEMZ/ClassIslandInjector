@@ -96,6 +96,13 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private SettingsExpander _textureGroup = null!;
     private SettingsExpander _shadowGroup = null!;
     private SettingsExpander _borderGroup = null!;
+    // ===== 主界面文字美化（Issue #7）：分组与条目引用 =====
+    private SettingsExpander _textGroup = null!;
+    private SettingsExpanderItem _textFixedColorItem = null!;
+    private SettingsExpanderItem _textLightColorItem = null!;
+    private SettingsExpanderItem _textDarkColorItem = null!;
+    private SettingsExpanderItem _textThresholdItem = null!;
+    private SettingsExpanderItem _textOutlineColorItem = null!;
     /// <summary>背景图片：图层编辑器为唯一入口（简单模式已删除）。</summary>
     private SettingsExpander _wallpaperGroup = null!;
     /// <summary>底图模糊组（作用于整个底图宿主；分体模式下与「背景图片」一起隐藏）。</summary>
@@ -178,6 +185,20 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly ToggleSwitch _border = Toggle();
     private readonly ColorPicker _borderColor = ColorPicker();
     private readonly Spin _borderThickness = Spinner(0.25, 20, 0.25);
+
+    // ===== 主界面文字美化（Issue #7）=====
+    private readonly ToggleSwitch _textStylingEnabled = Toggle();
+    private readonly TextBox _textFontFamily = new() { MinWidth = 200, Watermark = "留空 = 保持原字体" };
+    private readonly Spin _textFontSize = Spinner(0, 96, 1, "0");
+    private readonly Spin _textFontScale = Spinner(0.3, 3, 0.05);
+    private readonly ComboBox _textColorMode = Combo(TextColorModes);
+    private readonly ColorPicker _textColor = ColorPicker();
+    private readonly ColorPicker _textLightColor = ColorPicker();
+    private readonly ColorPicker _textDarkColor = ColorPicker();
+    private readonly Spin _textInvertThreshold = Spinner(0, 1, 0.05);
+    private readonly Spin _textOutlineThickness = Spinner(0, 8, 0.5, "0");
+    private readonly ColorPicker _textOutlineColor = ColorPicker();
+    private readonly ToggleSwitch _textMainWindowOnly = Toggle();
 
     private readonly ToggleSwitch _wallpaperEnabled = Toggle();
     private readonly Spin _wallpaperBlur = Spinner(0, 60, 1);
@@ -456,6 +477,14 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         new(BackgroundTexture.Aero, "Aero 玻璃条纹"),
     ];
 
+    /// <summary>字色来源（文字美化组）。</summary>
+    private static readonly Choice<TextColorMode>[] TextColorModes =
+    [
+        new(TextColorMode.KeepHost, "保持宿主原字色"),
+        new(TextColorMode.Fixed, "固定字色"),
+        new(TextColorMode.AutoInvert, "跟随背景自动反色"),
+    ];
+
     public InjectorSettingsPage()
     {
         Content = BuildContent();
@@ -474,6 +503,17 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         // 用命名字段订阅，页面脱离可视树时退订，避免静态事件强引用泄漏整棵页面树。
         _onCatalogChanged = (_, _) => Dispatcher.UIThread.Post(RefreshContractUi);
         ContractCatalogService.CatalogChanged += _onCatalogChanged;
+        // 主界面配置方式（单块 ↔ 分体 / 行级分体）切换：立即重建分块列表并刷新画笔语义。
+        // 不订阅的话页面会停留在旧语义，画笔写错目标 → 用户看到「底色填充失效」（Issue #8）。
+        _onLayoutModeChanged = () => Dispatcher.UIThread.Post(OnLayoutModeChanged);
+        MainWindowStyleInjector.LayoutModeChanged += _onLayoutModeChanged;
+        // 行级分体（MainWindowLineSettings.IslandSeparationMode）不触发宿主全局开关变更，
+        // 用低频轮询兜底：分体块数量签名变化时才刷新（几乎零开销）。
+        _layoutGuardTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(800), DispatcherPriority.Background,
+            (_, _) => CheckLayoutModeDrift());
+        _layoutGuardTimer.Start();
+        // 记录初始签名，避免首次轮询误判为「变化」。
+        _splitBlocksSignature = GetSplitBlocksSignature();
         // 用户切换下拉选择时，按该对照表的最低插件版本要求刷新「插件版本过低」提示。
         _contractTableList.SelectionChanged += (_, _) => UpdatePluginUpdateInfoBar(_contractTableList.SelectedItem as ContractIndexEntry);
         WireSmtcTutorial();
@@ -487,6 +527,13 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
         ContractCatalogService.CatalogChanged -= _onCatalogChanged;
+        MainWindowStyleInjector.LayoutModeChanged -= _onLayoutModeChanged;
+        if (_layoutGuardTimer != null)
+        {
+            _layoutGuardTimer.Stop();
+            _layoutGuardTimer = null;
+        }
+
         if (_tutorialGuardTimer != null)
         {
             _tutorialGuardTimer.Stop();
@@ -523,6 +570,15 @@ public sealed class InjectorSettingsPage : SettingsPageBase
 
     /// <summary>对照表变化刷新订阅（命名引用，便于退订，防止静态事件强引用泄漏页面）。</summary>
     private EventHandler _onCatalogChanged = null!;
+
+    /// <summary>主界面配置方式切换订阅（命名引用，便于退订）。</summary>
+    private Action _onLayoutModeChanged = null!;
+
+    /// <summary>行级分体切换的低频兜底轮询（宿主全局开关不覆盖行级分体）。</summary>
+    private DispatcherTimer? _layoutGuardTimer;
+
+    /// <summary>上次看到的分体块数量签名（变化 = 布局方式变了，需刷新页面语义）。</summary>
+    private string _splitBlocksSignature = string.Empty;
 
     /// <summary>
     /// 挂接 SMTC 教学的推进点：不自动开始（进阶教学，由设置页顶部 InfoBar 手动进入），
@@ -1209,6 +1265,29 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _dynamicBorderColor.Name = "BorderDynamicToggle";
         EnabledWhenManualColor(borderColorItem, _border, _dynamicBorderColor);
         panel.Children.Add(_borderGroup);
+
+        // ===== 主界面文字美化（Issue #7）=====
+        _textFixedColorItem = Item("字色", "文字使用的固定颜色。", _textColor);
+        _textLightColorItem = Item("深色背景字色", "背景较暗（亮度低于阈值）时使用的字色。", _textLightColor);
+        _textDarkColorItem = Item("浅色背景字色", "背景较亮（亮度高于阈值）时使用的字色。", _textDarkColor);
+        _textThresholdItem = Item("反色阈值", "背景相对亮度高于该值时使用浅色背景字色，否则使用深色背景字色（0.55 约为中间灰）。", _textInvertThreshold);
+        _textOutlineColorItem = Item("勾边颜色", "文字勾边（轮廓）的颜色，建议用与字色反差大的颜色。", _textOutlineColor);
+        _textGroup = SwitchableGroup("\uE8D2", "文字美化", "自定义主界面文字的字体、字号、字色与勾边；「跟随背景自动反色」可保证浅底黑字、深底白字，文字始终醒目。",
+            _textStylingEnabled,
+            Item("字体", "填写字体名称（如 Microsoft YaHei）。留空保持宿主原字体。", _textFontFamily),
+            Item("字号", "主界面标准文字的字号（像素）。0 = 保持宿主原字号。", _textFontSize),
+            Item("字号缩放", "未指定字号时按此比例整体缩放宿主原字号（1 = 不缩放）。", _textFontScale),
+            Item("字色来源", "保持原样 / 使用固定颜色 / 跟随背景自动反色。", _textColorMode),
+            _textLightColorItem,
+            _textDarkColorItem,
+            _textThresholdItem,
+            _textFixedColorItem,
+            Item("勾边宽度", "为文字添加轮廓以提升可读性，0 = 不勾边。", _textOutlineThickness),
+            _textOutlineColorItem,
+            Item("仅主界面生效", "开启后只美化主界面文字，提醒等其它区域的文字保持宿主原样。", _textMainWindowOnly));
+        _textGroup.Name = "TextGroup";
+        panel.Children.Add(_textGroup);
+        WireTextColorModeVisibility();
 
         AddSection(panel, "\uE82B", "动画");
         panel.Children.Add(SwitchableGroup("\uEDB9", "持续动画", "打开后才会使用下方的循环动画设置。", _animationEnabled,
@@ -2072,9 +2151,16 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         }
 
         var on = _backgroundTextureEnabled.IsChecked == true;
-        var selectedType = _backgroundTextureType.SelectedItem is Choice<BackgroundTexture> choice
-            ? choice.Value
-            : BackgroundTexture.Grid;
+        // 下拉取不到选中项时不要静默落到 Grid：那会把用户原先的图案改成网格线，
+        // 看起来就是「底色填充恢复默认」。宁可不提交这一项，也不写一个用户没选过的值。
+        if (on && _backgroundTextureType.SelectedItem is not Choice<BackgroundTexture> choice)
+        {
+            return;
+        }
+
+        var selectedType = _backgroundTextureType.SelectedItem is Choice<BackgroundTexture> picked
+            ? picked.Value
+            : BackgroundTexture.None;
         var settings = InjectorRuntime.Settings;
         settings.BeginUpdate();
         try
@@ -2323,6 +2409,50 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     }
 
     /// <summary>
+    /// 主界面配置方式变化（宿主全局分体开关切换）时刷新页面：重建分体块列表并按新模式
+    /// 重新回填画笔 / 底纹控件。关键是必须在切换瞬间完成，否则页面停留在旧语义，
+    /// 用户接着改画笔时会写错目标（分体画笔 ↔ 全局值），表现为「底色填充失效」（Issue #8）。
+    /// </summary>
+    private void OnLayoutModeChanged()
+    {
+        RefreshSplitBlockList();
+        _splitBlocksSignature = GetSplitBlocksSignature();
+    }
+
+    /// <summary>行级分体 / 组件增删不会触发宿主全局开关变更，用签名轮询兜底检测。</summary>
+    private void CheckLayoutModeDrift()
+    {
+        if (_splitBlockSection == null)
+        {
+            return;
+        }
+
+        var signature = GetSplitBlocksSignature();
+        if (signature == _splitBlocksSignature)
+        {
+            return;
+        }
+
+        _splitBlocksSignature = signature;
+        RefreshSplitBlockList();
+    }
+
+    /// <summary>分体块集合签名（Id 排序拼接）：布局方式或组件构成变化时签名随之改变。</summary>
+    private static string GetSplitBlocksSignature()
+    {
+        try
+        {
+            return string.Join("|", MainWindowStyleInjector.EnumerateSplitBlocks()
+                .Select(b => $"{b.Id}@{b.LineNumber}")
+                .OrderBy(x => x, StringComparer.Ordinal));
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    /// <summary>
     /// 重新枚举主界面的分体块并重建表格行。非分体主界面（或暂不可用）时隐藏整个区域。
     /// 打开页面默认勾选全部分块（画笔作用域＝全部）；「刷新」保留既有勾选并为新分块补勾。
     /// 勾选变化会同步刷新下方「底色填充」画笔的状态。
@@ -2335,6 +2465,32 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         }
 
         var blocks = MainWindowStyleInjector.EnumerateSplitBlocks();
+        var nowSplit = blocks.Count > 0;
+
+        // 主界面配置方式被切换（单块 ↔ 分体 / 行级分体）时，页面必须重新判定当前语义，
+        // 否则 _splitPage / _brushActive 停留在旧模式：非分体下改的画笔会写进全局，
+        // 切到分体后又按「分块画笔」显示，用户看到的就是「底色填充失效、恢复默认」。
+        // 这里在重建前先复位，避免用旧模式的选择集 / 勾选状态污染新布局。
+        if (nowSplit != _splitPage)
+        {
+            _splitPage = nowSplit;
+            _splitSelectedIds.Clear();
+            _splitBlockRows = [];
+            _suppressBrushRefresh = true;
+            try
+            {
+                _brushActive = false;
+                _pendingBrushProps.Clear();
+                _pendingTextureCommit = false;
+            }
+            finally
+            {
+                _suppressBrushRefresh = false;
+            }
+
+            _splitCommitTimer.Stop();
+        }
+
         if (blocks.Count == 0)
         {
             // 非分体主界面：不显示分体块区域，并清空表格与选择集。
@@ -2349,6 +2505,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             }
 
             RefreshBackgroundBrushState();
+            RefreshBackgroundTextureState();
             return;
         }
 
@@ -2403,6 +2560,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         }
 
         RefreshBackgroundBrushState();
+        // 底纹下拉要在分块列表重建后同步：分体页用逐块图案表，非分体页用全局图案表，
+        // 漏掉这一步会让两个模式的下拉项错位（Issue #8）。
+        RefreshBackgroundTextureState();
     }
 
     /// <summary>勾选全部分块（默认状态，只改画笔作用域，不写盘）。</summary>
@@ -3389,6 +3549,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                      _backgroundTextureSpectrumAutoWidth,
                      _shadow, _shadowColor, _shadowBlur, _shadowOffsetX, _shadowOffsetY, _shadowOpacity,
                      _border, _borderColor, _borderThickness,
+                     _textStylingEnabled, _textFontFamily, _textFontSize, _textFontScale, _textColorMode,
+                     _textColor, _textLightColor, _textDarkColor, _textInvertThreshold,
+                     _textOutlineThickness, _textOutlineColor, _textMainWindowOnly,
                      _wallpaperEnabled, _wallpaperBlur,
                      _videoFillEnabled, _videoFillPath, _videoFillOpacity, _videoFillFit, _videoFillBlur, _videoFillMaxDimension, _videoFillFps, _videoFillLoop,
                      _visibilityAnimation, _visibilityAnimationEnabled, _visibilityDuration,
@@ -3741,6 +3904,19 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _border.IsChecked = settings.BorderEnabled;
         _borderColor.Color = ReadColor(settings.BorderColor, Color.FromArgb(0x99, 0xFF, 0xFF, 0xFF));
         _borderThickness.DoubleValue = settings.BorderThickness;
+        // 主界面文字美化（Issue #7）。
+        _textStylingEnabled.IsChecked = settings.TextStylingEnabled;
+        _textFontFamily.Text = settings.TextFontFamily;
+        _textFontSize.DoubleValue = settings.TextFontSize;
+        _textFontScale.DoubleValue = settings.TextFontScale;
+        Select(_textColorMode, TextColorModes, settings.TextColorMode);
+        _textColor.Color = ReadColor(settings.TextColor, Colors.White);
+        _textLightColor.Color = ReadColor(settings.TextLightColor, Colors.White);
+        _textDarkColor.Color = ReadColor(settings.TextDarkColor, Color.FromRgb(0x1E, 0x20, 0x24));
+        _textInvertThreshold.DoubleValue = settings.TextInvertThreshold;
+        _textOutlineThickness.DoubleValue = settings.TextOutlineThickness;
+        _textOutlineColor.Color = ReadColor(settings.TextOutlineColor, Color.FromArgb(0xCC, 0, 0, 0));
+        _textMainWindowOnly.IsChecked = settings.TextStylingMainWindowOnly;
         _wallpaperEnabled.IsChecked = settings.WallpaperEnabled;
         _wallpaperBlur.DoubleValue = settings.WallpaperBlurRadius;
         _videoFillEnabled.IsChecked = settings.VideoFillEnabled;
@@ -3914,6 +4090,19 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.BorderEnabled = _border.IsChecked == true;
             settings.BorderColor = _borderColor.Color.ToString();
             settings.BorderThickness = _borderThickness.DoubleValue;
+            // 主界面文字美化（Issue #7）。
+            settings.TextStylingEnabled = _textStylingEnabled.IsChecked == true;
+            settings.TextFontFamily = _textFontFamily.Text ?? string.Empty;
+            settings.TextFontSize = _textFontSize.DoubleValue;
+            settings.TextFontScale = _textFontScale.DoubleValue;
+            settings.TextColorMode = Selected(_textColorMode, TextColorMode.KeepHost);
+            settings.TextColor = _textColor.Color.ToString();
+            settings.TextLightColor = _textLightColor.Color.ToString();
+            settings.TextDarkColor = _textDarkColor.Color.ToString();
+            settings.TextInvertThreshold = _textInvertThreshold.DoubleValue;
+            settings.TextOutlineThickness = _textOutlineThickness.DoubleValue;
+            settings.TextOutlineColor = _textOutlineColor.Color.ToString();
+            settings.TextStylingMainWindowOnly = _textMainWindowOnly.IsChecked == true;
             if (!_splitPage)
             {
                 // 分体模式下整岛底图被禁用：不写全局底图（图层编辑器入口与底图模糊已隐藏），
@@ -4045,6 +4234,32 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         }
 
         return group;
+    }
+
+    /// <summary>
+    /// 按「字色来源」切换文字美化组内的条目可用性：
+    /// 自动反色 → 只放开浅色/深色字与阈值；固定字色 → 只放开字色；
+    /// 保持宿主 → 全部字色项禁用。
+    /// </summary>
+    private void WireTextColorModeVisibility()
+    {
+        void Sync()
+        {
+            var mode = _textColorMode.SelectedItem is Choice<TextColorMode> choice
+                ? choice.Value
+                : TextColorMode.KeepHost;
+            var enabled = _textStylingEnabled.IsChecked == true;
+            _textFixedColorItem.IsEnabled = enabled && mode == TextColorMode.Fixed;
+            _textLightColorItem.IsEnabled = enabled && mode == TextColorMode.AutoInvert;
+            _textDarkColorItem.IsEnabled = enabled && mode == TextColorMode.AutoInvert;
+            _textThresholdItem.IsEnabled = enabled && mode == TextColorMode.AutoInvert;
+            _textOutlineColorItem.IsEnabled = enabled && _textOutlineThickness.DoubleValue > 0;
+        }
+
+        _textColorMode.SelectionChanged += (_, _) => Sync();
+        _textStylingEnabled.PropertyChanged += (_, _) => Sync();
+        _textOutlineThickness.ValueChanged += (_, _) => Sync();
+        Sync();
     }
 
     private SettingsExpander SwitchableGroup(string glyph, string header, string description, ToggleSwitch toggle, params SettingsExpanderItem[] items)

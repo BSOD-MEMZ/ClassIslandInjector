@@ -1,4 +1,6 @@
 using System;
+using System.IO;
+using System.Threading;
 using NAudio.Wave;
 
 namespace ClassIslandInjector;
@@ -8,27 +10,38 @@ namespace ClassIslandInjector;
 /// 混合音频，做加窗 FFT 后按对数频段聚合为若干柱条电平，供「动态频谱」底纹绘制。
 ///
 /// 捕获在 NAudio 的工作线程进行，UI 线程通过 <see cref="GetLevels"/> 读取电平；
-/// 内部用锁保护共享电平数组，任何失败都会静默降级（不抛异常、不冒泡到宿主）。
+/// 内部用锁保护共享电平数组。任何失败都不抛异常、不冒泡到宿主，但会写入诊断日志
+/// （preview-debug.log）并记录 <see cref="DiagnosticMessage"/>，便于排查「选了没反应」。
 /// </summary>
 public sealed class AudioSpectrumCapture : IDisposable
 {
     private const int FftSize = 1024;
     private const int DefaultBars = 32;
     private const int KeepOverlap = FftSize / 4;
+    /// <summary>每次 FFT 至少积累的新样本数，避免小缓冲下反复空转。</summary>
+    private const int MinFreshSamples = FftSize - KeepOverlap;
 
     private readonly object _lock = new();
     private readonly float[] _window = new float[FftSize];
     private readonly float[] _levels = new float[DefaultBars];
     private readonly float[] _smoothed = new float[DefaultBars];
+    private readonly float[] _raw = new float[DefaultBars];
     private readonly float[] _fftReal = new float[FftSize];
     private readonly float[] _fftImag = new float[FftSize];
-    private readonly float[] _ring = new float[FftSize];
-    private int _ringWrite;
-    private int _ringCount;
+    private readonly float[] _windowed = new float[FftSize];
+    private int _windowWrite;
+    private int _windowCount;
+    private int _windowTotal;
+    private int _lastFftPos;
     private float _peak;
     private WasapiLoopbackCapture? _capture;
     private volatile bool _running;
     private bool _disposed;
+    private long _sampleCount;
+    private long _blockCount;
+    private long _lastDiagnosticSampleCount;
+    private DateTime _lastDiagnosticAt = DateTime.MinValue;
+    private int _dataCallbackLogged;
 
     public AudioSpectrumCapture()
     {
@@ -43,7 +56,25 @@ public sealed class AudioSpectrumCapture : IDisposable
 
     public bool IsRunning => _running;
 
-    /// <summary>启动回环捕获；失败时静默降级（捕获不到时频谱保持静止，不影响其它功能）。</summary>
+    /// <summary>
+    /// 最近一次失败/状态诊断信息（成功时为 null）。注入器读取后写入日志，
+    /// 用于回答用户「为什么频谱不动」——不再静默失败。
+    /// </summary>
+    public string? DiagnosticMessage { get; private set; }
+
+    /// <summary>已捕获的样本总数（诊断用：为 0 说明回环根本没送来数据）。</summary>
+    public long SampleCount => Interlocked.Read(ref _sampleCount);
+
+    /// <summary>已完成 FFT 的帧数（诊断用：为 0 说明帧长不够 / 没数据）。</summary>
+    public long BlockCount => Interlocked.Read(ref _blockCount);
+
+    /// <summary>捕获设备的采样率（诊断用）。</summary>
+    public int SampleRate => _capture?.WaveFormat?.SampleRate ?? 0;
+
+    /// <summary>捕获设备的声道数（诊断用）。</summary>
+    public int Channels => _capture?.WaveFormat?.Channels ?? 0;
+
+    /// <summary>启动回环捕获。失败不抛异常，但记录诊断信息并写日志。</summary>
     public void Start()
     {
         if (_running || _disposed)
@@ -59,12 +90,72 @@ public sealed class AudioSpectrumCapture : IDisposable
             _capture = capture;
             _running = true;
             capture.StartRecording();
+            var fmt = capture.WaveFormat;
+            DiagnosticMessage = null;
+            Log(
+                $"频谱捕获: 启动成功。设备采样率={fmt?.SampleRate} 声道={fmt?.Channels} " +
+                $"编码={fmt?.Encoding} 位深={fmt?.BitsPerSample}");
         }
-        catch
+        catch (Exception ex)
         {
+            // 关键：这里是最常见的「选了动态频谱完全没反应」的落点
+            // （无回环设备 / 音频服务未启动 / 音频独占 / NAudio 依赖缺失）。
             try { _capture?.Dispose(); } catch { /* 忽略 */ }
             _capture = null;
             _running = false;
+            DiagnosticMessage = $"回环捕获启动失败：{ex.GetType().Name}: {ex.Message}";
+            Log($"频谱捕获: {DiagnosticMessage}");
+        }
+    }
+
+    /// <summary>
+    /// 诊断日志落地回调（由注入器在构造后注入）。默认走 <see cref="DiagnosticLog"/>；
+    /// 独立探针项目（tools\SpectrumProbe）不编译注入器，可注入自己的实现或留空。
+    /// 用委托而不是直接调用 DiagnosticLog，是为了让本文件不依赖宿主侧类型，便于单测。
+    /// </summary>
+    internal static Action<string>? DiagnosticSink { get; set; }
+
+    /// <summary>配置目录提供者（默认走 InjectorRuntime；探针可覆盖）。</summary>
+    internal static Func<string?>? ConfigDirectoryProvider { get; set; }
+
+    private static void Log(string message)
+    {
+        // 优先走注入的落地实现（探针 / 单测用）。
+        if (DiagnosticSink is { } sink)
+        {
+            try { sink(message); } catch { /* 日志失败不影响功能 */ }
+            return;
+        }
+
+        // 插件运行时无注入，走内置门面。
+        try
+        {
+            var path = DiagnosticPath;
+            if (!string.IsNullOrEmpty(path))
+            {
+                DiagnosticLog.Write(path, message);
+            }
+        }
+        catch
+        {
+            // 日志失败不影响捕获。
+        }
+    }
+
+    /// <summary>日志文件路径（诊断信息用；为空表示尚未确定配置目录）。</summary>
+    public static string? DiagnosticPath
+    {
+        get
+        {
+            try
+            {
+                var dir = ConfigDirectoryProvider?.Invoke() ?? InjectorRuntime.ConfigDirectory;
+                return string.IsNullOrEmpty(dir) ? null : Path.Combine(dir, "preview-debug.log");
+            }
+            catch
+            {
+                return null;
+            }
         }
     }
 
@@ -84,8 +175,8 @@ public sealed class AudioSpectrumCapture : IDisposable
         {
             Array.Clear(_levels);
             Array.Clear(_smoothed);
-            _ringCount = 0;
-            _ringWrite = 0;
+            Array.Clear(_raw);
+            _windowCount = 0;
             _peak = 0;
         }
     }
@@ -101,6 +192,20 @@ public sealed class AudioSpectrumCapture : IDisposable
         }
     }
 
+    /// <summary>
+    /// 读取未平滑的瞬时电平（诊断用）。平滑数组在静音时会缓慢衰减，
+    /// 用它判断「是否真的一点声音都没收到」比看平滑值更准确。
+    /// </summary>
+    public float[] GetRawLevels(float[] destination)
+    {
+        lock (_lock)
+        {
+            var count = Math.Min(destination.Length, DefaultBars);
+            Array.Copy(_raw, destination, count);
+            return destination;
+        }
+    }
+
     private void OnDataAvailable(object? sender, WaveInEventArgs e)
     {
         if (!_running)
@@ -110,61 +215,151 @@ public sealed class AudioSpectrumCapture : IDisposable
 
         var buffer = e.Buffer;
         var bytes = e.BytesRecorded;
-        // WASAPI Loopback 为 IEEE float 32bit 交错双声道，每样本 4 字节。
-        var samples = bytes / 4;
-        for (var i = 0; i < samples; i++)
+        if (bytes <= 0)
         {
-            var sample = BitConverter.ToSingle(buffer, i * 4);
-            _ring[_ringWrite] = sample;
-            _ringWrite = (_ringWrite + 1) % FftSize;
-            if (_ringCount < FftSize)
-            {
-                _ringCount++;
-            }
+            return;
         }
 
-        if (_ringCount >= FftSize)
+        // WASAPI (WAVE_FORMAT_EXTENSIBLE) 的位深可能是 32/24/16，不能写死 float32。
+        var format = _capture?.WaveFormat;
+        var channels = Math.Max(1, format?.Channels ?? 2);
+        var bytesPerSample = Math.Max(1, (format?.BitsPerSample ?? 32) / 8);
+        var frameBytes = bytesPerSample * channels;
+        if (frameBytes <= 0)
         {
-            ProcessFft();
-            // 保留最近 1/4 样本做 75% 重叠，提升刷新率与平滑度。
-            var keep = KeepOverlap;
-            var srcStart = (_ringWrite - keep + FftSize) % FftSize;
-            for (var i = 0; i < keep; i++)
+            return;
+        }
+
+        var frames = bytes / frameBytes;
+        if (frames <= 0)
+        {
+            return;
+        }
+
+        // 首次收到数据时留一条日志：能确认回环真的在送数据。
+        if (Interlocked.CompareExchange(ref _dataCallbackLogged, 1, 0) == 0)
+        {
+            Log(
+                $"频谱捕获: 收到首批音频数据。bytes={bytes} 采样率={format?.SampleRate} " +
+                $"声道={channels} 位深={format?.BitsPerSample} 编码={format?.Encoding}");
+        }
+
+        for (var f = 0; f < frames; f++)
+        {
+            var offset = f * frameBytes;
+            var sum = 0f;
+            for (var c = 0; c < channels; c++)
             {
-                _ring[i] = _ring[(srcStart + i) % FftSize];
+                sum += ReadSample(buffer, offset + c * bytesPerSample, format?.BitsPerSample ?? 32, format?.Encoding);
             }
 
-            _ringCount = keep;
-            _ringWrite = keep;
+            // 多声道下混为单声道，避免只取左声道导致部分素材「看起来没反应」。
+            PushSample(sum / channels);
+        }
+
+        Interlocked.Add(ref _sampleCount, frames);
+    }
+
+    /// <summary>按当前位深/编码把单个样本解码为 -1..1 的浮点。</summary>
+    private static float ReadSample(byte[] buffer, int offset, int bitsPerSample, WaveFormatEncoding? encoding)
+    {
+        if (offset < 0 || offset >= buffer.Length)
+        {
+            return 0f;
+        }
+
+        // 浮点编码（WASAPI 混音格式固定为 IEEE float）。
+        if (encoding == WaveFormatEncoding.IeeeFloat || bitsPerSample == 32 && encoding != WaveFormatEncoding.Pcm)
+        {
+            if (offset + 4 > buffer.Length)
+            {
+                return 0f;
+            }
+
+            return BitConverter.ToSingle(buffer, offset);
+        }
+
+        switch (bitsPerSample)
+        {
+            case 16:
+                if (offset + 2 > buffer.Length) return 0f;
+                return BitConverter.ToInt16(buffer, offset) / 32768f;
+            case 24:
+                if (offset + 3 > buffer.Length) return 0f;
+                var v24 = buffer[offset] | (buffer[offset + 1] << 8) | (buffer[offset + 2] << 16);
+                // 24 位有符号扩展。
+                if ((v24 & 0x800000) != 0)
+                {
+                    v24 |= unchecked((int)0xFF000000);
+                }
+
+                return v24 / 8388608f;
+            case 32:
+                if (offset + 4 > buffer.Length) return 0f;
+                return BitConverter.ToInt32(buffer, offset) / 2147483648f;
+            default:
+                return 0f;
         }
     }
 
+    /// <summary>把一个样本推入滑动窗口，窗口满则做一次 FFT。</summary>
+    private void PushSample(float sample)
+    {
+        _windowed[_windowWrite] = sample;
+        _windowWrite = (_windowWrite + 1) % FftSize;
+        if (_windowCount < FftSize)
+        {
+            _windowCount++;
+            return;
+        }
+
+        // _windowTotal 是单调递增的总样本数（不受窗口容量截断），用它判断「又积累了
+        // MinFreshSamples 个新样本」。早期版本用 _windowCount 判断，而它在达到 FftSize
+        // 后就不再增长，条件永远不成立 → 只做一次 FFT，之后频谱完全静止（Issue #6 根因）。
+        _windowTotal++;
+        if (_windowTotal - _lastFftPos >= MinFreshSamples)
+        {
+            _lastFftPos = _windowTotal;
+            ProcessFft();
+        }
+    }
+
+    /// <summary>
+    /// 对滑动窗口内最新的 <see cref="FftSize"/> 个样本做加窗 FFT。
+    /// <para>
+    /// 旧实现用「环形缓冲 + 读完后就地重排」的方式取窗，重排时会把尚未写入的区域
+    /// （首轮全为 0）当作最旧样本，且定位索引错位一轮，导致窗内数据半数是静音 ——
+    /// 表现为频谱要么完全不跳、要么幅度极低（Issue #6）。
+    /// 这里改为单调递增计数 + 取模读取，索引关系严格可验证：最旧样本到最新样本。
+    /// </para>
+    /// </summary>
     private void ProcessFft()
     {
-        // 取环形缓冲里最新的 FftSize 个样本（已加窗）。
+        var oldest = (_windowWrite - FftSize + FftSize * 2) % FftSize;
         for (var i = 0; i < FftSize; i++)
         {
-            var idx = (_ringWrite + i) % FftSize;
-            _fftReal[i] = _ring[idx] * _window[i];
+            var idx = (oldest + i) % FftSize;
+            _fftReal[i] = _windowed[idx] * _window[i];
             _fftImag[i] = 0;
         }
 
         Fft(_fftReal, _fftImag);
 
         var half = FftSize / 2;
-        var magnitude = new float[half];
         var max = 0f;
         for (var i = 0; i < half; i++)
         {
-            magnitude[i] = MathF.Sqrt(_fftReal[i] * _fftReal[i] + _fftImag[i] * _fftImag[i]);
-            if (magnitude[i] > max)
+            _fftImag[i] = MathF.Sqrt(_fftReal[i] * _fftReal[i] + _fftImag[i] * _fftImag[i]);
+            if (_fftImag[i] > max)
             {
-                max = magnitude[i];
+                max = _fftImag[i];
             }
         }
 
-        // 峰值自动增益（缓慢衰减），保持动态范围。
-        _peak = Math.Max(_peak * 0.9f, max);
+        // 峰值自动增益：快速跟涨、极慢回落。若静音时不衰减，一次大音量后
+        // 峰值会永久偏高，后续小声永远被压平（表现为「只有开头会跳」）。
+        var targetPeak = Math.Max(max, 1e-4f);
+        _peak = targetPeak > _peak ? targetPeak : _peak * 0.995f + targetPeak * 0.005f;
         var scale = _peak > 1e-6f ? 1f / _peak : 1f;
 
         // 对数频段聚合（约 20Hz - 20kHz）。
@@ -173,6 +368,12 @@ public sealed class AudioSpectrumCapture : IDisposable
         var maxFreq = Math.Min(20000f, sampleRate / 2f);
         var minBin = Math.Max(1, (int)(minFreq / sampleRate * FftSize));
         var maxBin = Math.Min(half - 1, (int)(maxFreq / sampleRate * FftSize));
+        if (maxBin <= minBin)
+        {
+            minBin = 1;
+            maxBin = half - 1;
+        }
+
         var logMin = MathF.Log(minBin);
         var logMax = MathF.Log(maxBin);
 
@@ -187,33 +388,91 @@ public sealed class AudioSpectrumCapture : IDisposable
             var count = 0;
             for (var k = binLo; k <= binHi; k++)
             {
-                sum += magnitude[k];
+                sum += _fftImag[k];
                 count++;
             }
 
             var avg = count > 0 ? sum / count : 0f;
             // 对数压缩，让低音量细节可见。
-            var compressed = MathF.Pow(avg * scale, 0.6f);
+            var compressed = MathF.Pow(Math.Clamp(avg * scale, 0f, 1f), 0.6f);
             newLevels[b] = Math.Clamp(compressed * 4f, 0f, 1f);
         }
 
         lock (_lock)
         {
-            // 时间平滑（上升快、下降慢，形成自然的「峰值保持」效果）。
             for (var i = 0; i < DefaultBars; i++)
             {
+                _raw[i] = newLevels[i];
+                // 时间平滑（上升快、下降慢，形成自然的「峰值保持」效果）。
                 var target = newLevels[i];
                 _smoothed[i] = target > _smoothed[i]
                     ? _smoothed[i] + (target - _smoothed[i]) * 0.5f
                     : _smoothed[i] + (target - _smoothed[i]) * 0.12f;
             }
         }
+
+        Interlocked.Increment(ref _blockCount);
+        ReportDiagnosticPeriodically();
+    }
+
+    /// <summary>
+    /// 周期性写出运行诊断（每 10 秒，或在「长时间零样本」时给出明确原因），
+    /// 让用户能把 preview-debug.log 直接贴给 issue。
+    /// </summary>
+    private void ReportDiagnosticPeriodically()
+    {
+        var now = DateTime.UtcNow;
+        var samples = Interlocked.Read(ref _sampleCount);
+        var stalled = samples == _lastDiagnosticSampleCount;
+        if (!stalled && (now - _lastDiagnosticAt).TotalSeconds < 10)
+        {
+            return;
+        }
+
+        if (stalled && (now - _lastDiagnosticAt).TotalSeconds < 10)
+        {
+            return;
+        }
+
+        _lastDiagnosticAt = now;
+        _lastDiagnosticSampleCount = samples;
+        var raw = 0f;
+        lock (_lock)
+        {
+            for (var i = 0; i < DefaultBars; i++)
+            {
+                raw = Math.Max(raw, _raw[i]);
+            }
+        }
+
+        var reason = stalled
+            ? "（10 秒内无新样本：默认输出设备可能处于静音/无播放，或音频独占）"
+            : string.Empty;
+        Log(
+            $"频谱运行: 已捕获={samples} 样本 FFT帧数={Interlocked.Read(ref _blockCount)} " +
+            $"峰值增益={_peak:F4} 瞬时最大电平={raw:F3}{reason}");
     }
 
     private void OnRecordingStopped(object? sender, StoppedEventArgs e)
     {
         _running = false;
+        // 回环被中断（默认设备切换 / 音频服务重启 / 独占占用）时通知注入器重建捕获，
+        // 否则频谱会永久静止且没有任何提示（Issue #6 的「听不见、不会跳」）。
+        var reason = e.Exception != null ? $"{e.Exception.GetType().Name}: {e.Exception.Message}" : "无异常（设备切换或停止）";
+        DiagnosticMessage = $"回环捕获已停止：{reason}";
+        Log($"频谱捕获: {DiagnosticMessage}");
+        try
+        {
+            RecordingStopped?.Invoke(this, reason);
+        }
+        catch
+        {
+            // 回调异常不影响捕获器自身。
+        }
     }
+
+    /// <summary>回环捕获意外停止时触发（参数为原因描述）。注入器据此决定是否重建。</summary>
+    public event Action<AudioSpectrumCapture, string>? RecordingStopped;
 
     /// <summary>迭代基 2 快速傅里叶变换（就地，长度必须为 2 的幂）。</summary>
     private static void Fft(float[] real, float[] imag)
