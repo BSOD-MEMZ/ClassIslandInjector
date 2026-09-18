@@ -26,7 +26,8 @@ internal sealed class TextStylingInjector
     /// <summary>单个文字控件首次接管时的原始样式快照（用于还原）。</summary>
     private sealed class OriginalStyle
     {
-        public FontFamily? FontFamily;
+        /// <summary>控件原始字体（TextBlock.FontFamily 为非空属性，故此处也按非空记录）。</summary>
+        public FontFamily FontFamily = FontFamily.Default;
         public double FontSize;
         public IBrush? Foreground;
         public FontWeight FontWeight;
