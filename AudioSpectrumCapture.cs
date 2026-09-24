@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Threading;
+using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
 namespace ClassIslandInjector;
@@ -39,9 +40,11 @@ public sealed class AudioSpectrumCapture : IDisposable
     private bool _disposed;
     private long _sampleCount;
     private long _blockCount;
-    private long _lastDiagnosticSampleCount;
+    private long _lastDiagnosticSampleCount = -1;
     private DateTime _lastDiagnosticAt = DateTime.MinValue;
     private int _dataCallbackLogged;
+    /// <summary>是否已记录过「首次得到有效电平」（诊断用，一次性）。</summary>
+    private int _firstSignalLogged;
 
     public AudioSpectrumCapture()
     {
@@ -95,6 +98,9 @@ public sealed class AudioSpectrumCapture : IDisposable
             Log(
                 $"频谱捕获: 启动成功。设备采样率={fmt?.SampleRate} 声道={fmt?.Channels} " +
                 $"编码={fmt?.Encoding} 位深={fmt?.BitsPerSample}");
+            // 回环抓的是「默认渲染端点」，不是「正在出声的设备」。把该端点的名字 /
+            // 静音 / 音量写进日志，能一眼区分「设备选错（样本全 0）」和「代码问题」。
+            Log($"频谱捕获: {DescribeDefaultRenderDevice()}");
         }
         catch (Exception ex)
         {
@@ -156,6 +162,31 @@ public sealed class AudioSpectrumCapture : IDisposable
             {
                 return null;
             }
+        }
+    }
+
+    /// <summary>
+    /// 读取默认渲染端点（回环捕获目标）的友好名 / 静音状态 / 主音量。
+    /// 这三项是「样本一直有、电平一直是 0」的直接原因：实际出声设备与默认输出设备
+    /// 不是同一个（USB 耳机 / 蓝牙 / HDMI / Win11 应用级设备路由）时，回环抓到的
+    /// 就是纯静音。写进日志可一眼分辨环境问题与代码问题。
+    /// </summary>
+    public static string DescribeDefaultRenderDevice()
+    {
+        try
+        {
+            using var enumerator = new MMDeviceEnumerator();
+            using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            var name = device.FriendlyName;
+            var volume = device.AudioEndpointVolume;
+            var muted = volume?.Mute == true ? "已静音" : "未静音";
+            var level = volume?.MasterVolumeLevelScalar ?? 0f;
+            return $"默认输出设备=\"{name}\" {muted} 主音量={level * 100:F0}%";
+        }
+        catch (Exception ex)
+        {
+            // 无默认渲染端点（全部设备被禁用/未插入）时这里就会失败 —— 也是根因之一。
+            return $"默认输出设备读取失败: {ex.GetType().Name}: {ex.Message}";
         }
     }
 
@@ -411,6 +442,19 @@ public sealed class AudioSpectrumCapture : IDisposable
             }
         }
 
+        // 一次性里程碑日志：出现这一行即说明「捕获 → FFT → 电平」整条链路正常，
+        // 用户若仍看不到柱条，问题必定在覆盖层挂载或绘制侧，排查方向立刻收窄。
+        var peakLevel = 0f;
+        foreach (var level in newLevels)
+        {
+            peakLevel = Math.Max(peakLevel, level);
+        }
+
+        if (peakLevel > 0.01f && Interlocked.CompareExchange(ref _firstSignalLogged, 1, 0) == 0)
+        {
+            Log($"频谱捕获: 首次得到有效电平（最大={peakLevel:F3}）—— 捕获与 FFT 链路正常。");
+        }
+
         Interlocked.Increment(ref _blockCount);
         ReportDiagnosticPeriodically();
     }
@@ -422,18 +466,13 @@ public sealed class AudioSpectrumCapture : IDisposable
     private void ReportDiagnosticPeriodically()
     {
         var now = DateTime.UtcNow;
+        if ((now - _lastDiagnosticAt).TotalSeconds < 10)
+        {
+            return;
+        }
+
         var samples = Interlocked.Read(ref _sampleCount);
         var stalled = samples == _lastDiagnosticSampleCount;
-        if (!stalled && (now - _lastDiagnosticAt).TotalSeconds < 10)
-        {
-            return;
-        }
-
-        if (stalled && (now - _lastDiagnosticAt).TotalSeconds < 10)
-        {
-            return;
-        }
-
         _lastDiagnosticAt = now;
         _lastDiagnosticSampleCount = samples;
         var raw = 0f;
@@ -445,12 +484,22 @@ public sealed class AudioSpectrumCapture : IDisposable
             }
         }
 
-        var reason = stalled
-            ? "（10 秒内无新样本：默认输出设备可能处于静音/无播放，或音频独占）"
-            : string.Empty;
+        // 直接给出结论，避免让用户自己解读数字。注意首次采样时 _lastDiagnosticSampleCount
+        // 取 -1（而非 0），否则「还没有任何数据」会被误判成「数据停止了」。
+        var conclusion = raw > 0.001f
+            ? "正常（捕获到有效电平）"
+            : samples == 0
+                ? "回环完全没送数据 → 默认输出设备不可用/被独占（见下行设备状态）"
+                : stalled
+                    ? "回环未送新样本 → 捕获已中断/默认设备被占用，注入器会自动重建"
+                    : "有样本但全为静音 → 实际出声设备很可能不是默认输出设备";
         Log(
             $"频谱运行: 已捕获={samples} 样本 FFT帧数={Interlocked.Read(ref _blockCount)} " +
-            $"峰值增益={_peak:F4} 瞬时最大电平={raw:F3}{reason}");
+            $"峰值增益={_peak:F4} 瞬时最大电平={raw:F3} 判定={conclusion}");
+        if (raw <= 0.001f)
+        {
+            Log($"频谱运行: {DescribeDefaultRenderDevice()}");
+        }
     }
 
     private void OnRecordingStopped(object? sender, StoppedEventArgs e)

@@ -43,7 +43,6 @@ project.fragment.lock.json
 *.sln
 *.swp
 *~
-*workbuddy/
 
 appsettings.Local.json
 appsettings.*.Local.json

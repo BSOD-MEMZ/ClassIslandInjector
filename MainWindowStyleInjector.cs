@@ -182,6 +182,12 @@ internal sealed class MainWindowStyleInjector : IDisposable
     /// <summary>每行主界面的底纹宿主（键为 MainWindowLine 模板 GridRoot），
     /// 插在底色填充之上、组件内容之下。用于非分体模式，以及分体模式下的动态频谱（行级）。</summary>
     private readonly Dictionary<Grid, Border> _textureHosts = [];
+    /// <summary>
+    /// 行级底纹宿主建立时所用的纹理类型。宿主内容与类型强绑定（静态纹理=Background 画刷 /
+    /// 动态频谱=SpectrumTextureOverlay 子项 / Aero=AeroLayerGrid 子项），切换类型时必须重建宿主，
+    /// 否则复用的旧宿主会带着不匹配的内容 —— 表现为「选了动态频谱一根柱都没有」（Issue #6）。
+    /// </summary>
+    private readonly Dictionary<Grid, BackgroundTexture> _textureHostKinds = [];
     /// <summary>分体模式下每个分块的静态底纹宿主（键 = 分块 line-background Border），
     /// 插在该块底色之上、内容之下。仅当分体且全局为静态纹理时启用（逐块覆盖/清除）。</summary>
     private readonly Dictionary<Border, Border> _blockTextureHosts = [];
@@ -1971,10 +1977,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
         foreach (var stale in _textureHosts.Keys.Where(k => !liveRoots.Contains(k)).ToArray())
         {
-            if (_textureHosts.Remove(stale, out var removed) && removed.Parent is Panel panel)
-            {
-                panel.Children.Remove(removed);
-            }
+            RemoveLineTextureHost(stale);
         }
     }
 
@@ -2141,6 +2144,18 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         _textureHosts.Clear();
+        _textureHostKinds.Clear();
+    }
+
+    /// <summary>移除单个行级底纹宿主（宿主内容与纹理类型不匹配时的强制重建路径）。</summary>
+    private void RemoveLineTextureHost(Grid gridRoot)
+    {
+        if (_textureHosts.Remove(gridRoot, out var host) && host.Parent is Panel panel)
+        {
+            panel.Children.Remove(host);
+        }
+
+        _textureHostKinds.Remove(gridRoot);
     }
 
     /// <summary>
@@ -3519,7 +3534,16 @@ internal sealed class MainWindowStyleInjector : IDisposable
     {
         if (_textureHosts.TryGetValue(gridRoot, out var existing))
         {
-            return existing;
+            // 复用前必须校验宿主内容是否仍匹配当前纹理类型：静态/频谱/Aero 三者的宿主
+            // 内容形态完全不同（Background 画刷 / SpectrumTextureOverlay / AeroLayerGrid），
+            // 复用错类型的宿主会让新纹理彻底不显示（Issue #6：切到动态频谱后无柱条）。
+            if (_textureHostKinds.TryGetValue(gridRoot, out var kind) && kind == _settings.BackgroundTextureType)
+            {
+                return existing;
+            }
+
+            DebugLog($"底纹宿主重建: 纹理类型 {kind} → {_settings.BackgroundTextureType}（旧宿主内容不匹配）");
+            RemoveLineTextureHost(gridRoot);
         }
 
         var host = new Border
@@ -3538,6 +3562,15 @@ internal sealed class MainWindowStyleInjector : IDisposable
                 var overlay = new SpectrumTextureOverlay(_spectrumCapture);
                 _spectrumOverlays.Add(overlay);
                 host.Child = overlay;
+                // 挂接成功即复位「未挂接」日志哨兵，便于下次真出问题时能再报一次。
+                _spectrumOverlayAttachedLogged = false;
+                DebugLog($"频谱诊断: 已挂接覆盖层（当前宿主 {_textureHosts.Count} 个，" +
+                         $"覆盖层 {_spectrumOverlays.Count} 个，行 {DescribeHostSize(gridRoot)}）");
+            }
+            else
+            {
+                // 捕获器构造失败（NAudio 缺失 / COM 不可用）：宿主无子项、无背景 → 整块不可见。
+                DebugLog("频谱诊断: 回环捕获器不可用（_spectrumCapture == null），宿主将不含覆盖层。");
             }
         }
         else if (_settings.BackgroundTextureType == BackgroundTexture.Aero)
@@ -3554,8 +3587,13 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
         gridRoot.Children.Insert(FindTextureInsertIndex(gridRoot), host);
         _textureHosts[gridRoot] = host;
+        _textureHostKinds[gridRoot] = _settings.BackgroundTextureType;
         return host;
     }
+
+    /// <summary>诊断用：行模板 GridRoot 的当前尺寸（0 尺寸的宿主不会渲染出任何内容）。</summary>
+    private static string DescribeHostSize(Grid gridRoot)
+        => $"{gridRoot.Bounds.Width:F0}x{gridRoot.Bounds.Height:F0}";
 
     /// <summary>
     /// 在行模板 GridRoot 中定位底色 Border（或 Fluent 主题的包装层），
@@ -3594,6 +3632,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         _textureHosts.Clear();
+        _textureHostKinds.Clear();
         _blockTextureHosts.Clear();
         _blockTextureActive = false;
         _spectrumOverlays.Clear();
