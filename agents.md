@@ -134,8 +134,8 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
 
 ### 9. 视频背景 = 纯 FFmpeg（无 WMF 备胎）
 
-- 视频解码只有 `FFmpegVideoDecoder`（FFmpeg.AutoGen **9.0.1**，惰性加载）；**WMF / Media Foundation 已整体删除**（曾因 vtable 手动调用 `SetCurrentMediaTypeByIndex` 触发原生访问违规击穿进程）。
-- FFmpeg 原生库（`avcodec-63.dll` 等，版本由 `ffmpeg.LibraryVersionMap` 动态决定）部署在**配置目录\ffmpeg**（用户数据目录，deploy 不清空），通过 `ffmpeg.RootPath` 指向。
+- 视频解码只有 `FFmpegVideoDecoder`（FFmpeg.AutoGen **8.1.0**，惰性加载）；**WMF / Media Foundation 已整体删除**（曾因 vtable 手动调用 `SetCurrentMediaTypeByIndex` 触发原生访问违规击穿进程）。
+- FFmpeg 原生库（`avcodec-62.dll` 等，版本由 `ffmpeg.LibraryVersionMap` 动态决定）部署在**配置目录\ffmpeg**（用户数据目录，deploy 不清空），通过 `ffmpeg.RootPath` 指向。
 - **⚠️ 解码输出尺寸必须向上对齐到 16**（`AlignUp16`，2026-09-27；漏洞在 `Open()` 里）：H.264 宏块是 16×16，`sws_scale` 在宽度非 16 倍数时会按 SIMD 粒度写目标行，而目标缓冲恰好是 `W*H*4`（`stride == W*4`，**行尾零余量**）→ **最后一行的越界写会砸坏托管堆**，之后以 `coreclr.dll` 访问违规（`0xc0000005`）静默击穿进程，且**没有任何托管异常/日志**（`try/catch` 拦不住）。
   - 实测判据：`412×68`（视频编辑器的渲染产物，宽高都非 16 倍数）**必崩**；`416×80`、`640×80` 正常。修在解码器内部后该文件稳定存活。
   - 修在**解码器**而不是渲染侧，是为了同时对任意用户素材生效（不是只有我们的渲染产物会非对齐）。代价：`OutputWidth/Height` 最多比源大 15px、`maxDimension` 上限最多超 15px，视觉无差别（最终尺寸由主界面 `Image` 缩放决定）。
@@ -167,7 +167,7 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
   - **时间轴片段拖拽跟随指针**：按下把块移到 `_timelineRoot`（泳道 `ClipToBounds` 会裁剪跨泳道浮动），`block.ZIndex=30`；`PointerMoved` 用 `GrabX/GrabY` 跟手 + `UpdateDropHighlight` 高亮目标泳道；释放 `rootPos.Y - RulerHeight` 落轨。
   - **左侧工具栏**：body 列 `"44,{assetW},6,*,6,{inspW}"`，col0=44px 工具条（选择/文本/矩形/椭圆/效果，`ToolButton` 紧凑图标）；`AddOverlayClip` 加文本/形状覆盖层。**舞台点击放置的处理器必须挂 `_stageBorder`**（不能挂 `_stageHostGrid`——它是子级，空白处点击事件源是 `_stageBorder`，冒泡不含 Grid）。
   - **文本/形状覆盖层**：`VideoClip` 加 `Kind/Text/Color/Shape/Grayscale/FlipX/FlipY`；`OverlayFrameGenerator.cs`（System.Drawing 渲染）；播放器覆盖层返回静态帧、渲染器预乘合成+翻转/灰度、`WriteFrameToImage` 加灰度参数、`ApplyVideoClipTransform` 支持 FlipX/Y。
-- **版本号必须从 `ffmpeg.LibraryVersionMap` 动态读取，勿硬编码**：9.0 是 avcodec-63/avformat-63/avutil-61/swresample-7/swscale-10；7.1 是 avcodec-61/.../swscale-8。升级 FFmpeg.AutoGen 时 `FFmpegVideoDecoder` 的 `ffmpeg.SWS_BILINEAR` 已改为 `(int)SwsFlags.SWS_BILINEAR`（9.x 起是枚举）。
+- **版本号必须从 `ffmpeg.LibraryVersionMap` 动态读取，勿硬编码**：本仓库用的是 **8.1**（avcodec-62/avformat-62/avutil-60/swresample-6/swscale-9）；9.0 是 avcodec-63/avformat-63/avutil-61/swresample-7/swscale-10；7.1 是 avcodec-61/.../swscale-8。`FFmpegRuntime` 按主版本生成候选（`known = 9.0 / 8.1 / 8.0 / 7.1 / 7.0`，因为 avcodec 主版本 62 同时对应 8.0/8.1）逐个尝试。升级 FFmpeg.AutoGen 时 `FFmpegVideoDecoder` 的 `ffmpeg.SWS_BILINEAR` 已改为 `(int)SwsFlags.SWS_BILINEAR`。
 
 ## 预设商店（PresetStore）
 
