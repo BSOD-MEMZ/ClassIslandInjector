@@ -129,8 +129,11 @@ internal sealed class VideoProjectPlayer : IDisposable
             _duration = Math.Max(0, _project.Duration);
         }
 
-        // 音频混音按同一份工程对象取活跃片段，编辑后不必重启输出。
+        // 音频混音按同一份工程对象取活跃片段，编辑后不必重启输出；
+        // 若起播时工程还没有音频内容（编辑器常见顺序：先播放、后加素材），
+        // 这里会把音频输出补建起来，否则会一直静音。
         _mixer.UpdateProject(_project);
+        _mixer.EnsureRunning(_project, CurrentTime);
         EnsureTrackStates();
     }
 
@@ -254,6 +257,8 @@ internal sealed class VideoProjectPlayer : IDisposable
         _running = true;
         _worker = new Thread(Loop) { IsBackground = true, Name = "VideoProject" };
         _worker.Start();
+        // 暂停期间可能才把音频素材加进来：恢复时先确保输出存在，再继续播放。
+        _mixer.EnsureRunning(_project, _frozen);
         _mixer.Resume();
     }
 

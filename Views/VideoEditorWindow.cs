@@ -570,6 +570,16 @@ internal sealed class VideoEditorWindow : MyWindow
             _project.OutputHeight = size.Value.Height;
         }
 
+        // 素材库随工程持久化（PR 的 Project 面板）：把工程里记录的素材还原回列表，
+        // 构造后段的 RefreshAssetList() 会把它们渲染出来。
+        foreach (var asset in _project.Assets)
+        {
+            if (!string.IsNullOrWhiteSpace(asset.Path) && !_assets.Contains(asset.Path))
+            {
+                _assets.Add(asset.Path);
+            }
+        }
+
         _stageBorder.Child = _stageHostGrid;
         // 八向手柄覆盖层（最上层）；轨道图层插到最底。
         _stageHostGrid.Children.Add(_stageHandleOverlay);
@@ -2008,11 +2018,24 @@ internal sealed class VideoEditorWindow : MyWindow
     private static void EditorLog(string message) =>
         DiagnosticLog.Write(Path.Combine(InjectorRuntime.ConfigDirectory, "video-editor.log"), $"[editor] {message}");
 
+    /// <summary>把编辑器素材库同步进工程对象（保存时调用），让素材库随工程持久化。</summary>
+    private void SyncAssetsToProject()
+    {
+        _project.Assets = _assets.Select(p => new ProjectAsset
+        {
+            Path = p,
+            Name = Path.GetFileName(p),
+            Kind = VideoTranscoder.IsAudioFile(p) ? "Audio"
+                : VideoTranscoder.IsImageFile(p) ? "Image" : "Video"
+        }).ToList();
+    }
+
     /// <summary>把当前工程写入配置目录（供重开编辑器时恢复）。</summary>
     private void SaveProject()
     {
         try
         {
+            SyncAssetsToProject();
             VideoProjectStore.Save(_project, VideoProjectStore.DefaultPath);
         }
         catch

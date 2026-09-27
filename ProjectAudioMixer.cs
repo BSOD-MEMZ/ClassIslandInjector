@@ -156,6 +156,29 @@ internal sealed class ProjectAudioMixer : IDisposable
         }
     }
 
+    /// <summary>
+    /// 确保音频输出已建立。用于「起播时工程还没有音频内容、之后才加进来」的场景
+    /// （编辑器里先按播放、再拖素材是常规操作顺序）：那时 <see cref="Start"/> 会发现
+    /// 没有可出声内容而直接返回，输出一直为空 —— 之后无论加多少素材都是静音。
+    /// 这里在每次工程刷新 / 恢复播放时补建一次。
+    /// </summary>
+    public void EnsureRunning(VideoProject project, double startTime)
+    {
+        lock (_sync)
+        {
+            if (_output != null)
+            {
+                return;
+            }
+        }
+
+        if (project.HasAudioContent)
+        {
+            Log($"工程出现可出声内容，补建音频输出（起点={startTime:0.###}s）");
+            Start(project, startTime);
+        }
+    }
+
     /// <summary>停止并释放输出（可再次 Start）。</summary>
     public void Stop()
     {
@@ -408,6 +431,14 @@ internal sealed class ProjectAudioMixer : IDisposable
             {
                 if (string.IsNullOrWhiteSpace(clip.SourcePath) || !File.Exists(clip.SourcePath))
                 {
+                    return null;
+                }
+
+                // 解码库没就绪时直接调 FFmpeg 会抛 DllNotFoundException（被 catch 吞掉、表现为静音）：
+                // 这里显式检查并记日志，避免「明明加了解码库却听不到声音」这类难查的问题。
+                if (!FFmpegRuntime.IsAvailable || !FFmpegRuntime.EnsureLoaded())
+                {
+                    Log("FFmpeg 解码库不可用，工程音频无法解码（表现就是没有声音）");
                     return null;
                 }
 

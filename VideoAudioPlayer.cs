@@ -50,6 +50,13 @@ internal sealed class VideoAudioPlayer : IDisposable
 
         try
         {
+            // 解码库未就绪时调 FFmpeg 会抛 DllNotFoundException（被 catch 吞成静音）：显式检查并记日志。
+            if (!FFmpegRuntime.IsAvailable || !FFmpegRuntime.EnsureLoaded())
+            {
+                Log("FFmpeg 解码库不可用，跳过音频输出");
+                return false;
+            }
+
             var decoder = new FFmpegAudioDecoder();
             if (!decoder.Open(path))
             {
