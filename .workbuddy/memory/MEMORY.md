@@ -19,3 +19,12 @@
 - 目标框架锁定 `net8.0-windows10.0.19041.0`（必须与宿主的 WinRT SDK 对齐）
 - Avalonia 派生控件必须覆写 `StyleKeyOverride`
 - 判断 SMTC 焦点会话必须用 `SourceAppUserModelId` 字符串比较，不能用 `ReferenceEquals`
+- **FFmpeg 解码输出尺寸必须向上对齐到 16**（H.264 宏块；`FFmpegVideoDecoder.AlignUp16`）。非 16 倍数的尺寸（如 412×68）会让 `sws_scale` 越界写坏托管堆，随后以 `coreclr.dll` + `0xc0000005` **静默击穿进程**，无任何托管异常可抓。详见 `agents.md` 第 9 节。
+
+## 调试与排查（沙箱环境）
+
+- **判宿主存活不能看进程**：`ClassIsland.exe` 只是启动器，真身是它拉起的 `ClassIsland.Desktop.exe`。可靠判据是宿主日志里 `MemoryWatchDogService` 的 **60 秒心跳条数**。
+- **沙箱里起的宿主窗口在另一个桌面会话**：截屏截不到、`EnumWindows` 枚举不到 → 视觉验证只能交给用户，别在自动化截图上耗轮次。
+- `Get-WinEvent` 在沙箱被拒，但 **`wevtutil qe Application /c:5 /rd:true /f:text /q:"*[System[Provider[@Name='Application Error']]]"` 可用**。
+- 对照实验一次只动一个变量；怀疑某次改动引入回归时用 `git worktree` 构建旧版做 A/B（**不要** `git checkout`/`git stash` 当前工作区）。
+- 工具的构建产物在 `tools\` 下（SmtcProbe / SpectrumProbe / FFmpegProbe / ScheduleProbe / AudioProbe），不参与主项目编译；`AudioProbe --project` 校验工程格式、`--vdec` 解视频、`--play` 测音频设备。
