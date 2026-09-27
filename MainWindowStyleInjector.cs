@@ -162,6 +162,10 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private readonly List<VideoTrackLayer> _videoTrackLayers = [];
     /// <summary>动态视频填充解码器（FFmpeg，见 <see cref="FFmpegRuntime"/> 检测可用性）。</summary>
     private VideoFrameSource? _videoSource;
+    /// <summary>视频背景的音频输出（「播放声音」开关；与视频解码链路相互独立）。</summary>
+    private VideoAudioPlayer? _videoAudio;
+    /// <summary>已启动音频的签名（路径|循环），变化时重启音频输出（音量变化只调不重启）。</summary>
+    private string _videoAudioSignature = string.Empty;
     /// <summary>动态视频填充当前帧位图（按解码尺寸复用）。</summary>
     private WriteableBitmap? _videoFillBitmap;
     private BlurEffect? _videoFillBlur;
@@ -2407,10 +2411,11 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
         if (HasVideoProject())
         {
-            // 切到工程模式：停掉单文件解码器。
+            // 切到工程模式：停掉单文件解码器与音频输出（工程音频见 ApplyVideoProjectFill）。
             _videoSource?.Dispose();
             _videoSource = null;
             _videoFillSignature = string.Empty;
+            StopVideoAudio();
             ApplyVideoProjectFill();
             return;
         }
@@ -2431,6 +2436,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
         if (_videoSource != null && _videoFillSignature == signature)
         {
             UpdateVideoFillBounds();
+            // 解码没变，但「播放声音」开关 / 音量可能点了：只同步音频侧，不重启视频。
+            ApplyVideoAudio(path);
             return;
         }
 
@@ -2451,6 +2458,7 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _videoFillSignature = signature;
         _videoSource = source;
         source.Start(OnVideoFrame, _settings.VideoFillTargetFps, _settings.VideoFillLoop);
+        ApplyVideoAudio(path);
         UpdateVideoFillBounds();
     }
 
@@ -2841,10 +2849,58 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _videoFillHost.Effect = _videoFillBlur;
     }
 
+    /// <summary>
+    /// 同步视频背景的音频输出（「播放声音」开关）。
+    /// 关闭时立即静音；已启动且路径 / 循环方式不变时只同步音量，不做无谓重启。
+    /// 音频与视频是两条独立解码链（见 <see cref="VideoAudioPlayer"/>），失败一律静默降级为无声。
+    /// </summary>
+    private void ApplyVideoAudio(string path)
+    {
+        if (!_settings.VideoFillAudioEnabled)
+        {
+            StopVideoAudio();
+            return;
+        }
+
+        var signature = $"{path}|{_settings.VideoFillLoop}";
+        if (_videoAudioSignature == signature)
+        {
+            // 已启动成功、或已确认该文件/设备不可用：都只同步音量，不反复重建输出。
+            _videoAudio?.SetVolume(_settings.VideoFillAudioVolume);
+            return;
+        }
+
+        StopVideoAudio();
+        var player = new VideoAudioPlayer();
+        if (player.Start(path, _settings.VideoFillAudioVolume, _settings.VideoFillLoop))
+        {
+            _videoAudio = player;
+            DebugLog($"视频背景音频已启动（音量={_settings.VideoFillAudioVolume:0.##}）：{path}");
+        }
+        else
+        {
+            // 文件没有音频轨 / 输出设备不可用：静默降级为无声，画面照常。
+            player.Dispose();
+            DebugLog($"视频背景音频不可用（无音频轨或输出设备不可用）：{path}");
+        }
+
+        // 无论成败都记签名：失败时避免每 50ms 重试（用户重开「播放声音」开关即可重试）。
+        _videoAudioSignature = signature;
+    }
+
+    /// <summary>停止并释放视频背景的音频输出。</summary>
+    private void StopVideoAudio()
+    {
+        _videoAudio?.Dispose();
+        _videoAudio = null;
+        _videoAudioSignature = string.Empty;
+    }
+
     /// <summary>移除视频填充：停解码线程、释放位图与宿主。</summary>
     private void RemoveVideoFill()
     {
         StopVideoProjectPlayer();
+        StopVideoAudio();
         _videoSource?.Dispose();
         _videoSource = null;
         _videoFillSignature = string.Empty;
@@ -6042,6 +6098,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _marqueeWindow?.Close();
         _marqueeWindow = null;
         RestoreHostState();
+        // RestoreHostState → RemoveVideoFill 已停音频；这里再兜一次，防止将来改动绕开那条路径。
+        StopVideoAudio();
         _spectrumCapture?.Dispose();
         _spectrumCapture = null;
     }

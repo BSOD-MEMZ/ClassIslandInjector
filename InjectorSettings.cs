@@ -808,6 +808,10 @@ public sealed class InjectorSettings
     private int _videoFillMaxDimension = 1280;
     private double _videoFillTargetFps = 24;
     private bool _videoFillLoop = true;
+    /// <summary>视频背景是否输出音频（默认关闭：全新安装保持零改动，且视频背景静音是常识预期）。</summary>
+    private bool _videoFillAudioEnabled;
+    /// <summary>视频背景音量（0-1）。</summary>
+    private double _videoFillAudioVolume = 1.0;
     /// <summary>是否启用视频工程背景（多片段拼接，由视频编辑器生成）。</summary>
     private bool _videoProjectEnabled;
     /// <summary>视频工程 JSON 路径（配置目录\video-project.json）。</summary>
@@ -1051,6 +1055,10 @@ public sealed class InjectorSettings
     public double VideoFillTargetFps { get => _videoFillTargetFps; set => Set(ref _videoFillTargetFps, Math.Clamp(value, 1, 60)); }
     /// <summary>动态视频填充是否循环播放。</summary>
     public bool VideoFillLoop { get => _videoFillLoop; set => Set(ref _videoFillLoop, value); }
+    /// <summary>视频背景是否输出音频（需视频本身含音频流；关闭时完全静音）。</summary>
+    public bool VideoFillAudioEnabled { get => _videoFillAudioEnabled; set => Set(ref _videoFillAudioEnabled, value); }
+    /// <summary>视频背景音量（0-1）。</summary>
+    public double VideoFillAudioVolume { get => _videoFillAudioVolume; set => Set(ref _videoFillAudioVolume, Math.Clamp(value, 0, 1)); }
     /// <summary>是否启用视频工程背景（多片段拼接，由视频编辑器生成并渲染）。</summary>
     public bool VideoProjectEnabled { get => _videoProjectEnabled; set => Set(ref _videoProjectEnabled, value); }
     /// <summary>视频工程 JSON 路径（配置目录\video-project.json）。</summary>
@@ -1254,6 +1262,8 @@ public sealed class InjectorSettings
         VideoFillMaxDimension = source.VideoFillMaxDimension;
         VideoFillTargetFps = source.VideoFillTargetFps;
         VideoFillLoop = source.VideoFillLoop;
+        VideoFillAudioEnabled = source.VideoFillAudioEnabled;
+        VideoFillAudioVolume = source.VideoFillAudioVolume;
         VideoProjectEnabled = source.VideoProjectEnabled;
         VideoProjectPath = source.VideoProjectPath;
         RenderHardwareAccelerated = source.RenderHardwareAccelerated;

@@ -221,6 +221,10 @@ public sealed class InjectorSettingsPage : SettingsPageBase
     private readonly Spin _videoFillMaxDimension = Spinner(240, 1920, 80, "0");
     private readonly Spin _videoFillFps = Spinner(1, 60, 1, "0");
     private readonly ToggleSwitch _videoFillLoop = Toggle();
+    /// <summary>「播放声音」开关（视频背景音频输出，默认关闭）。</summary>
+    private readonly ToggleSwitch _videoFillAudio = Toggle();
+    /// <summary>视频背景音量（0-1）。</summary>
+    private readonly Slider _videoFillAudioVolume = Slider(0, 1, 0.05);
     /// <summary>「使用编辑工程」开关（视频编辑器导出的多片段工程优先于单文件）。</summary>
     private readonly ToggleSwitch _videoProjectToggle = Toggle();
     /// <summary>「动态视频填充」组。</summary>
@@ -1225,11 +1229,15 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("模糊", "对视频填充应用高斯模糊（0 为关闭）。", _videoFillBlur),
             Item("最大分辨率", "解码降采样上限（宽高中较大者，像素），降低资源占用。", _videoFillMaxDimension),
             Item("目标帧率", "解码播放帧率上限（fps），越低越省资源。", _videoFillFps),
-            Item("循环播放", "播放到结尾后自动回到开头继续。", _videoFillLoop));
+            Item("循环播放", "播放到结尾后自动回到开头继续。", _videoFillLoop),
+            Item("播放声音", "视频背景同时输出音频（视频需含音频轨）。默认关闭，避免升级后突然出声。", _videoFillAudio),
+            Item("音量", "视频背景的音量。", _videoFillAudioVolume));
         _videoFillGroup.Name = "VideoFillGroup";
         _videoFillEnabled.Name = "VideoFillToggle";
         _videoFillGroup.Footer = _videoFillEnabled;
         _videoFillEnabled.PropertyChanged += (_, _) => RefreshFfmpegAvailability();
+        // 音量滑块跟随「播放声音」开关可编辑性（关闭时置灰，减少误操作）。
+        _videoFillAudio.PropertyChanged += (_, _) => _videoFillAudioVolume.IsEnabled = _videoFillAudio.IsChecked == true;
         panel.Children.Add(_videoFillGroup);
         panel.Children.Add(_ffmpegInfoBar);
         // 自定义 FFmpeg 下载源：始终可编辑（在组外，不受库可用性禁用），供用户自建镜像。
@@ -3556,6 +3564,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
                      _textOutlineThickness, _textOutlineColor, _textMainWindowOnly,
                      _wallpaperEnabled, _wallpaperBlur,
                      _videoFillEnabled, _videoFillPath, _videoFillOpacity, _videoFillFit, _videoFillBlur, _videoFillMaxDimension, _videoFillFps, _videoFillLoop,
+                     _videoFillAudio, _videoFillAudioVolume,
                      _visibilityAnimation, _visibilityAnimationEnabled, _visibilityDuration,
                      _emphasisAnimation, _emphasisAnimationEnabled, _emphasisAmount, _emphasisDuration,
                      _notificationTransition, _notificationTransitionEnabled, _notificationTransitionDuration,
@@ -3694,6 +3703,9 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         _videoFillMaxDimension.DoubleValue = settings.VideoFillMaxDimension;
         _videoFillFps.DoubleValue = settings.VideoFillTargetFps;
         _videoFillLoop.IsChecked = settings.VideoFillLoop;
+        _videoFillAudio.IsChecked = settings.VideoFillAudioEnabled;
+        _videoFillAudioVolume.Value = settings.VideoFillAudioVolume;
+        _videoFillAudioVolume.IsEnabled = settings.VideoFillAudioEnabled;
         _videoProjectToggle.IsChecked = settings.VideoProjectEnabled;
         _customFfmpegUrl.Text = settings.CustomFfmpegDownloadUrl;
         Select(_visibilityAnimation, VisibilityAnimations, settings.VisibilityAnimation);
@@ -3889,6 +3901,8 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             settings.VideoFillMaxDimension = (int)Math.Round(_videoFillMaxDimension.DoubleValue);
             settings.VideoFillTargetFps = _videoFillFps.DoubleValue;
             settings.VideoFillLoop = _videoFillLoop.IsChecked == true;
+            settings.VideoFillAudioEnabled = _videoFillAudio.IsChecked == true;
+            settings.VideoFillAudioVolume = _videoFillAudioVolume.Value;
             settings.VideoProjectEnabled = _videoProjectToggle.IsChecked == true;
             settings.CustomFfmpegDownloadUrl = _customFfmpegUrl.Text?.Trim() ?? string.Empty;
             settings.VisibilityAnimation = _visibilityAnimationEnabled.IsChecked == true

@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>AudioProbe</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FFmpeg.AutoGen" Version="8.1.0" />
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+    <Compile Include="..\..\FFmpegAudioDecoder.cs" Link="FFmpegAudioDecoder.cs" />
+    <Compile Include="..\..\VideoAudioPlayer.cs" Link="VideoAudioPlayer.cs" />
+  </ItemGroup>
+
+</Project>
