@@ -196,6 +196,13 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
                 _outH = Math.Max(2, (int)(srcH * scale)) & ~1;
             }
 
+            // ⚠️ 输出尺寸必须向上对齐到 16（H.264 宏块）：解码器内部的 coded size 会按 16 对齐
+            // （412x68 → 416x80），而显示尺寸不是 16 的倍数时，下游「WriteableBitmap + 主界面
+            // Image 缩放」这条渲染路径会踩到 coreclr 级访问违规 —— 实测 412x68 必崩、416x80 正常。
+            // 向上对齐最多放大 15 像素，视觉上无差别（最终显示尺寸由主界面 Image 缩放决定）。
+            _outW = AlignUp16(_outW);
+            _outH = AlignUp16(_outH);
+
             // 硬解时输出帧是 GPU 内存（QSV 等），回读后为 NV12；软解时为源像素格式。
             _swsInFormat = _hwActive ? AVPixelFormat.AV_PIX_FMT_NV12 : (AVPixelFormat)cp->format;
             _sws = ffmpeg.sws_getContext(srcW, srcH, _swsInFormat,
@@ -308,6 +315,9 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
             ffmpeg.av_packet_unref(_pkt);
         }
     }
+
+    /// <summary>向上对齐到 16 的倍数（H.264 宏块尺寸）。见 <see cref="Open"/> 里的说明。</summary>
+    private static int AlignUp16(int value) => (value + 15) / 16 * 16;
 
     /// <summary>硬件解码器名 → hwdevice 类型。</summary>
     private static AVHWDeviceType HwDeviceTypeOf(string name) => name switch

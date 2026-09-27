@@ -166,6 +166,8 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private VideoAudioPlayer? _videoAudio;
     /// <summary>已启动音频的签名（路径|循环），变化时重启音频输出（音量变化只调不重启）。</summary>
     private string _videoAudioSignature = string.Empty;
+    /// <summary>视频帧序号（仅用于诊断日志：定位 coreclr 级崩溃发生在帧序列的哪一步）。</summary>
+    private long _videoFrameLogCounter;
     /// <summary>动态视频填充当前帧位图（按解码尺寸复用）。</summary>
     private WriteableBitmap? _videoFillBitmap;
     private BlurEffect? _videoFillBlur;
@@ -2761,6 +2763,14 @@ internal sealed class MainWindowStyleInjector : IDisposable
         if (_videoFillImage == null || _videoSource == null)
         {
             return;
+        }
+
+        // 低频诊断（每 120 帧 ≈ 5 秒一条）：coreclr 级访问违规不会被托管 try/catch 拦住，
+        // 事后只能靠日志判断崩在帧序列的哪个位置，所以保留这条但控制频率。
+        _videoFrameLogCounter++;
+        if (_videoFrameLogCounter % 120 == 0)
+        {
+            DebugLog($"视频帧 #{_videoFrameLogCounter} {frame.Width}x{frame.Height} stride={frame.Stride}");
         }
 
         WriteFrameToImage(_videoFillImage, ref _videoFillBitmap, frame);

@@ -13,6 +13,7 @@
     <PackageReference Include="FFmpeg.AutoGen" Version="8.1.0" />
     <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
     <Compile Include="..\..\FFmpegAudioDecoder.cs" Link="FFmpegAudioDecoder.cs" />
+    <Compile Include="..\..\FFmpegVideoDecoder.cs" Link="FFmpegVideoDecoder.cs" />
     <Compile Include="..\..\VideoAudioPlayer.cs" Link="VideoAudioPlayer.cs" />
     <Compile Include="..\..\VideoProject.cs" Link="VideoProject.cs" />
   </ItemGroup>

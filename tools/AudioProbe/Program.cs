@@ -17,6 +17,14 @@ internal static class DiagnosticLog
     }
 }
 
+/// <summary>FFmpeg 运行时桩：探针自己在 Main 里设置 ffmpeg.RootPath，这里恒报就绪。</summary>
+internal static class FFmpegRuntime
+{
+    public static bool IsAvailable => true;
+
+    public static bool EnsureLoaded() => true;
+}
+
 /// <summary>
 /// 音频链路回归探针（tools/ 下独立项目，不参与插件主项目编译）。
 /// 用途：在没有宿主 GUI 的情况下验证「视频文件 → FFmpeg 解音频 → 重采样为 48kHz 立体声 s16」
@@ -41,6 +49,11 @@ internal static class Program
         if (args.Contains("--project"))
         {
             return RunProjectChecks();
+        }
+
+        if (args.Contains("--vdec"))
+        {
+            return RunVideoDecodeCheck(args);
         }
         var libDir = args.Length > 1
             ? args[1]
@@ -278,6 +291,66 @@ internal static class Program
 
         Console.WriteLine($"结论: 失败 {failures.Count} 项");
         return 1;
+    }
+
+    /// <summary>
+    /// 用插件自己的 <see cref="FFmpegVideoDecoder"/> 完整解码指定视频（复刻插件的解码路径：
+    /// HardwareDecoder="auto" + maxDimension=1280），并在每帧做缓冲区边界抽查。
+    /// 用法：--vdec &lt;视频&gt; &lt;FFmpeg库目录&gt; [最大帧数]
+    /// </summary>
+    private static int RunVideoDecodeCheck(string[] args)
+    {
+        var idx = Array.IndexOf(args, "--vdec");
+        var video = args.Length > idx + 1 ? args[idx + 1] : @"D:\Downloads\injector-video.mp4";
+        var libDir = args.Length > idx + 2
+            ? args[idx + 2]
+            : @"D:\Dev\ClassIsland\data\Config\Plugins\classisland.injector\ffmpeg";
+        var maxFrames = args.Length > idx + 3 && int.TryParse(args[idx + 3], out var mf) ? mf : 0;
+
+        ffmpeg.RootPath = libDir;
+        Console.WriteLine("=== 插件解码器完整解码测试 ===");
+        Console.WriteLine($"文件: {video}");
+        Console.WriteLine($"FFmpeg: {ffmpeg.av_version_info()}");
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        long frames = 0;
+
+        using (var decoder = new FFmpegVideoDecoder())
+        {
+            decoder.HardwareDecoder = "auto";
+            if (!decoder.Open(video, 1280))
+            {
+                Console.WriteLine("× 打开失败");
+                return 1;
+            }
+
+            Console.WriteLine($"源 {decoder.SourceWidth}x{decoder.SourceHeight} → 输出 {decoder.OutputWidth}x{decoder.OutputHeight}，" +
+                              $"帧率={decoder.SourceFps:0.##} 时长={decoder.Duration:0.###}s 硬解生效={decoder.HardwareActive}");
+
+            while (true)
+            {
+                if (!decoder.ReadFrame(out var pixels))
+                {
+                    break;
+                }
+
+                frames++;
+                _ = pixels[^1];   // 边界抽查：缓冲区越界会直接崩在这行
+                if (maxFrames > 0 && frames >= maxFrames)
+                {
+                    break;
+                }
+
+                if (frames % 1000 == 0)
+                {
+                    Console.WriteLine($"  已解码 {frames} 帧（本批 {sw.ElapsedMilliseconds}ms）");
+                    sw.Restart();
+                }
+            }
+        }
+
+        Console.WriteLine($"完成：共解码 {frames} 帧，全程无异常。");
+        return 0;
     }
 
     private static void WriteWav(string path, List<byte> pcm)

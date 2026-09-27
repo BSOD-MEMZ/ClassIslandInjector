@@ -72,6 +72,10 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
 
 - 仓库里 `tools\SmtcProbe` 是独立工具项目，**不得**被主项目编译。
 - 若删掉 csproj 中的 `<DefaultItemExcludes>$(DefaultItemExcludes);tools\**</DefaultItemExcludes>`，会出现 CS0579（重复特性，来自 tools 的 obj 生成 AssemblyInfo）。
+- 现有回归探针（都是独立项目，用 `dotnet run -c Release` 直接跑，**不需要宿主 GUI**）：
+  - `tools\AudioProbe`：无参=解音频轨并写 wav（`--play` 顺带测设备输出）；`--project`=工程 v2 格式往返与迁移校验（22 项）；`--vdec <视频> <ffmpeg库目录>`=用插件自己的 `FFmpegVideoDecoder` 完整解一遍视频，用于定位「解码侧」问题（区分「文件/解码坏了」与「渲染侧崩了」）。
+  - `tools\FFmpegProbe`：`--enc` 生成对照 mp4（尺寸写在 `EncodeTest` 里的 `const int w/h`，排查尺寸相关崩溃时临时改），无参=解若干帧。
+  - 探针跑通 **不等于** 宿主里不出问题——很多崩溃只在「解码帧进 Avalonia 渲染层」之后才发生（见约束 9 的 16 对齐）。
 
 ### 3. Avalonia 派生控件必须覆写 `StyleKeyOverride`
 
@@ -132,6 +136,11 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
 
 - 视频解码只有 `FFmpegVideoDecoder`（FFmpeg.AutoGen **9.0.1**，惰性加载）；**WMF / Media Foundation 已整体删除**（曾因 vtable 手动调用 `SetCurrentMediaTypeByIndex` 触发原生访问违规击穿进程）。
 - FFmpeg 原生库（`avcodec-63.dll` 等，版本由 `ffmpeg.LibraryVersionMap` 动态决定）部署在**配置目录\ffmpeg**（用户数据目录，deploy 不清空），通过 `ffmpeg.RootPath` 指向。
+- **⚠️ 解码输出尺寸必须向上对齐到 16**（`AlignUp16`，2026-09-27；漏洞在 `Open()` 里）：H.264 宏块是 16×16，`sws_scale` 在宽度非 16 倍数时会按 SIMD 粒度写目标行，而目标缓冲恰好是 `W*H*4`（`stride == W*4`，**行尾零余量**）→ **最后一行的越界写会砸坏托管堆**，之后以 `coreclr.dll` 访问违规（`0xc0000005`）静默击穿进程，且**没有任何托管异常/日志**（`try/catch` 拦不住）。
+  - 实测判据：`412×68`（视频编辑器的渲染产物，宽高都非 16 倍数）**必崩**；`416×80`、`640×80` 正常。修在解码器内部后该文件稳定存活。
+  - 修在**解码器**而不是渲染侧，是为了同时对任意用户素材生效（不是只有我们的渲染产物会非对齐）。代价：`OutputWidth/Height` 最多比源大 15px、`maxDimension` 上限最多超 15px，视觉无差别（最终尺寸由主界面 `Image` 缩放决定）。
+  - 新增任何「把解码帧写进自建缓冲」的路径都要遵守这条（含 `maxDimension` 缩放后的结果）；`VideoTranscoder` 走同一解码器，已自动继承。
+  - 排查手法：这类崩溃宿主日志会「戛然而止」，插件日志也停在最后一帧之前；先用 `AudioProbe --vdec` 确认解码侧无恙，再对照「能崩的素材 vs 不崩的素材」找差异（尺寸 / 编码 / 封装）。
 - `FFmpegRuntime` 职责：
   - **双档位安装包（A∪B=C，2026-08-30）**：`FfmpegPackageKind.Minimal`（精简解码包 7.2MB，仅解码，壁纸/预览够用）与 `FfmpegPackageKind.Full`（完整包 50.7MB，含 libx264/libx265/aac，渲染剪辑与压缩转码必需）。两包是同一组 5 个 DLL，区别在构建裁剪；运行时唯一可靠判定是 `EnsureLoaded()` 后 `EncoderAvailable`（`avcodec_find_encoder(H264)`）。安装器窗口（`FfmpegInstallWindow`）打开时若无预设档位先让用户选（精简/完整）；剪辑渲染/压缩遇到精简包会引导升级（`VideoEditorWindow.EnsureFullPackageAsync`，含「进程已加载精简库→需重启宿主」提示）。内置源 `DefaultSourceUrl`（min-decode）/`FullSourceUrl`（xxtsoft.top），完整包回退 BtbN/ghps/gyan。包体与制作说明见 `dist/README-ffmpeg-packages.md`。
   - `Refresh()` 启动/下载后检测可用性——**仅查文件存在**。缺失时**绝不调用任何 ffmpeg 函数**（失败委托会被缓存为占位，之后装好库也要重启才能恢复）。
