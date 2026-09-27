@@ -115,4 +115,8 @@ internal static class VideoTranscoder
     /// <summary>是否为可导入的视频素材扩展名。</summary>
     public static bool IsVideoFile(string path) => Path.GetExtension(path).ToLowerInvariant() is
         ".mp4" or ".wmv" or ".avi" or ".mkv" or ".mov" or ".webm" or ".m4v";
+
+    /// <summary>是否为可导入的音频素材扩展名（放到音频轨的片段）。</summary>
+    public static bool IsAudioFile(string path) => Path.GetExtension(path).ToLowerInvariant() is
+        ".mp3" or ".wav" or ".m4a" or ".aac" or ".flac" or ".ogg" or ".wma" or ".opus" or ".aiff" or ".ape";
 }

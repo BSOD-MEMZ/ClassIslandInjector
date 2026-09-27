@@ -21,7 +21,8 @@
 | `SmtcWatcher.cs`                                                                                | 事件驱动的 SMTC 会话监听器（WinRT），推送取色结果/缩略图/播放状态                         |
 | `SmtcAlbumColorPicker.cs`                                                                       | 纯取色工具（MaterialColorUtilities），**不含 WinRT**；含诊断日志                    |
 | `VideoFrameSource.cs` / `FFmpegVideoDecoder.cs` / `FFmpegRuntime.cs`                         | 视频背景解码（**纯 FFmpeg，无 WMF**）：后台解码线程、FFmpeg 解码器、库检测 + 联机下载 |
-| `FFmpegAudioDecoder.cs` / `VideoAudioPlayer.cs`                                             | 视频背景**音频输出**（「播放声音」开关，默认关闭）：FFmpeg 解音频轨 + swr 统一重采样为 48kHz/立体声/s16 → NAudio `WasapiOut`（共享模式）。音频与视频是**两条独立解码链**，互不阻塞；无音频轨 / 设备不可用一律静默降级为无声 |
+| `FFmpegAudioDecoder.cs` / `VideoAudioPlayer.cs`                                             | 单文件视频背景的**音频输出**（「播放声音」开关，默认关闭）：FFmpeg 解音频轨 + swr 统一重采样为 48kHz/立体声/s16 → NAudio `WasapiOut`（共享模式）。无音频轨 / 设备不可用一律静默降级为无声 |
+| `ProjectAudioMixer.cs` / `AudioWaveform.cs`                                                 | 工程（多片段）音频：按工程时间轴混音「音频轨片段 + 视频片段自带原声」，逐片段应用音量与淡入/淡出包络、int 累加后钳制防削波；波形峰值包络提取（20ms 细粒度 + 按文件缓存，供时间轴绘制） |
 | `VideoProject.cs` / `VideoProjectPlayer.cs` / `Views/VideoEditorWindow.cs`               | 视频工程（多片段拼接/变换）与 PR 风格视频编辑器（素材库/舞台/属性/时间轴）            || `PresetExchange.cs`                                                                              | 预设交换：把用户预设（含静态资源）导出为 .cizip / 从 .cizip 导入；包内 metadata.json / preview.png 商店展示字段 |
 | `PresetStoreService.cs`                                                                          | 预设商店联机服务：索引抓取（15min 磁盘缓存 + 离线回退）、预览图缓存、.cizip 下载（进度）、已安装记录（installed.json）、版本兼容检查 |
 | `Views/PresetStoreWindow.cs` + `Views/PresetStoreCard.cs`                                        | 预设商店窗口（1:1 仿新版微软商店）：自定义标题栏 + 左窄导航（首页/全部/热门/我的）+ Banner 轮播 + 横向卡行 + 网格浏览 + 详情页 || `Views/InjectorSettingsPage.cs`                                                                 | 设置页 UI（FluentAvalonia`SettingsExpander`/`InfoBar`/`ContentDialog`）             |
@@ -30,8 +31,16 @@
 | `Defaults/Overrides.axaml`                                                                      | 默认覆盖样式表（首次运行复制到配置目录，用户可热重载编辑）                                |
 | `manifest.yml`                                                                                  | 插件清单                                                                                  |
 
-## 文件路径
+## 工程文件格式（v2，PR 风格分层）
 
+`video-project.ciproj`（JSON）：`Version` / `Name` / `Sequence{ OutputWidth, OutputHeight, VideoTracks[], AudioTracks[] }` / `Clips[]` / `Assets[]`。
+
+- v1 旧格式（`video-project.json`，顶层 `OutputWidth` + `Clips`）读取时自动迁移；**迁移过来的视频片段显式 `Muted=true`** —— 它们在支持音频之前本来就不出声，静音可避免升级后突然发声。
+- **音频片段约定**：`Kind="Audio"`、`Track=-1`（不进视频轨，让所有按 `Track` 筛选的画面逻辑天然忽略它）、`AudioTrack` 独立编号（A1 从 0 起）。视频片段的自带原声由同一个 `VideoClip` 的 `Volume / AudioFadeIn / AudioFadeOut / Muted` 控制。
+- 时间轴泳道映射：`VideoLaneCount = max(1, TrackCount)`，音频泳道紧随其后（`IsAudioLane(lane)` 判定），视频在上、音频在下；`_selectedTrack` / `_headerByTrack` 用的都是泳道号。
+- 工程背景生效路径：`MainWindowStyleInjector.ResolveVideoProjectPath()` —— 设置项 `VideoProjectPath` 从无写入点，「使用编辑工程」开关只切 `VideoProjectEnabled`，因此**必须回退到默认工程路径**，否则工程背景永不生效。
+
+## 文件路径
 ClassIsland源代码：`D:\Dev\ClassIsland-Code`
 
 ## 常用命令（PowerShell）

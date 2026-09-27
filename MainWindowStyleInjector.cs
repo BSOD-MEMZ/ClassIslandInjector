@@ -2463,10 +2463,26 @@ internal sealed class MainWindowStyleInjector : IDisposable
     }
 
     /// <summary>当前是否启用了视频工程背景（路径存在时）。</summary>
-    private bool HasVideoProject() =>
-        _settings.VideoProjectEnabled &&
-        !string.IsNullOrWhiteSpace(_settings.VideoProjectPath) &&
-        File.Exists(_settings.VideoProjectPath);
+    /// <summary>
+    /// 当前生效的工程文件路径：设置里没显式指定时回退到默认工程（配置目录 \ video-project.ciproj）。
+    /// <para>
+    /// 设置项 <c>VideoProjectPath</c> 从来没有写入点——「使用编辑工程」开关只切
+    /// <c>VideoProjectEnabled</c>，路径一直是空串；不回退的话工程背景永远不会生效
+    /// （HasVideoProject 恒为 false）。
+    /// </para>
+    /// </summary>
+    private string ResolveVideoProjectPath() =>
+        string.IsNullOrWhiteSpace(_settings.VideoProjectPath)
+            ? VideoProjectStore.DefaultPath
+            : _settings.VideoProjectPath;
+
+    private bool HasVideoProject()
+    {
+        var projectPath = ResolveVideoProjectPath();
+        return _settings.VideoProjectEnabled &&
+               !string.IsNullOrWhiteSpace(projectPath) &&
+               File.Exists(projectPath);
+    }
 
     /// <summary>把「显示方式」设置映射到视频填充 Image 的 Stretch：
     /// Fill=等比铺满裁边（默认）、Fit=等比完整显示、Stretch=逐轴拉伸。旧版无论选什么都拉伸（写死 Fill）。</summary>
@@ -2521,7 +2537,14 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _videoFillHost!.Opacity = _settings.VideoFillOpacity;
         ApplyVideoFillBlur();
 
-        var path = _settings.VideoProjectPath;
+        // 工程路径：设置里为空时回退到默认工程（见 ResolveVideoProjectPath）。
+        var path = ResolveVideoProjectPath();
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            RemoveVideoFill();
+            return;
+        }
+
         var signature = $"{path}|{File.GetLastWriteTimeUtc(path).Ticks}|{_settings.VideoFillMaxDimension}|{_settings.VideoFillTargetFps}";
         if (_videoProjectPlayer != null && _videoProjectSignature == signature)
         {

@@ -32,6 +32,8 @@ internal sealed class VideoProjectPlayer : IDisposable
     private static void Log(string message) => DiagnosticLog.Write(LogPath, $"[player] {message}");
 
     private readonly VideoProject _project;
+    /// <summary>工程音频混音器（音频轨片段 + 视频片段自带原声），随播放启停。</summary>
+    private readonly ProjectAudioMixer _mixer = new();
     private readonly int _maxDimension;
     private readonly int _targetFps;
     private readonly Action<VideoFrame, VideoClip, int> _onFrame;
@@ -99,12 +101,12 @@ internal sealed class VideoProjectPlayer : IDisposable
         _overlayH = Math.Max(2, (int)(maxDimension / aspect));
     }
 
-    /// <summary>按工程当前片段重建播放列表（跳过隐藏轨）。整体替换引用，播放线程枚举安全。</summary>
+    /// <summary>按工程当前片段重建播放列表（跳过隐藏轨；音频片段只参与混音，不进视频轨）。</summary>
     private List<VideoClip> BuildClipList()
     {
-        var trackCount = _project.Clips.Count == 0 ? 1 : _project.Clips.Max(c => c.Track) + 1;
+        var trackCount = Math.Max(1, _project.TrackCount);
         return _project.Clips
-            .Where(c => c.Track >= 0 && c.Track < trackCount &&
+            .Where(c => !c.IsAudio && c.Track >= 0 && c.Track < trackCount &&
                         _project.GetTrackState(c.Track) is not { Hidden: true })
             .ToList();
     }
@@ -127,6 +129,8 @@ internal sealed class VideoProjectPlayer : IDisposable
             _duration = Math.Max(0, _project.Duration);
         }
 
+        // 音频混音按同一份工程对象取活跃片段，编辑后不必重启输出。
+        _mixer.UpdateProject(_project);
         EnsureTrackStates();
     }
 
@@ -184,11 +188,17 @@ internal sealed class VideoProjectPlayer : IDisposable
         _running = true;
         _worker = new Thread(Loop) { IsBackground = true, Name = "VideoProject" };
         _worker.Start();
+        // 音频与视频共用同一工程时间轴，一起从 0 起播（没有音频内容时内部直接返回 false）。
+        _mixer.Start(_project, 0);
         Log($"播放开始 时长={_duration:0.##}s 轨道={trackCount} 目标帧率={_targetFps}");
     }
 
     /// <summary>请求播放线程尽快退出（资源由 Dispose 释放）。</summary>
-    public void Stop() => _running = false;
+    public void Stop()
+    {
+        _running = false;
+        _mixer.Stop();
+    }
 
     /// <summary>当前播放时间（秒）。暂停后保留在暂停位置。</summary>
     public double CurrentTime
@@ -222,6 +232,8 @@ internal sealed class VideoProjectPlayer : IDisposable
             state.Consumed.Set(); // 解除可能的帧消费等待
         }
 
+        // 音频跟着一起停：WASAPI 只是停止拉取，位置保留，Resume 时从原处继续。
+        _mixer.Pause();
         LogStats(force: true);
     }
 
@@ -242,6 +254,7 @@ internal sealed class VideoProjectPlayer : IDisposable
         _running = true;
         _worker = new Thread(Loop) { IsBackground = true, Name = "VideoProject" };
         _worker.Start();
+        _mixer.Resume();
     }
 
     /// <summary>跳转到指定时间（秒）。播放线程会在下一个循环拍应用：复位时钟并重开各轨解码器。</summary>
@@ -301,6 +314,8 @@ internal sealed class VideoProjectPlayer : IDisposable
 
             if (restartTracks)
             {
+                // 音频混音与视频轨共用同一条时间轴：跳转 / 循环复位时同步音频位置。
+                _mixer.Seek(time);
                 foreach (var state in _tracks)
                 {
                     var targetClip = FindActiveClip(state.Track, time);
@@ -566,5 +581,6 @@ internal sealed class VideoProjectPlayer : IDisposable
 
         _worker?.Join(800);
         _worker = null;
+        _mixer.Dispose();
     }
 }

@@ -37,6 +37,11 @@ internal static class Program
         }
 
         var video = args.Length > 0 ? args[0] : @"D:\Downloads\injector-video.mp4";
+
+        if (args.Contains("--project"))
+        {
+            return RunProjectChecks();
+        }
         var libDir = args.Length > 1
             ? args[1]
             : @"D:\Dev\ClassIsland\data\Config\Plugins\classisland.injector\ffmpeg";
@@ -176,6 +181,103 @@ internal static class Program
             ? "结论: 通过 —— 音频解码 → 重采样链路产出有效波形，且时长与容器一致。"
             : "结论: 失败 —— 请检查上方日志（峰值 0 说明解出的是静音）。");
         return pass ? 0 : 1;
+    }
+
+    /// <summary>
+    /// 工程文件（v2 分层格式）与音频包络的离线校验：保存 / 读取往返、v1 旧格式迁移、
+    /// 音量与淡入淡出包络、活跃片段判定。不依赖宿主 GUI。
+    /// </summary>
+    private static int RunProjectChecks()
+    {
+        var tmp = Path.Combine(Path.GetTempPath(), "ClassIslandInjectorProbe");
+        Directory.CreateDirectory(tmp);
+        var roundTripPath = Path.Combine(tmp, "roundtrip.ciproj");
+        var legacyPath = Path.Combine(tmp, "legacy-video-project.json");
+
+        var failures = new List<string>();
+
+        void Check(bool ok, string what)
+        {
+            Console.WriteLine($"  {(ok ? "通过" : "失败")}: {what}");
+            if (!ok)
+            {
+                failures.Add(what);
+            }
+        }
+
+        Console.WriteLine("=== 工程文件与音频包络校验 ===");
+
+        var project = new VideoProject { Name = "探针序列", OutputWidth = 400, OutputHeight = 90 };
+        project.Clips.Add(new VideoClip
+        {
+            Kind = "Video", SourcePath = "v.mp4", Track = 0, StartTime = 0, InPoint = 0, OutPoint = 5
+        });
+        project.Clips.Add(new VideoClip
+        {
+            Kind = "Audio", SourcePath = "a.mp3", Track = -1, AudioTrack = 1, StartTime = 2,
+            InPoint = 0.5, OutPoint = 8.5, Volume = 1.5, AudioFadeIn = 1, AudioFadeOut = 2,
+            SourceDuration = 20
+        });
+        VideoProjectStore.Save(project, roundTripPath);
+
+        var text = File.ReadAllText(roundTripPath);
+        Check(text.Contains("\"Version\": 2") && text.Contains("\"Sequence\""), "写出 v2 分层结构（Version / Sequence）");
+        Check(text.Contains("\"VideoTracks\"") && text.Contains("\"AudioTracks\""), "序列内区分视频轨与音频轨");
+        Check(text.Contains("\"Assets\""), "工程含素材库字段");
+
+        var loaded = VideoProjectStore.Load(roundTripPath);
+        var audio = loaded.Clips.FirstOrDefault(c => c.IsAudio);
+        Check(loaded.Name == "探针序列", "序列名往返");
+        Check(loaded.Clips.Count == 2, "片段数量往返");
+        Check(audio != null && audio.AudioTrack == 1 && Math.Abs(audio.Volume - 1.5) < 0.001 &&
+              Math.Abs(audio.AudioFadeIn - 1) < 0.001 && Math.Abs(audio.AudioFadeOut - 2) < 0.001,
+            "音频片段音量 / 淡入 / 淡出往返");
+        Check(audio is { Track: -1 }, "音频片段 Track = -1（不进视频轨）");
+        Check(loaded.TrackCount == 1, "视频轨数只数画面片段");
+        Check(loaded.AudioTrackCount == 2, "音频轨数按 AudioTrack 计算");
+        Check(loaded.HasAudioContent, "识别到可出声内容");
+
+        if (audio != null)
+        {
+            Check(Math.Abs(audio.AudioGainAt(0)) < 0.001, "淡入起点增益 = 0");
+            Check(Math.Abs(audio.AudioGainAt(0.5) - 0.75) < 0.01, "淡入中点增益 = 0.5 × 1.5");
+            Check(Math.Abs(audio.AudioGainAt(3) - 1.5) < 0.001, "稳态增益 = 音量倍率");
+            Check(Math.Abs(audio.AudioGainAt(7) - 0.75) < 0.01, "淡出中点增益 = 0.5 × 1.5");
+            Check(Math.Abs(audio.AudioGainAt(8)) < 0.001, "淡出终点增益 = 0");
+        }
+
+        Check(loaded.AudioClipsAt(3).Count() == 2, "时刻 3s：视频原声与音频片段同时活跃");
+        Check(loaded.AudioClipsAt(6).Count() == 1, "时刻 6s：视频片段已结束，只剩音频");
+        Check(!loaded.AudioClipsAt(10.5).Any(), "时刻 10.5s：全部结束");
+
+        var legacyJson = @"{
+  ""OutputWidth"": 400,
+  ""OutputHeight"": 90,
+  ""Clips"": [
+    { ""Kind"": ""Video"", ""SourcePath"": ""old1.mp4"", ""Track"": 0, ""StartTime"": 0, ""InPoint"": 0, ""OutPoint"": 5 },
+    { ""Kind"": ""Video"", ""SourcePath"": ""old2.mp4"", ""Track"": 0, ""StartTime"": 0, ""InPoint"": 0, ""OutPoint"": 6 },
+    { ""Kind"": ""Video"", ""SourcePath"": ""old3.mp4"", ""Track"": 0, ""StartTime"": 0, ""InPoint"": 0, ""OutPoint"": 4 }
+  ]
+}";
+        File.WriteAllText(legacyPath, legacyJson);
+        var migrated = VideoProjectStore.Load(legacyPath);
+        Check(migrated.Clips.Count == 3, "旧格式片段全部保留");
+        Check(migrated.Clips.All(c => c.Muted), "旧格式视频片段迁移后显式静音（升级不会突然出声）");
+        Check(Math.Abs(migrated.Clips[0].StartTime) < 0.001 &&
+              Math.Abs(migrated.Clips[1].StartTime - 5) < 0.001 &&
+              Math.Abs(migrated.Clips[2].StartTime - 11) < 0.001,
+            "旧版单轨拼接迁移为顺序时间轴（0 / 5 / 11）");
+        Check(!migrated.HasAudioContent, "迁移后工程无可出声内容（全部静音）");
+
+        Console.WriteLine();
+        if (failures.Count == 0)
+        {
+            Console.WriteLine("结论: 通过 —— 工程格式（v2 分层 / v1 迁移）与音频包络均符合预期。");
+            return 0;
+        }
+
+        Console.WriteLine($"结论: 失败 {failures.Count} 项");
+        return 1;
     }
 
     private static void WriteWav(string path, List<byte> pcm)

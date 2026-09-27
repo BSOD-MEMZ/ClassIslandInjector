@@ -239,6 +239,11 @@ internal sealed class VideoEditorWindow : MyWindow
     private readonly EditorSpin _cropTSpin = new(0, 1, 0.01, "0.##");
     private readonly EditorSpin _cropRSpin = new(0, 1, 0.01, "0.##");
     private readonly EditorSpin _cropBSpin = new(0, 1, 0.01, "0.##");
+    // ---- 音频（音频片段与视频片段自带原声共用；100% = 原始音量）----
+    private readonly EditorSpin _volumeSpin = new(0, 200, 5, "0");
+    private readonly EditorSpin _fadeInSpin = new(0, 60, 0.5, "0.##");
+    private readonly EditorSpin _fadeOutSpin = new(0, 60, 0.5, "0.##");
+    private readonly ToggleSwitch _muteToggle = new();
     private Control[] _propertyControls = [];
     /// <summary>px 投影基准缓存：当前选中片段在输出画布内的“适配基准矩形”（缩放=1 时的像素尺寸）。</summary>
     private (double BaseW, double BaseH) _pxBaseCache = (16, 9);
@@ -266,6 +271,26 @@ internal sealed class VideoEditorWindow : MyWindow
     /// <summary>每轨独立高度（轨道头底缘拖拽调整；未设置时用 _laneHeight 滑块默认值）。</summary>
     private readonly Dictionary<int, double> _laneHeights = [];
     private double LaneHeightOf(int track) => _laneHeights.TryGetValue(track, out var h) ? h : _laneHeight;
+
+    // ---- 泳道 ↔ 轨道映射（PR 布局：视频轨在上、音频轨在下）----
+    // 时间轴泳道号沿用现有 _selectedTrack / _headerByTrack / _blockByClip 的语义：
+    //   泳道 0 .. VideoLaneCount-1        → 视频轨 0..n（数字越大越靠上，与原来一致）
+    //   泳道 VideoLaneCount .. 末尾       → 音频轨 A1、A2…（A1 在最下，符合 PR 习惯）
+
+    /// <summary>视频泳道数（= 音频泳道的起始下标）。</summary>
+    private int VideoLaneCount => Math.Max(1, _project.TrackCount);
+
+    /// <summary>音频泳道数（至少 1，保证总有 A1 可以拖入音频）。</summary>
+    private int AudioLaneCount => Math.Max(1, _project.AudioTrackCount);
+
+    /// <summary>时间轴总泳道数（视频 + 音频）。</summary>
+    private int TotalLaneCount => VideoLaneCount + AudioLaneCount;
+
+    /// <summary>泳道是否为音频轨。</summary>
+    private bool IsAudioLane(int lane) => lane >= VideoLaneCount;
+
+    /// <summary>音频泳道号 → 音频轨号。</summary>
+    private int AudioTrackOfLane(int lane) => Math.Max(0, lane - VideoLaneCount);
     /// <summary>轨道头控件按数据轨号索引（视觉顺序反转后仍按轨号取）。</summary>
     private readonly Dictionary<int, Border> _headerByTrack = [];
     /// <summary>正在拖拽调整高度的轨道号（-1 = 无）。</summary>
@@ -1598,8 +1623,17 @@ internal sealed class VideoEditorWindow : MyWindow
         _propertyControls =
         [
             _inSpin, _outSpin, _pxXSpin, _pxYSpin, _pxWSpin, _pxHSpin,
-            _rotationSpin, _opacitySpin, _cropLSpin, _cropTSpin, _cropRSpin, _cropBSpin
+            _rotationSpin, _opacitySpin, _cropLSpin, _cropTSpin, _cropRSpin, _cropBSpin,
+            _volumeSpin, _fadeInSpin, _fadeOutSpin
         ];
+        // 静音开关不是 Spin，单独绑它自己的属性变化（ToggleSwitch.IsCheckedProperty）。
+        _muteToggle.PropertyChanged += (_, e) =>
+        {
+            if (e.Property == ToggleSwitch.IsCheckedProperty)
+            {
+                ApplyPropertyEdits();
+            }
+        };
         foreach (var spin in _propertyControls)
         {
             spin.PropertyChanged += (_, e) =>
@@ -1721,7 +1755,12 @@ internal sealed class VideoEditorWindow : MyWindow
                 InspectorRow("裁左", _cropLSpin),
                 InspectorRow("裁上", _cropTSpin),
                 InspectorRow("裁右", _cropRSpin),
-                InspectorRow("裁下", _cropBSpin)
+                InspectorRow("裁下", _cropBSpin),
+                new TextBlock { Text = "音频（音量 / 淡入淡出）", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 8, 0, 0) },
+                InspectorRow("音量（%）", _volumeSpin),
+                InspectorRow("淡入（秒）", _fadeInSpin),
+                InspectorRow("淡出（秒）", _fadeOutSpin),
+                InspectorRow("静音", _muteToggle)
             }
         };
         _inspectorPages["transform"] = transformPanel;
@@ -2189,10 +2228,20 @@ internal sealed class VideoEditorWindow : MyWindow
 
         var files = await provider.OpenFilePickerAsync(new FilePickerOpenOptions
         {
-            Title = "添加素材（视频 / 图片）",
+            Title = "添加素材（视频 / 图片 / 音频）",
             AllowMultiple = true,
             FileTypeFilter =
             [
+                new FilePickerFileType("全部素材")
+                {
+                    Patterns = ["*.mp4", "*.wmv", "*.avi", "*.mkv", "*.mov", "*.webm", "*.m4v",
+                                "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif", "*.webp",
+                                "*.mp3", "*.wav", "*.m4a", "*.aac", "*.flac", "*.ogg", "*.wma", "*.opus"]
+                },
+                new FilePickerFileType("音频")
+                {
+                    Patterns = ["*.mp3", "*.wav", "*.m4a", "*.aac", "*.flac", "*.ogg", "*.wma", "*.opus"]
+                },
                 new FilePickerFileType("视频 / 图片")
                 {
                     Patterns = ["*.mp4", "*.wmv", "*.avi", "*.mkv", "*.mov", "*.webm", "*.m4v",
@@ -2233,13 +2282,15 @@ internal sealed class VideoEditorWindow : MyWindow
     {
         foreach (var path in paths)
         {
-            if (VideoTranscoder.IsImageFile(path))
+            // 图片与音频都不需要转码询问：图片是覆盖层，音频直接进音频轨。
+            if (VideoTranscoder.IsImageFile(path) || VideoTranscoder.IsAudioFile(path))
             {
                 _assets.Add(path);
             }
         }
 
-        var videos = paths.Where(p => !VideoTranscoder.IsImageFile(p) && !p.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase)).ToList();
+        var videos = paths.Where(p => !VideoTranscoder.IsImageFile(p) && !VideoTranscoder.IsAudioFile(p) &&
+                                      !p.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase)).ToList();
         if (videos.Count == 0)
         {
             return;
@@ -2585,22 +2636,66 @@ internal sealed class VideoEditorWindow : MyWindow
         var path = _assets[_assetList.SelectedIndex];
         // 图片素材：固定 5 秒的图片覆盖层片段（Kind=Image）；视频：按素材时长建片段。
         var isImage = VideoTranscoder.IsImageFile(path);
-        var duration = isImage ? 5 : GetAssetDuration(path);
-        var clip = new VideoClip
+        VideoClip clip;
+        if (VideoTranscoder.IsAudioFile(path))
         {
-            Kind = isImage ? "Image" : "Video",
-            SourcePath = path,
-            Track = _selectedTrack,
-            StartTime = _project.TrackEnd(_selectedTrack),
-            InPoint = 0,
-            OutPoint = isImage ? duration : duration > 0.5 ? duration : 10
-        };
+            // 音频素材：落到音频轨（A1…）。当前选中的是音频泳道就用它，否则用 A1。
+            // Track 固定 -1：音频片段不进视频轨，也让所有按 Track 筛选的视频逻辑天然忽略它。
+            var audioTrack = IsAudioLane(_selectedTrack) ? AudioTrackOfLane(_selectedTrack) : 0;
+            var audioDuration = ProbeAudioDuration(path);
+            clip = new VideoClip
+            {
+                Kind = "Audio",
+                SourcePath = path,
+                Track = -1,
+                AudioTrack = audioTrack,
+                StartTime = _project.AudioTrackEnd(audioTrack),
+                InPoint = 0,
+                OutPoint = audioDuration > 0.5 ? audioDuration : 10,
+                SourceDuration = audioDuration
+            };
+        }
+        else
+        {
+            // 画面素材：当前若选中音频泳道，落到视频轨 0，避免把片段放到音频泳道号上。
+            var videoTrack = IsAudioLane(_selectedTrack) ? 0 : _selectedTrack;
+            var duration = isImage ? 5 : GetAssetDuration(path);
+            clip = new VideoClip
+            {
+                Kind = isImage ? "Image" : "Video",
+                SourcePath = path,
+                Track = videoTrack,
+                StartTime = _project.TrackEnd(videoTrack),
+                InPoint = 0,
+                OutPoint = isImage ? duration : duration > 0.5 ? duration : 10
+            };
+        }
+
         PushUndo();
         _project.Clips.Add(clip);
         SelectClip(clip);
         RefreshTimeline();
         FillPropertyPanel();
         ScheduleSave();
+    }
+
+    /// <summary>探测音频素材时长（秒；0 = 未知，调用方落到 10 秒兜底）。</summary>
+    private static double ProbeAudioDuration(string path)
+    {
+        try
+        {
+            if (!FFmpegRuntime.IsAvailable || !FFmpegRuntime.EnsureLoaded())
+            {
+                return 0;
+            }
+
+            using var decoder = new FFmpegAudioDecoder();
+            return decoder.Open(path) ? decoder.Duration : 0;
+        }
+        catch
+        {
+            return 0;
+        }
     }
 
     /// <summary>打开素材探测时长（打开解码器后立即释放）。</summary>
@@ -3280,7 +3375,8 @@ internal sealed class VideoEditorWindow : MyWindow
         // 片段增删/拖拽/撤销后同步预览播放器：它若仍按构造时的片段快照调度，
         // 已删除的片段会继续出现在预览里（即使时间轴已不显示）。
         _player?.RefreshClips();
-        var trackCount = _project.TrackCount;
+        // 泳道总数 = 视频轨 + 音频轨（音频轨排在视频轨下方，见 VideoLaneCount 注释）。
+        var trackCount = TotalLaneCount;
         _lanes.Clear();
         // 保留纵向滚动偏移：轨道头与泳道已通过 ScrollChanged 同步平移（不会错位），
         // 拖到下方轨道释放后重建时间轴时不能跳回顶部（否则"很难把素材放到下面轨道"）。
@@ -3330,12 +3426,17 @@ internal sealed class VideoEditorWindow : MyWindow
                     e.Handled = true;
                 }
             };
-            var state = _project.TrackStateOf(trackIndex);
-            // 轨道头：直接横向排列 锁定 / 隐藏 / 删除 三个按钮（FluentSystemIcons-Resizable 图标）。
+            // 音频泳道取音频轨状态（锁定 / 静音），视频泳道取视频轨状态。
+            var audioLane = IsAudioLane(trackIndex);
+            var audioTrackNo = AudioTrackOfLane(trackIndex);
+            var state = audioLane
+                ? _project.AudioTrackStateOf(audioTrackNo)
+                : _project.TrackStateOf(trackIndex);
+            // 轨道头：直接横向排列 锁定 / 隐藏(静音) / 删除 三个按钮（FluentSystemIcons-Resizable 图标）。
             var btnLock = TrackHeaderButton("\uEAEF", "锁定/解锁该轨道（锁定后该轨片段不可编辑）", state.Locked,
                 () => { state.Locked = !state.Locked; RefreshTimeline(); ScheduleSave(); });
             var btnHide = TrackHeaderButton(state.Hidden ? "\uE816" : "\uE812",
-                "隐藏该轨道（编辑半透明，播放/渲染不显示）", state.Hidden,
+                audioLane ? "静音该音频轨（不参与混音）" : "隐藏该轨道（编辑半透明，播放/渲染不显示）", state.Hidden,
                 () => { state.Hidden = !state.Hidden; RefreshTimeline(); ScheduleSave(); });
             var btnDel = TrackHeaderButton("\uE61C", "删除该轨道（该轨全部片段）", false,
                 () => DeleteTrack(trackIndex));
@@ -3494,7 +3595,12 @@ internal sealed class VideoEditorWindow : MyWindow
                 }
             };
 
-            foreach (var clip in _project.Clips.Where(c => c.Track == trackIndex).OrderBy(c => c.StartTime))
+            // 音频泳道筛音频片段（按 AudioTrack）；视频泳道筛画面类片段
+            // （音频片段的 Track 固定为 -1，因此不会被视频泳道挑中）。
+            var laneClips = IsAudioLane(trackIndex)
+                ? _project.Clips.Where(c => c.IsAudio && c.AudioTrack == AudioTrackOfLane(trackIndex))
+                : _project.Clips.Where(c => !c.IsAudio && c.Track == trackIndex);
+            foreach (var clip in laneClips.OrderBy(c => c.StartTime))
             {
                 canvas.Children.Add(BuildClipBlock(clip));
             }
@@ -3964,6 +4070,46 @@ internal sealed class VideoEditorWindow : MyWindow
     }
 
     /// <summary>把片段放到指定轨道上不与任何同轨片段重叠的最近可用位置（优先向后，其次向前）。</summary>
+    /// <summary>音频轨上目标区间是否空闲（音频片段之间同样不允许同轨堆叠）。</summary>
+    private bool FitsOnAudioTrack(int audioTrack, double start, double duration, VideoClip? exclude = null) =>
+        !_project.Clips.Any(c => c.IsAudio && !ReferenceEquals(c, exclude) &&
+                                 c.AudioTrack == audioTrack &&
+                                 start < c.StartTime + c.Duration - 0.001 &&
+                                 c.StartTime < start + duration - 0.001);
+
+    /// <summary>在音频轨上把片段挪到最近可用位置（沿时间轴往后找空位）。</summary>
+    private double FitToAudioTrack(VideoClip clip, double desired, int audioTrack)
+    {
+        var start = Math.Max(0, desired);
+        for (var guard = 0; guard < 512; guard++)
+        {
+            if (FitsOnAudioTrack(audioTrack, start, clip.Duration, clip))
+            {
+                return start;
+            }
+
+            var nextStarts = _project.Clips
+                .Where(c => c.IsAudio && !ReferenceEquals(c, clip) && c.AudioTrack == audioTrack &&
+                            c.StartTime + c.Duration > start)
+                .Select(c => c.StartTime + c.Duration)
+                .ToList();
+            if (nextStarts.Count == 0)
+            {
+                return start;
+            }
+
+            var next = nextStarts.Min();
+            if (next <= start + 0.0005)
+            {
+                return start;
+            }
+
+            start = next;
+        }
+
+        return start;
+    }
+
     private double FitToTrack(VideoClip clip, double desired, int track)
     {
         var duration = clip.Duration;
@@ -4195,10 +4341,107 @@ internal sealed class VideoEditorWindow : MyWindow
     }
 
     /// <summary>构建一个时间轴片段块（绝对定位到泳道画布；支持点击/框选多选、按住拖拽移动多选组、左右边缘拖拽裁剪入/出点）。</summary>
+    /// <summary>
+    /// 异步加载并绘制音频片段波形（PR 风格）。
+    /// 首次提取要解码全曲（结果按文件缓存），所以放后台线程；完成后回到 UI 线程填进 Canvas。
+    /// 波形只是装饰：任何失败都静默跳过，不影响编辑。
+    /// </summary>
+    private async void LoadWaveformAsync(VideoClip clip, Canvas host)
+    {
+        try
+        {
+            var peaks = await Task.Run(() => AudioWaveform.GetDetailPeaks(clip.SourcePath));
+            if (peaks is not { Length: > 0 } || host.Parent == null)
+            {
+                return;
+            }
+
+            var slice = SliceForClip(peaks, clip);
+            if (slice.Length == 0)
+            {
+                return;
+            }
+
+            var width = Math.Max(12, clip.Duration * _pxPerSecond);
+            var height = host.Height > 4 ? host.Height : 28;
+            var buckets = Math.Clamp((int)width, 8, 4000);
+            host.Children.Add(BuildWaveformVisual(AudioWaveform.Resample(slice, buckets), width, height));
+        }
+        catch
+        {
+            // 装饰性内容，失败不影响编辑。
+        }
+    }
+
+    /// <summary>按片段入出点从整段包络里裁出可见区间（素材时长未知时按整段处理）。</summary>
+    private static float[] SliceForClip(float[] peaks, VideoClip clip)
+    {
+        var total = clip.SourceDuration > 0.05
+            ? clip.SourceDuration
+            : peaks.Length * AudioWaveform.DetailBucketSeconds;
+        if (total <= 0.05)
+        {
+            return peaks;
+        }
+
+        var startIndex = (int)Math.Clamp(clip.InPoint / total * peaks.Length, 0, peaks.Length - 1);
+        var endIndex = (int)Math.Clamp(clip.OutPoint / total * peaks.Length, startIndex + 1, peaks.Length);
+        var length = endIndex - startIndex;
+        if (length <= 0)
+        {
+            return peaks;
+        }
+
+        var slice = new float[length];
+        Array.Copy(peaks, startIndex, slice, 0, length);
+        return slice;
+    }
+
+    /// <summary>把峰值数组画成上下对称的波形填充（以 0 轴为中心）。</summary>
+    private static Control BuildWaveformVisual(float[] peaks, double width, double height)
+    {
+        var geometry = new StreamGeometry();
+        using (var ctx = geometry.Open())
+        {
+            var mid = height / 2;
+            var amplitude = mid * 0.86;
+            ctx.BeginFigure(new Point(0, mid), true);
+
+            for (var i = 0; i < peaks.Length; i++)
+            {
+                var x = peaks.Length <= 1 ? 0 : width * i / (peaks.Length - 1);
+                ctx.LineTo(new Point(x, mid - peaks[i] * amplitude));
+            }
+
+            for (var i = peaks.Length - 1; i >= 0; i--)
+            {
+                var x = peaks.Length <= 1 ? 0 : width * i / (peaks.Length - 1);
+                ctx.LineTo(new Point(x, mid + peaks[i] * amplitude));
+            }
+
+            ctx.EndFigure(true);
+        }
+
+        // 注意用全名：本文件大量使用 System.IO.Path，简写 Path 会解析成它。
+        return new Avalonia.Controls.Shapes.Path
+        {
+            Data = geometry,
+            Fill = new SolidColorBrush(WaveformColor()),
+            Stretch = Stretch.None,
+            IsHitTestVisible = false
+        };
+    }
+
+    /// <summary>波形填充色（半透明青绿，深浅主题下都看得清）。</summary>
+    private static Color WaveformColor() => Color.FromArgb(190, 130, 220, 185);
+
     private Border BuildClipBlock(VideoClip clip)
     {
         var isSelected = _selectedClips.Contains(clip);
-        var trackState = _project.GetTrackState(clip.Track);
+        // 音频片段取音频轨状态：它的 Track 固定 -1，按 Track 取会误拿到视频轨 0 的锁定 / 隐藏状态。
+        var trackState = clip.IsAudio
+            ? _project.GetAudioTrackState(clip.AudioTrack)
+            : _project.GetTrackState(clip.Track);
         var isLocked = trackState is { Locked: true };
         var isHiddenTrack = trackState is { Hidden: true };
         var durationText = new TextBlock
@@ -4223,6 +4466,13 @@ internal sealed class VideoEditorWindow : MyWindow
                 durationText
             }
         };
+        if (clip.IsAudio)
+        {
+            // PR 风格：音频块内直接画波形。提取走后台线程，完成后回到 UI 线程把图形填进 Canvas。
+            var waveHost = new Canvas { Height = 28, ClipToBounds = true };
+            content.Children.Add(waveHost);
+            LoadWaveformAsync(clip, waveHost);
+        }
         // 选中时显示左右裁剪手柄（拖左 = 改入点，拖右 = 改出点）。
         // 触摸友好：外层 18px 透明命中区（手指可轻松点到），内层 8px 白色可见条贴块边缘。
         var leftHandle = new Border
@@ -4878,7 +5128,8 @@ internal sealed class VideoEditorWindow : MyWindow
         var rawX = pointer.X - (isMove ? _dragOffsetX : 0);
         var rawStart = Math.Max(0, rawX / _pxPerSecond);
         var startTime = _snapEnabled ? SnapTime(rawStart) : rawStart;
-        var trackCount = _project.TrackCount;
+        // 泳道数含音频轨：落点解析要按总泳道算，否则拖到音频轨会被算成超出范围。
+        var trackCount = TotalLaneCount;
         var (dropTrack, insertPos) = ResolveDropTarget(pointer.Y, trackCount);
 
         VideoClip? clip = null;
@@ -4950,24 +5201,48 @@ internal sealed class VideoEditorWindow : MyWindow
         else if (_assets.Contains(text))
         {
             // 素材拖入：目标轨道/位置新增片段（同轨不重叠，自动放到最近可用位置）。
-            // 图片素材建 Kind=Image 覆盖层（固定 5 秒）；视频按素材时长建普通片段。
-            var isImage = VideoTranscoder.IsImageFile(text);
-            var duration = isImage ? 5 : GetAssetDuration(text);
-            clip = new VideoClip
+            // 图片 → Kind=Image 覆盖层（固定 5 秒）；音频 → 音频轨片段；视频 → 按素材时长。
+            if (VideoTranscoder.IsAudioFile(text))
             {
-                Kind = isImage ? "Image" : "Video",
-                SourcePath = text,
-                Track = 0,
-                StartTime = startTime,
-                InPoint = 0,
-                OutPoint = isImage ? duration : duration > 0.5 ? duration : 10
-            };
-            _project.Clips.Add(clip);
+                var audioTrack = IsAudioLane(dropTrack) ? AudioTrackOfLane(dropTrack) : 0;
+                var audioDuration = ProbeAudioDuration(text);
+                clip = new VideoClip
+                {
+                    Kind = "Audio",
+                    SourcePath = text,
+                    Track = -1,
+                    AudioTrack = audioTrack,
+                    StartTime = startTime,
+                    InPoint = 0,
+                    OutPoint = audioDuration > 0.5 ? audioDuration : 10,
+                    SourceDuration = audioDuration
+                };
+                _project.Clips.Add(clip);
+            }
+            else
+            {
+                var isImage = VideoTranscoder.IsImageFile(text);
+                var duration = isImage ? 5 : GetAssetDuration(text);
+                clip = new VideoClip
+                {
+                    Kind = isImage ? "Image" : "Video",
+                    SourcePath = text,
+                    Track = 0,
+                    StartTime = startTime,
+                    InPoint = 0,
+                    OutPoint = isImage ? duration : duration > 0.5 ? duration : 10
+                };
+                _project.Clips.Add(clip);
+            }
         }
 
         if (clip != null)
         {
-            if (isFilter)
+            if (clip.IsAudio)
+            {
+                // 音频片段落在音频轨（上面已按落点泳道写进 AudioTrack），不参与视频轨的插入 / 挪动。
+            }
+            else if (isFilter)
             {
                 // 滤镜始终放最高新轨道，不参与插入。
                 clip.Track = _project.TrackCount;
@@ -4993,9 +5268,18 @@ internal sealed class VideoEditorWindow : MyWindow
             }
 
             clip.StartTime = startTime;
-            // 同轨不允许堆叠：落点被占时自动挪到最近空位。
+            // 同轨不允许堆叠：落点被占时自动挪到最近空位（音频按音频轨判定，它与视频轨互不干扰）。
             var overlapped = false;
-            if (!FitsOnTrack(clip.Track, clip.StartTime, clip.Duration, clip))
+            if (clip.IsAudio)
+            {
+                if (!FitsOnAudioTrack(clip.AudioTrack, clip.StartTime, clip.Duration, clip))
+                {
+                    clip.StartTime = FitToAudioTrack(clip, clip.StartTime, clip.AudioTrack);
+                    overlapped = true;
+                    _statusText.Text = "目标位置与同轨音频重叠，已自动放到最近空位（音频不会堆叠）。";
+                }
+            }
+            else if (!FitsOnTrack(clip.Track, clip.StartTime, clip.Duration, clip))
             {
                 clip.StartTime = FitToTrack(clip, clip.StartTime, clip.Track);
                 overlapped = true;
@@ -5282,6 +5566,18 @@ internal sealed class VideoEditorWindow : MyWindow
             _cropTSpin.DoubleValue = clip?.CropTop ?? 0;
             _cropRSpin.DoubleValue = clip?.CropRight ?? 1;
             _cropBSpin.DoubleValue = clip?.CropBottom ?? 1;
+            // 音频：音频片段与视频片段自带原声都能调（PR 里 V 轨片段的链接音频也归它管）；
+            // 文本 / 形状 / 滤镜片段没有声音，这组控件置灰。
+            var audioCapable = clip != null &&
+                               (clip.IsAudio || string.Equals(clip.Kind, "Video", StringComparison.OrdinalIgnoreCase));
+            _volumeSpin.DoubleValue = Math.Round((clip?.Volume ?? 1) * 100);
+            _fadeInSpin.DoubleValue = clip?.AudioFadeIn ?? 0;
+            _fadeOutSpin.DoubleValue = clip?.AudioFadeOut ?? 0;
+            _muteToggle.IsChecked = clip?.Muted ?? false;
+            _volumeSpin.IsEnabled = audioCapable;
+            _fadeInSpin.IsEnabled = audioCapable;
+            _fadeOutSpin.IsEnabled = audioCapable;
+            _muteToggle.IsEnabled = audioCapable;
             foreach (var control in _propertyControls)
             {
                 control.IsEnabled = has;
@@ -5443,6 +5739,11 @@ internal sealed class VideoEditorWindow : MyWindow
         clip.OffsetY = Math.Clamp((_pxYSpin.DoubleValue - canvasH / 2.0) / canvasH, -5, 5);
         clip.Rotation = _rotationSpin.DoubleValue;
         clip.Opacity = Math.Clamp(_opacitySpin.DoubleValue, 0, 1);
+        // 音频属性对所有片段都写（无副作用）；真正参与混音的是音频片段与视频片段的原声。
+        clip.Volume = Math.Clamp(_volumeSpin.DoubleValue / 100.0, 0, 2);
+        clip.AudioFadeIn = Math.Max(0, _fadeInSpin.DoubleValue);
+        clip.AudioFadeOut = Math.Max(0, _fadeOutSpin.DoubleValue);
+        clip.Muted = _muteToggle.IsChecked == true;
         clip.CropLeft = Math.Clamp(_cropLSpin.DoubleValue, 0, 1);
         clip.CropTop = Math.Clamp(_cropTSpin.DoubleValue, 0, 1);
         clip.CropRight = Math.Clamp(_cropRSpin.DoubleValue, 0, 1);

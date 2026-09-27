@@ -38,6 +38,8 @@ internal static class InjectorRuntime
         VideoProjectPlayer.LogPath = Path.Combine(configDirectory, "video-player.log");
         FFmpegAudioDecoder.LogPath = Path.Combine(configDirectory, "video-audio.log");
         VideoAudioPlayer.LogPath = Path.Combine(configDirectory, "video-audio.log");
+        ProjectAudioMixer.LogPath = Path.Combine(configDirectory, "video-audio.log");
+        AudioWaveform.LogPath = Path.Combine(configDirectory, "video-audio.log");
         // FFmpeg 原生库部署在配置目录的 ffmpeg 子目录（用户数据目录，部署脚本不会清空），
         // 由 FFmpegRuntime 负责检测可用性、设置 RootPath 与联机下载。
         FFmpegRuntime.Initialize(Path.Combine(configDirectory, "ffmpeg"));
