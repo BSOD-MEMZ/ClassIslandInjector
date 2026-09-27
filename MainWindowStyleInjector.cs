@@ -142,10 +142,11 @@ internal sealed class MainWindowStyleInjector : IDisposable
     private int _lastSplitBackgroundLogCount = -1;
     /// <summary>OnStateTick 空闲分支是否已记录过日志（只记一次，避免禁用注入时每 50ms 刷一条日志）。</summary>
     private bool _stateTickIdleReported;
-    /// <summary>分体状态签名：上次 OnStateTick 统计到的分体背景 Border 数量（变化时重应用装饰）。</summary>
-    private int _lastSplitCountForStateTick = -1;
-    /// <summary>上次因分体背景 Border 失效（stale）而重应用装饰的时间（节流防死循环）。</summary>
-    private DateTime _lastStaleReapplyAt = DateTime.MinValue;
+    /// <summary>
+    /// 上次因背景装饰失效（行模板重建导致装饰对象被换 / 写入值被宿主覆盖）而重应用装饰的时间。
+    /// 两种失效都由 50ms 轮询发现，且重应用本身可能触发样式重评估，故用冷却节流防死循环。
+    /// </summary>
+    private DateTime _lastDecorationReapplyAt = DateTime.MinValue;
 
     private readonly DispatcherTimer _wallpaperTimer;
     private Border? _wallpaperHost;
@@ -843,49 +844,74 @@ internal sealed class MainWindowStyleInjector : IDisposable
             _nativeEffectPlayers.Remove(line);
         }
 
-        // 分体模式检测：全局「分体主界面」开关与行级 IslandSeparationMode 都会即时重建行模板，
-        // 背景 Border 结构（分体根组件 line-background ↔ BackgroundBorder）随之变化。
-        // 此处统计分体背景 Border 数量作为签名，并检查已应用的分体背景是否仍挂载在可视树中
-        // （宿主重建模板/组件时旧 Border 会失效但数量可能不变），变化/失效时重应用装饰。
+        // 背景装饰自愈（Issue #8）。两类失效都在这里统一发现：
+        //   ① 结构变化：BackgroundBorder 与分体背景 Border 都位于 MainWindowLine 的
+        //      ControlTemplate 内（每行各一个），切换「组件配置方案」（宿主整体替换
+        //      CurrentComponents → ItemsControl 重估）、开关提醒（模板在 Full/Min 之间切换）、
+        //      切主题、进出编辑模式都会重建行模板，装饰对象被整体换掉；
+        //   ② 写入值被覆盖：宿主重新应用自己的背景设置，把本地值写回。
+        // 判据一：树中「可装饰背景 Border」集合必须与已应用装饰的集合完全一致；
+        // 判据二：已应用装饰的 Background/BorderBrush 仍是插件写入的那个对象。
+        // 两者都不成立时立即重应用 —— 缺了这条，底色会一直丢失到重启或手动进设置页。
         try
         {
-            var splitCount = descendants.Count(x => x is Border b && IsSplitComponentBackground(b));
-            var staleSplitBorder = false;
-            var staleDetail = string.Empty;
-            foreach (var d in _decorations)
+            var currentBackgrounds = new HashSet<Border>();
+            foreach (var borderline in descendants)
             {
-                if (d.IsBackground && d.Border.Name != HostContract.BackgroundBorder && !d.Border.IsAttachedToVisualTree())
+                if (borderline is Border b && IsDecoratedBackgroundBorder(b))
                 {
-                    staleSplitBorder = true;
-                    staleDetail += $" [hash={d.Border.GetHashCode()}({(int)d.Border.Bounds.Width}x{(int)d.Border.Bounds.Height}) parent={d.Border.Parent?.GetType().Name}]";
+                    currentBackgrounds.Add(b);
                 }
             }
 
-            if (splitCount != _lastSplitCountForStateTick || staleSplitBorder)
+            var appliedBackgrounds = new HashSet<Border>();
+            var structureChanged = false;
+            var overwritten = false;
+            var failDetail = string.Empty;
+            foreach (var d in _decorations)
             {
-                var countChanged = splitCount != _lastSplitCountForStateTick;
-                _lastSplitCountForStateTick = splitCount;
-                // stale 节流：宿主重建模板时旧 Border 失效会反复触发，且 Apply 加载样式表
-                // 本身也可能触发重建（见 ReloadStyleSheet 注释）；加冷却避免形成死循环。
-                if (staleSplitBorder && !countChanged && (DateTime.UtcNow - _lastStaleReapplyAt).TotalMilliseconds < 1500)
+                if (!d.IsBackground)
                 {
-                    // 冷却中，跳过本次重应用。
+                    continue;
                 }
-                else
-                {
-                    if (staleSplitBorder)
-                    {
-                        _lastStaleReapplyAt = DateTime.UtcNow;
-                    }
 
-                    DebugLog($"OnStateTick: 分体背景变化（count={splitCount}, stale={staleSplitBorder}{staleDetail}），重应用装饰");
-                    Dispatcher.UIThread.Post(Apply, DispatcherPriority.Background);
+                appliedBackgrounds.Add(d.Border);
+                if (!d.Border.IsAttachedToVisualTree())
+                {
+                    structureChanged = true;
+                    failDetail += $" [stale hash={d.Border.GetHashCode()}({(int)d.Border.Bounds.Width}x{(int)d.Border.Bounds.Height}) parent={d.Border.Parent?.GetType().Name}]";
                 }
+                else if (d.Background != null && !ReferenceEquals(d.Border.Background, d.Background))
+                {
+                    overwritten = true;
+                    failDetail += $" [背景被覆盖 {d.Border.Name}]";
+                }
+                else if (d.BorderBrush != null && !ReferenceEquals(d.Border.BorderBrush, d.BorderBrush))
+                {
+                    overwritten = true;
+                    failDetail += $" [边框被覆盖 {d.Border.Name}]";
+                }
+            }
+
+            if (!currentBackgrounds.SetEquals(appliedBackgrounds))
+            {
+                structureChanged = true;
+                failDetail += $" [背景集合不符 树中={currentBackgrounds.Count} 已应用={appliedBackgrounds.Count}]";
+            }
+
+            var needsReapply = structureChanged || overwritten;
+            // 节流：宿主重建模板时本判据会连续成立，而 Apply 加载样式表本身也可能触发
+            // 重建（见 ReloadStyleSheet 注释）；加冷却避免形成死循环，最多每 1.5s 重应用一次。
+            if (needsReapply && (DateTime.UtcNow - _lastDecorationReapplyAt).TotalMilliseconds >= 1500)
+            {
+                _lastDecorationReapplyAt = DateTime.UtcNow;
+                DebugLog($"OnStateTick: 背景装饰失效（structure={structureChanged}, overwritten={overwritten}{failDetail}），重应用装饰");
+                Dispatcher.UIThread.Post(Apply, DispatcherPriority.Background);
             }
         }
         catch
         {
-            // 分体签名统计失败不中止 50ms 状态轮询。
+            // 背景装饰自愈失败不中止 50ms 状态轮询。
         }
 
         UpdatePrepareWarningOverlay();
@@ -5553,14 +5579,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
             // 分体模式（IsIslandSeperated）下宿主隐藏 Border#BackgroundBorder，
             // 真实背景由每行根组件模板的 Border.line-background 提供；两者都按背景装饰处理。
-            var isBackground = borderControl.Name == HostContract.BackgroundBorder ||
-                               IsSplitComponentBackground(borderControl);
-            // 分体模式下宿主把 BackgroundBorder 设为不可见（IsVisible=False），
-            // 对其设置背景/边框无意义，且残留边框可能框住整个显示区域，跳过隐藏背景的装饰。
-            if (isBackground && borderControl.Name == HostContract.BackgroundBorder && !borderControl.IsVisible)
-            {
-                isBackground = false;
-            }
+            // ★ 判定口径与 OnStateTick 的背景装饰自愈检测共用 IsDecoratedBackgroundBorder，
+            // 两处若漂移会让自愈检测把该装饰的 Border 判成缺失，进而每 1.5s 反复重应用。
+            var isBackground = IsDecoratedBackgroundBorder(borderControl);
 
             if (isBackground && borderControl.Name != HostContract.BackgroundBorder)
             {
@@ -5686,6 +5707,21 @@ internal sealed class MainWindowStyleInjector : IDisposable
         // 排除 GridOverlay 内提醒覆盖层的 line-background Border（父级为 Grid#GridOverlay）。
         return border.Parent is not Grid grid || grid.Name != HostContract.GridOverlay;
     }
+
+    /// <summary>
+    /// 判断 Border 是否为「应当被底色/边框装饰的背景 Border」。
+    /// 非分体：每行行模板内的 Border#BackgroundBorder；分体：每行根组件的 Border.line-background。
+    /// 分体模式下宿主把 BackgroundBorder 设为不可见（IsVisible=False），对其装饰无意义，
+    /// 且残留边框可能框住整个显示区域，故隐藏时不计入。
+    /// <para>
+    /// ★ 该方法同时被 <see cref="ApplyDecorations"/> 与 OnStateTick 的背景装饰自愈检测使用，
+    /// 两处必须共用同一口径，否则自愈检测会把「本来就该装饰的 Border」判成缺失而死循环。
+    /// </para>
+    /// </summary>
+    private static bool IsDecoratedBackgroundBorder(Border border) =>
+        border.Name == HostContract.BackgroundBorder
+            ? border.IsVisible
+            : IsSplitComponentBackground(border);
 
     /// <summary>
     /// 从分体根组件背景 Border 回溯到 ComponentPresenter，读取其组件设置的 Id（组件唯一 GUID）。
