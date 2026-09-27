@@ -51,6 +51,12 @@ internal sealed class ProjectAudioMixer : IDisposable
     /// <summary>累加缓冲（int 中间量，避免逐源截断造成失真）。</summary>
     private int[] _accum = new int[4096];
 
+    /// <summary>
+    /// 已释放标志。置位后混音线程会在下一块立刻返回静音，
+    /// 释放流程才不会卡在「等音频线程退出」上（那是 UI 卡死的典型成因）。
+    /// </summary>
+    private volatile bool _disposed;
+
     /// <summary>音频输出是否已建立。</summary>
     public bool IsRunning => _output != null;
 
@@ -75,6 +81,7 @@ internal sealed class ProjectAudioMixer : IDisposable
     public bool Start(VideoProject project, double startTime)
     {
         Stop();
+        _disposed = false;
 
         try
         {
@@ -211,7 +218,12 @@ internal sealed class ProjectAudioMixer : IDisposable
         }
     }
 
-    public void Dispose() => Stop();
+    public void Dispose()
+    {
+        // 先立标志：让混音线程的 Fill 立刻返回，Stop 里的 WasapiOut.Dispose 才等得到线程退出。
+        _disposed = true;
+        Stop();
+    }
 
     private void ReleaseAllSources()
     {
@@ -231,7 +243,7 @@ internal sealed class ProjectAudioMixer : IDisposable
         lock (_sync)
         {
             var project = _project;
-            if (project == null)
+            if (_disposed || project == null)
             {
                 return count;
             }

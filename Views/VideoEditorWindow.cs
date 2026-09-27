@@ -7297,8 +7297,16 @@ internal sealed class VideoEditorWindow : MyWindow
         // 3. 保存工程快照并弹出模态渲染对话框（进度条 + 剩余时间 + 取消 / 后台渲染）。
         var (outW, outH, crf, hw, fps) = options.Value;
         VideoProjectStore.Save(_project, VideoProjectStore.DefaultPath);
+        // 渲染前停掉预览播放：预览解码、渲染编码、以及渲染完成后注入器为应用产物再开的
+        // 那一路解码，三路并发既抢 CPU，也容易在窗口关闭时踩到解码器释放竞态。
+        if (_playing)
+        {
+            StopPreview();
+        }
+
         _statusText.Text = "正在渲染…";
         var cts = new CancellationTokenSource();
+        EditorLog($"渲染开始 {outW}x{outH} crf={crf} hw={hw} fps={fps}");
         var outcome = await ShowRenderProgressDialogAsync(outputPath, outW, outH, crf, hw, fps, cts);
         switch (outcome)
         {
@@ -7442,6 +7450,13 @@ internal sealed class VideoEditorWindow : MyWindow
         try
         {
             await renderTask;
+            // 后台渲染期间用户可能还在预览播放：应用产物前先停掉，
+            // 否则预览解码器的释放会和注入器新建解码器撞在一起。
+            if (_playing)
+            {
+                StopPreview();
+            }
+
             ApplyRenderedVideo(outputPath, outW, outH);
             RemoveTrayProgress();
             ShowRenderCompletedToast("渲染完成", $"视频已渲染为 {outW}×{outH} 并应用到主界面。");
@@ -7457,6 +7472,7 @@ internal sealed class VideoEditorWindow : MyWindow
     /// <summary>把渲染出的 mp4 应用为主界面视频背景（单文件模式）。</summary>
     private void ApplyRenderedVideo(string outputPath, int outW, int outH)
     {
+        EditorLog($"开始应用渲染产物 {outW}x{outH} → {outputPath}");
         var settings = InjectorRuntime.Settings;
         settings.BeginUpdate();
         settings.VideoFillEnabled = true;
@@ -7465,6 +7481,7 @@ internal sealed class VideoEditorWindow : MyWindow
         settings.VideoProjectEnabled = false;
         settings.EndUpdate();
         InjectorRuntime.SaveAndApply();
+        EditorLog("渲染产物已应用到主界面");
         _statusText.Text = $"已渲染 {outW}×{outH} 并应用到主界面。";
     }
 

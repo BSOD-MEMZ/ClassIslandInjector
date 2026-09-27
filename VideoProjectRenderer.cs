@@ -46,7 +46,7 @@ internal sealed class VideoProjectRenderer
     }
 
     public VideoProjectRenderer(VideoProject project, string outputPath, int outW, int outH, int crf, int fps,
-        Action<double, string>? progress = null, string preset = "medium",
+        Action<double, string>? progress = null, string preset = "veryfast",
         string? hwEncoder = null, string? hwDecoder = null, CancellationToken token = default)
     {
         _project = project;
