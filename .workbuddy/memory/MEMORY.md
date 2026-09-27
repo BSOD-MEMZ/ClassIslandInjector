@@ -6,6 +6,8 @@
 
 ## 构建与部署
 
+- **提交时注意文件名大小写**：仓库索引里是 `agents.md`（小写），在 Windows 上执行 `git add AGENTS.md` 会**静默不匹配**（不报错也不暂存，改动会漏提交）。用 `git add agents.md` 或 `git add -A`。
+
 - 构建：`dotnet build ClassIslandInjector.csproj -c Release -p:CreateCipx=false`
 - 部署前必须关闭宿主：`Stop-Process -Name "ClassIsland*" -Force`，再复制 `bin\Release\net8.0-windows10.0.19041.0\*` 到 `D:\Dev\ClassIsland\data\Plugins\classisland.injector`
 - 配置目录：`D:\Dev\ClassIsland\data\Config\Plugins\classisland.injector`（`settings.json`、`Overrides.axaml`、`preview-debug.log`、`album-color.log`）
