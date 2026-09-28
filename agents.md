@@ -38,6 +38,9 @@
 - v1 旧格式（`video-project.json`，顶层 `OutputWidth` + `Clips`）读取时自动迁移；**迁移过来的视频片段显式 `Muted=true`** —— 它们在支持音频之前本来就不出声，静音可避免升级后突然发声。
 - **音频片段约定**：`Kind="Audio"`、`Track=-1`（不进视频轨，让所有按 `Track` 筛选的画面逻辑天然忽略它）、`AudioTrack` 独立编号（A1 从 0 起）。视频片段的自带原声由同一个 `VideoClip` 的 `Volume / AudioFadeIn / AudioFadeOut / Muted` 控制。
 - 时间轴泳道映射：`VideoLaneCount = max(1, TrackCount)`，音频泳道紧随其后（`IsAudioLane(lane)` 判定），视频在上、音频在下；`_selectedTrack` / `_headerByTrack` 用的都是泳道号。
+- **行号/顶部坐标的唯一权威是 `VideoEditorWindow.LaneOrder()` / `LaneAtRow(row)` / `RowOfLane(lane)` / `LaneVisualTop(lane)`**（视频轨在上 = 轨号大的在上，音频轨在下 = A1 最底）。凡按 Y 判定（拖拽落点、命中测试、框选、落点标签、自动滚动）都必须经这四个方法，**不要**再用 `TrackCount/TotalLaneCount` 反推行号——曾因两处各算一套，音频泳道被排到视频泳道上方，导致拖拽抓取偏移差一个泳道高（片段与指针差一截）+ 落点错一轨。
+- 音频片段的 `Track` 恒为 -1（历史数据里也可能残留被拖拽写成视频轨号的脏值），取所在泳道一律用 `LaneOfClip(clip)`。
+- 拖拽跟手的三条铁律：①抓取偏移用 `TranslatePoint` 量**块的真实位置**，不用模型推算；②`SnapTime` 必须排除被拖片段自身（否则吸回自己、永远落后 8px）；③边缘自动滚动的跟随回调 `_dragScrollFollow` 里要用**实际**滚动量重算内容坐标（指针在边缘不动时内容仍在滚）。
 - 工程背景生效路径：`MainWindowStyleInjector.ResolveVideoProjectPath()` —— 设置项 `VideoProjectPath` 从无写入点，「使用编辑工程」开关只切 `VideoProjectEnabled`，因此**必须回退到默认工程路径**，否则工程背景永不生效。
 
 ## 文件路径

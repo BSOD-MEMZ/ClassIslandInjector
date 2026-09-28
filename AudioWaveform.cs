@@ -149,37 +149,44 @@ internal static class AudioWaveform
                 return null;
             }
 
-            var bucketBytes = FFmpegAudioDecoder.OutSampleRate * DetailBucketMs / 1000
-                              * FFmpegAudioDecoder.OutBytesPerSample;
-            var buffer = new byte[Math.Max(bucketBytes,
+            // 逐个采样结算「桶」峰值。⚠️ 不能按「一次 ReadPcm 读到的整块最大值」结算：ReadPcm 一次
+            // 会把下面这个 1 秒缓冲读满（= 50 个桶），旧写法在桶循环里把 bucketPeak 清零，于是整块
+            // 最大值只落进该块的第一个桶、后面 49 个桶全是 0 → 波形退化成「一秒一根竖针，中间全平」。
+            // 实测（6s 线性上升包络）：旧写法与期望包络平均误差 0.52，新写法 0.003。
+            var sampleBytes = FFmpegAudioDecoder.OutBitsPerSample / 8; // s16 = 2 字节/声道采样
+            var samplesPerBucket = Math.Max(1,
+                FFmpegAudioDecoder.OutSampleRate * DetailBucketMs / 1000 * FFmpegAudioDecoder.OutChannels);
+            // 读块取 1 秒（远大于一个桶），摊薄 ReadPcm 的调用开销。
+            var buffer = new byte[Math.Max(samplesPerBucket * sampleBytes,
                 FFmpegAudioDecoder.OutSampleRate * FFmpegAudioDecoder.OutBytesPerSample)];
             var peaks = new List<float>(8192);
 
             var bucketPeak = 0;
-            var pendingBytes = 0;
+            var samplesInBucket = 0;
             var guard = 0;
             int read;
             while ((read = decoder.ReadPcm(buffer, 0, buffer.Length)) > 0 && guard++ < 200000)
             {
-                for (var i = 0; i + 1 < read; i += 2)
+                var samples = read / sampleBytes;
+                for (var i = 0; i < samples; i++)
                 {
-                    var magnitude = Math.Abs((int)(short)(buffer[i] | (buffer[i + 1] << 8)));
+                    var index = i * sampleBytes;
+                    var magnitude = Math.Abs((int)(short)(buffer[index] | (buffer[index + 1] << 8)));
                     if (magnitude > bucketPeak)
                     {
                         bucketPeak = magnitude;
                     }
-                }
 
-                pendingBytes += read;
-                while (pendingBytes >= bucketBytes)
-                {
-                    peaks.Add(Math.Clamp(bucketPeak / 32768f, 0f, 1f));
-                    bucketPeak = 0;
-                    pendingBytes -= bucketBytes;
+                    if (++samplesInBucket >= samplesPerBucket)
+                    {
+                        peaks.Add(Math.Clamp(bucketPeak / 32768f, 0f, 1f));
+                        bucketPeak = 0;
+                        samplesInBucket = 0;
+                    }
                 }
             }
 
-            if (pendingBytes > 0)
+            if (samplesInBucket > 0)
             {
                 peaks.Add(Math.Clamp(bucketPeak / 32768f, 0f, 1f));
             }

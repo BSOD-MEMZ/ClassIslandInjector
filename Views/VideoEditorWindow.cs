@@ -244,6 +244,22 @@ internal sealed class VideoEditorWindow : MyWindow
     private readonly EditorSpin _fadeInSpin = new(0, 60, 0.5, "0.##");
     private readonly EditorSpin _fadeOutSpin = new(0, 60, 0.5, "0.##");
     private readonly ToggleSwitch _muteToggle = new();
+    /// <summary>分离音频：把视频片段自带原声拆成独立音频片段，原片段静音（仅视频片段可用）。</summary>
+    private readonly Button _detachAudioButton = new()
+    {
+        Content = "分离音频",
+        Padding = new Thickness(10, 3),
+        FontSize = 12
+    };
+    /// <summary>音频状态提示（如「音量 0% 不出声」），随选中片段显示/隐藏。</summary>
+    private readonly TextBlock _audioHint = new()
+    {
+        FontSize = 11,
+        TextWrapping = TextWrapping.Wrap,
+        Opacity = 0.75,
+        IsVisible = false,
+        Margin = new Thickness(0, 2, 0, 0)
+    };
     private Control[] _propertyControls = [];
     /// <summary>px 投影基准缓存：当前选中片段在输出画布内的“适配基准矩形”（缩放=1 时的像素尺寸）。</summary>
     private (double BaseW, double BaseH) _pxBaseCache = (16, 9);
@@ -270,7 +286,18 @@ internal sealed class VideoEditorWindow : MyWindow
     private double _laneHeight = 60;
     /// <summary>每轨独立高度（轨道头底缘拖拽调整；未设置时用 _laneHeight 滑块默认值）。</summary>
     private readonly Dictionary<int, double> _laneHeights = [];
-    private double LaneHeightOf(int track) => _laneHeights.TryGetValue(track, out var h) ? h : _laneHeight;
+    private double LaneHeightOf(int lane) => _laneHeights.TryGetValue(lane, out var h) ? h : _laneHeight;
+
+    /// <summary>
+    /// 片段所在泳道号。音频片段的 <c>Track</c> 恒为 -1（工程格式约定），
+    /// 直接拿 <c>clip.Track</c> 取泳道会落到不存在的 -1 上（高度/纵向位置全错），必须按 AudioTrack 换算。
+    /// </summary>
+    private int LaneOfClip(VideoClip clip) => clip.IsAudio
+        ? VideoLaneCount + Math.Max(0, clip.AudioTrack)
+        : clip.Track;
+
+    /// <summary>片段所在泳道的高度（音频块要按音频泳道高度算，否则调高泳道后块不跟随）。</summary>
+    private double LaneHeightOfClip(VideoClip clip) => LaneHeightOf(LaneOfClip(clip));
 
     // ---- 泳道 ↔ 轨道映射（PR 布局：视频轨在上、音频轨在下）----
     // 时间轴泳道号沿用现有 _selectedTrack / _headerByTrack / _blockByClip 的语义：
@@ -291,6 +318,62 @@ internal sealed class VideoEditorWindow : MyWindow
 
     /// <summary>音频泳道号 → 音频轨号。</summary>
     private int AudioTrackOfLane(int lane) => Math.Max(0, lane - VideoLaneCount);
+
+    /// <summary>
+    /// 泳道视觉顺序（自上而下）的**唯一权威**：视频轨在上（轨号大的在上），音频轨在下（A1 在最底，PR 习惯）。
+    /// <para>
+    /// ⚠️ 历史 bug：泳道网格用 <c>RowOfTrack(t, TotalLaneCount)</c> 反推行号，会把泳道号最大的音频轨排到**最上面**
+    /// （与轨道头注释、与所有「按 Y 判定」的模型辅助函数都相反）。那些辅助函数（VisualTopOfTrack /
+    /// ResolveDropTarget / ClipAtTimelinePoint）全是按「视频轨区从 y=0 开始」写的，于是每一处 Y 判定都
+    /// 少算一个音频泳道的高度 → 拖拽抓取偏移差 60px（片段与指针差一截）、落点判定错一轨。
+    /// 轨道头列、泳道网格、Y 判定必须统一走这里。
+    /// </para>
+    /// </summary>
+    private int[] LaneOrder()
+    {
+        var v = VideoLaneCount;
+        var a = AudioLaneCount;
+        var order = new int[v + a];
+        for (var row = 0; row < v; row++)
+        {
+            order[row] = v - 1 - row; // 视频：轨号大的在上
+        }
+
+        for (var k = 0; k < a; k++)
+        {
+            order[v + k] = v + (a - 1 - k); // 音频：A 号大的在上，A1 在最底
+        }
+
+        return order;
+    }
+
+    /// <summary>视觉行号（自上而下 0 起）→ 泳道号。</summary>
+    private int LaneAtRow(int row)
+    {
+        var order = LaneOrder();
+        return order.Length == 0 ? 0 : order[Math.Clamp(row, 0, order.Length - 1)];
+    }
+
+    /// <summary>泳道号 → 视觉行号（自上而下 0 起）。</summary>
+    private int RowOfLane(int lane)
+    {
+        var order = LaneOrder();
+        var index = Array.IndexOf(order, lane);
+        return index < 0 ? 0 : index;
+    }
+
+    /// <summary>泳道在时间轴内容坐标里的顶部（= 上方所有泳道高度之和）。</summary>
+    private double LaneVisualTop(int lane)
+    {
+        var acc = 0.0;
+        var row = RowOfLane(lane);
+        for (var r = 0; r < row; r++)
+        {
+            acc += LaneHeightOf(LaneAtRow(r));
+        }
+
+        return acc;
+    }
     /// <summary>轨道头控件按数据轨号索引（视觉顺序反转后仍按轨号取）。</summary>
     private readonly Dictionary<int, Border> _headerByTrack = [];
     /// <summary>正在拖拽调整高度的轨道号（-1 = 无）。</summary>
@@ -471,10 +554,21 @@ internal sealed class VideoEditorWindow : MyWindow
     };
     /// <summary>拖动片段块时按下点相对块左边缘的偏移（Drop 时减去，块跟手才能头贴尾拼接）。</summary>
     private double _dragOffsetX;
-    /// <summary>拖拽中最后指针位置（相对时间轴滚动视口），驱动边缘自动滚动。</summary>
-    private Point _lastDragPointer;
+    /// <summary>
+    /// 拖拽中最后指针位置。X 用泳道视口坐标（横向边缘判定）、Y 用外层滚动视口坐标（纵向边缘判定）——
+    /// 横向滚动在内层 <c>_lanesScroll</c>、纵向在外层 <c>_timelineScroll</c>，两者视口尺寸不同，
+    /// 混用会把「贴到右边缘」提前一个轨道头宽度触发。
+    /// </summary>
+    private (double LanesX, double TimelineScrollY) _lastDragPointer;
     /// <summary>拖拽自动滚动探测委托（非空 = 计时器运行中）。</summary>
     private Func<(double Dx, double Dy)>? _dragScrollProbe;
+    /// <summary>
+    /// 自动滚动发生后的「跟随」回调（参数 = 实际横向/纵向滚动像素）：内容滚动时指针没有移动事件，
+    /// 被拖的东西（片段块 / 播放头）必须按滚动量补一次位移，否则会停在原地落后于指针。
+    /// </summary>
+    private Action<double, double>? _dragScrollFollow;
+    /// <summary>最近一次指针在时间轴内容坐标里的位置（自动滚动跟随按滚动量外推，见 FollowClipDragScroll）。</summary>
+    private Point _lastDragRootPoint;
     /// <summary>拖拽自动滚动计时器：指针贴近视口边缘时持续滚动时间轴（横向到末尾、纵向到新建轨道区）。</summary>
     private readonly DispatcherTimer _dragScrollTimer = new() { Interval = TimeSpan.FromMilliseconds(16) };
     /// <summary>拖拽落点提示标签（accent 底白字「轨道 N / 新建轨道」，跟随目标泳道移动，不被拖拽块遮挡）。</summary>
@@ -753,7 +847,9 @@ internal sealed class VideoEditorWindow : MyWindow
         {
             if (_scrubbing)
             {
-                SetPlayhead(Math.Max(0, e.GetPosition(_timelineRoot).X / _pxPerSecond));
+                var contentX = e.GetPosition(_timelineRoot).X;
+                SetPlayhead(Math.Max(0, contentX / _pxPerSecond));
+                UpdateScrubAutoScroll(e, contentX);
             }
         };
         _playhead.PointerReleased += (_, e) =>
@@ -762,6 +858,7 @@ internal sealed class VideoEditorWindow : MyWindow
             {
                 _scrubbing = false;
                 e.Pointer.Capture(null);
+                StopDragAutoScroll();
                 // 没有在途解码时立即释放持久 seek 源；否则由解码收尾释放。
                 if (!_seekFrameBusy)
                 {
@@ -769,7 +866,11 @@ internal sealed class VideoEditorWindow : MyWindow
                 }
             }
         };
-        _playhead.PointerCaptureLost += (_, _) => _scrubbing = false;
+        _playhead.PointerCaptureLost += (_, _) =>
+        {
+            _scrubbing = false;
+            StopDragAutoScroll();
+        };
         // 片段拖拽/裁剪不依赖指针捕获：用窗口级移动/释放驱动——指针在窗口内任何位置移动，
         // 拖拽都实时跟手（规避重挂载/捕获丢失导致“片段不跟手”）；无拖拽时这些处理器空转。
         PointerMoved += (_, e) =>
@@ -1155,6 +1256,8 @@ internal sealed class VideoEditorWindow : MyWindow
 
             var maxX = Math.Max(0, _lanesScroll.Extent.Width - _lanesScroll.Viewport.Width);
             var maxY = Math.Max(0, _timelineScroll.Extent.Height - _timelineScroll.Viewport.Height);
+            var beforeX = _lanesScroll.Offset.X;
+            var beforeY = _timelineScroll.Offset.Y;
             if (dx != 0)
             {
                 _lanesScroll.Offset = new Vector(Math.Clamp(_lanesScroll.Offset.X + dx, 0, maxX), 0);
@@ -1163,6 +1266,14 @@ internal sealed class VideoEditorWindow : MyWindow
             if (dy != 0)
             {
                 _timelineScroll.Offset = new Vector(0, Math.Clamp(_timelineScroll.Offset.Y + dy, 0, maxY));
+            }
+
+            // 用**实际**滚动量跟随（到边界时增量会被钳成 0，不能按请求量跟）。
+            var appliedX = _lanesScroll.Offset.X - beforeX;
+            var appliedY = _timelineScroll.Offset.Y - beforeY;
+            if (appliedX != 0 || appliedY != 0)
+            {
+                _dragScrollFollow?.Invoke(appliedX, appliedY);
             }
         };
         var timelineScroll = _timelineScroll;
@@ -1181,10 +1292,9 @@ internal sealed class VideoEditorWindow : MyWindow
 
             e.Handled = true;
         };
-        // 片段拖拽/裁剪的指针捕获目标固定在稳定的 _timelineRoot（块会被浮到根画布或重建，
-        // 捕获块本身会在重挂载时丢失捕获导致拖拽中断），移动/释放/中断统一在此处理。
-        _timelineRoot.PointerMoved += (_, e) => OnTimelinePointerMoved(e);
-        _timelineRoot.PointerReleased += (_, e) => OnTimelinePointerReleased(e);
+        // 片段拖拽/裁剪不在这里挂 PointerMoved/PointerReleased：窗口级处理器已经覆盖
+        // （事件从叶子冒泡到窗口），两处都挂会让每个移动事件被处理两遍（日志里成对出现即此）。
+        // 只在无法冒泡到窗口的「捕获丢失」上兜底清理拖拽状态。
         _timelineRoot.PointerCaptureLost += (_, _) => CancelTimelineDrag();
         // 视口宽度变化时记录（内层泳道视口宽），供时间轴内容铺满视口（防抖重建）。
         _lanesScroll.SizeChanged += (_, e) =>
@@ -1644,6 +1754,8 @@ internal sealed class VideoEditorWindow : MyWindow
                 ApplyPropertyEdits();
             }
         };
+        ToolTip.SetTip(_detachAudioButton, "把该视频片段的原声拆成独立音频片段（放到音频轨），原视频片段随之静音。");
+        _detachAudioButton.Click += (_, _) => DetachAudioFromSelection();
         foreach (var spin in _propertyControls)
         {
             spin.PropertyChanged += (_, e) =>
@@ -1770,7 +1882,9 @@ internal sealed class VideoEditorWindow : MyWindow
                 InspectorRow("音量（%）", _volumeSpin),
                 InspectorRow("淡入（秒）", _fadeInSpin),
                 InspectorRow("淡出（秒）", _fadeOutSpin),
-                InspectorRow("静音", _muteToggle)
+                InspectorRow("静音", _muteToggle),
+                _audioHint,
+                InspectorRow("", _detachAudioButton)
             }
         };
         _inspectorPages["transform"] = transformPanel;
@@ -3404,14 +3518,15 @@ internal sealed class VideoEditorWindow : MyWindow
         // 保留纵向滚动偏移：轨道头与泳道已通过 ScrollChanged 同步平移（不会错位），
         // 拖到下方轨道释放后重建时间轴时不能跳回顶部（否则"很难把素材放到下面轨道"）。
 
-        // 轨道头：视觉从上到下 = 数据轨从高到低（「轨道 1」= 最上层，图层面板习惯）。
+        // 轨道头：按 LaneOrder 自上而下添加（视频轨在上 = 轨号大的在上，音频轨在下 = A1 最底），
+        // 与泳道网格同一顺序，两列才能逐行对齐。
         // 头部底缘 5px 热区：上下拖动调整该轨高度（每轨独立，存 _laneHeights）。
         // 注意：固定标尺在轨道头列上方独立行（timelineArea 左列 row0），因此这里不再留标尺空行。
         _trackHeaders.Children.Clear();
         _headerByTrack.Clear();
-        for (var t = trackCount - 1; t >= 0; t--)
+        for (var row = 0; row < trackCount; row++)
         {
-            var trackIndex = t;
+            var trackIndex = LaneAtRow(row);
             var resizeGrip = new Border
             {
                 Height = 6,
@@ -3475,7 +3590,7 @@ internal sealed class VideoEditorWindow : MyWindow
             // 选中轨道用普通亮灰（不用主题强调色，也无白边框）。
             var header = new Border
             {
-                Height = LaneHeightOf(t),
+                Height = LaneHeightOf(trackIndex),
                 CornerRadius = new CornerRadius(4),
                 Background = trackIndex == _selectedTrack
                     ? new SolidColorBrush(TrackHeaderSelectedColor())
@@ -3494,7 +3609,7 @@ internal sealed class VideoEditorWindow : MyWindow
                 RefreshTimeline();
             };
             _trackHeaders.Children.Add(header);
-            _headerByTrack[t] = header;
+            _headerByTrack[trackIndex] = header;
         }
 
         // 轨道泳道：每轨一个横向画布，片段按 StartTime 绝对定位。
@@ -3505,10 +3620,11 @@ internal sealed class VideoEditorWindow : MyWindow
         _timeline.Children.Clear();
         // 宽度至少铺满视口（短工程也能把片段拖到最开头）。
         var totalWidth = Math.Max(_timelineViewportWidth, _project.Duration * _pxPerSecond + 120);
-        for (var t = trackCount - 1; t >= 0; t--)
+        // 与轨道头同一顺序（LaneOrder）：行号 = 视觉行，_lanes 也按视觉顺序存放（_lanes[row] = 第 row 行）。
+        for (var row = 0; row < trackCount; row++)
         {
-            var trackIndex = t;
-            var laneHeight = LaneHeightOf(t);
+            var trackIndex = LaneAtRow(row);
+            var laneHeight = LaneHeightOf(trackIndex);
             var lane = new Border
             {
                 Height = laneHeight,
@@ -3519,8 +3635,7 @@ internal sealed class VideoEditorWindow : MyWindow
             var canvas = new Canvas { Width = totalWidth, Height = laneHeight };
             lane.Child = canvas;
             _lanes.Add(lane);
-            // 视觉反转：数据轨号越大（越上层）显示在越上面。
-            Grid.SetRow(lane, RowOfTrack(t, trackCount));
+            Grid.SetRow(lane, row);
             _timeline.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
             _timeline.Children.Add(lane);
 
@@ -3530,9 +3645,10 @@ internal sealed class VideoEditorWindow : MyWindow
             lane.AddHandler(DragDrop.DragOverEvent, (_, e) =>
             {
                 e.DragEffects = DragDropEffects.Copy | DragDropEffects.Move;
-                UpdateDragAutoScroll(e.GetPosition(_timelineScroll));
-                var (targetTrack, insertPos) = ResolveDropTarget(e.GetPosition(_timelineRoot).Y, _project.TrackCount);
-                UpdateDropHighlight(targetTrack, _project.TrackCount, false, insertPos);
+                UpdateDragAutoScroll(e.GetPosition(_timelineScroll).Y);
+                // 素材/片段文本拖放：按总泳道解析（可落到音频泳道），高亮与落点用同一套解析。
+                var (targetLane, insertPos) = ResolveDropTarget(e.GetPosition(_timelineRoot).Y, TotalLaneCount, laneSpace: true);
+                UpdateDropHighlight(targetLane, TotalLaneCount, false, insertPos, laneSpace: true);
                 e.Handled = true;
             });
             lane.AddHandler(DragDrop.DragLeaveEvent, (_, _) => ClearDropHighlight());
@@ -3647,9 +3763,10 @@ internal sealed class VideoEditorWindow : MyWindow
             placeholder.AddHandler(DragDrop.DragOverEvent, (_, e) =>
             {
                 e.DragEffects = DragDropEffects.Copy | DragDropEffects.Move;
-                UpdateDragAutoScroll(e.GetPosition(_timelineScroll));
-                var (targetTrack, insertPos) = ResolveDropTarget(e.GetPosition(_timelineRoot).Y, _project.TrackCount);
-                UpdateDropHighlight(targetTrack, _project.TrackCount, false, insertPos);
+                UpdateDragAutoScroll(e.GetPosition(_timelineScroll).Y);
+                // 素材/片段文本拖放：按总泳道解析（可落到音频泳道），高亮与落点用同一套解析。
+                var (targetLane, insertPos) = ResolveDropTarget(e.GetPosition(_timelineRoot).Y, TotalLaneCount, laneSpace: true);
+                UpdateDropHighlight(targetLane, TotalLaneCount, false, insertPos, laneSpace: true);
                 e.Handled = true;
             });
             placeholder.AddHandler(DragDrop.DragLeaveEvent, (_, _) => ClearDropHighlight());
@@ -3804,6 +3921,8 @@ internal sealed class VideoEditorWindow : MyWindow
             if (_scrubbing)
             {
                 SeekPlayheadFromRuler(e);
+                // 标尺画布与时间轴内容同一横向坐标系（同样按滚动偏移平移），可直接喂给自动滚动跟随。
+                UpdateScrubAutoScroll(e, e.GetPosition(_rulerCanvas).X);
             }
         };
         head.PointerReleased += (_, e) =>
@@ -3812,13 +3931,18 @@ internal sealed class VideoEditorWindow : MyWindow
             {
                 _scrubbing = false;
                 e.Pointer.Capture(null);
+                StopDragAutoScroll();
                 if (!_seekFrameBusy)
                 {
                     DisposeSeekSources();
                 }
             }
         };
-        head.PointerCaptureLost += (_, _) => _scrubbing = false;
+        head.PointerCaptureLost += (_, _) =>
+        {
+            _scrubbing = false;
+            StopDragAutoScroll();
+        };
         return head;
     }
 
@@ -3907,7 +4031,7 @@ internal sealed class VideoEditorWindow : MyWindow
         // 拖动 seek 且吸附开启时吸附到片段头尾 / 0 点。
         if (_scrubbing && _snapEnabled)
         {
-            time = SnapTime(time);
+            time = SnapTime(time, null, skipPlayhead: true);
         }
         _playheadTime = Math.Max(0, time);
         PositionPlayheadLine();
@@ -4071,25 +4195,49 @@ internal sealed class VideoEditorWindow : MyWindow
         return b;
     }
 
-    /// <summary>删除整个轨道（该轨全部片段），轨道号压缩。锁定轨不可删。</summary>
-    private void DeleteTrack(int track)
+    /// <summary>删除整个泳道（该轨/该音频轨全部片段），视频轨号压缩。锁定轨不可删。
+    /// 参数是<b>泳道号</b>（轨道头的删除按钮传的就是它）；音频泳道必须按 AudioTrack 删，
+    /// 否则会去删「Track == 泳道号」的视频片段（删错东西）。</summary>
+    private void DeleteTrack(int lane)
     {
-        if (_project.GetTrackState(track) is { Locked: true })
+        if (IsAudioLane(lane))
         {
-            _statusText.Text = $"轨道 {track + 1} 已锁定，无法删除。";
+            var audioTrack = AudioTrackOfLane(lane);
+            if (_project.AudioTrackStateOf(audioTrack).Locked)
+            {
+                _statusText.Text = $"音频轨 A{audioTrack + 1} 已锁定，无法删除。";
+                return;
+            }
+
+            PushUndo();
+            var audioRemoved = _project.Clips.RemoveAll(c => c.IsAudio && c.AudioTrack == audioTrack);
+            _selected = null;
+            RefreshTimeline();
+            ClearSelection();
+            ScheduleSave();
+            _statusText.Text = audioRemoved > 0
+                ? $"已删除音频轨 A{audioTrack + 1}（{audioRemoved} 个片段）。"
+                : $"音频轨 A{audioTrack + 1} 已删除（无片段）。";
+            return;
+        }
+
+        var name = TrackName(lane, _project.TrackCount); // 删完轨道数会变，名字先取好
+        if (_project.GetTrackState(lane) is { Locked: true })
+        {
+            _statusText.Text = $"{name} 已锁定，无法删除。";
             return;
         }
 
         PushUndo();
-        var removed = _project.Clips.RemoveAll(c => c.Track == track);
+        var removed = _project.Clips.RemoveAll(c => !c.IsAudio && c.Track == lane);
         _selected = null;
         CompactTracks();
         RefreshTimeline();
         ClearSelection();
         ScheduleSave();
         _statusText.Text = removed > 0
-            ? $"已删除轨道 {track + 1}（{removed} 个片段）。"
-            : $"轨道 {track + 1} 已删除（无片段）。";
+            ? $"已删除{name}（{removed} 个片段）。"
+            : $"{name} 已删除（无片段）。";
     }
 
     /// <summary>把片段放到指定轨道上不与任何同轨片段重叠的最近可用位置（优先向后，其次向前）。</summary>
@@ -4202,10 +4350,20 @@ internal sealed class VideoEditorWindow : MyWindow
         return Math.Max(0, occupied.Max(o => o.Item2));
     }
 
-    /// <summary>拖拽期间更新滚动探针（首次调用启动自动滚动计时器）。</summary>
-    private void UpdateDragAutoScroll(Point pointerInScroll)
+    /// <summary>拖拽期间更新滚动探针（系统拖放用：只喂纵向视口坐标）。</summary>
+    private void UpdateDragAutoScroll(double timelineScrollY) =>
+        UpdateDragAutoScroll(timelineScrollY, 0, null);
+
+    /// <summary>
+    /// 拖拽期间更新滚动探针（首次调用启动自动滚动计时器）。
+    /// <para>
+    /// <paramref name="follow"/> = 自动滚动后的跟随回调（片段块 / 播放头按滚动量补位）。
+    /// </para>
+    /// </summary>
+    private void UpdateDragAutoScroll(double timelineScrollY, double lanesX, Action<double, double>? follow)
     {
-        _lastDragPointer = pointerInScroll;
+        _lastDragPointer = (lanesX, timelineScrollY);
+        _dragScrollFollow = follow;
         if (_dragScrollProbe == null)
         {
             _dragScrollProbe = ComputeDragScroll;
@@ -4217,37 +4375,129 @@ internal sealed class VideoEditorWindow : MyWindow
     private void StopDragAutoScroll()
     {
         _dragScrollProbe = null;
+        _dragScrollFollow = null;
         _dragScrollTimer.Stop();
     }
 
-    /// <summary>边缘检测：指针距滚动视口边缘 40px 内产生滚动增量（越贴边越快）。</summary>
+    /// <summary>边缘检测：指针距滚动视口边缘 40px 内产生滚动增量（越贴边越快）。
+    /// 横向对 <c>_lanesScroll</c> 视口、纵向对 <c>_timelineScroll</c> 视口分别判定。</summary>
     private (double Dx, double Dy) ComputeDragScroll()
     {
         const double edge = 40;
         const double speed = 14;
         double dx = 0, dy = 0;
-        var w = _timelineScroll.Bounds.Width;
+        var w = _lanesScroll.Bounds.Width;
         var h = _timelineScroll.Bounds.Height;
-        if (_lastDragPointer.X < edge)
+        var px = _lastDragPointer.LanesX;
+        if (px < edge)
         {
-            dx = -speed * (1 - Math.Max(0, _lastDragPointer.X) / edge);
+            dx = -speed * (1 - Math.Max(0, px) / edge);
         }
-        else if (_lastDragPointer.X > w - edge)
+        else if (px > w - edge)
         {
-            dx = speed * (1 - Math.Clamp(w - _lastDragPointer.X, 0, edge) / edge);
+            dx = speed * (1 - Math.Clamp(w - px, 0, edge) / edge);
         }
 
-        if (_lastDragPointer.Y < edge)
+        var py = _lastDragPointer.TimelineScrollY;
+        if (py < edge)
         {
-            dy = -speed * (1 - Math.Max(0, _lastDragPointer.Y) / edge);
+            dy = -speed * (1 - Math.Max(0, py) / edge);
         }
-        else if (_lastDragPointer.Y > h - edge)
+        else if (py > h - edge)
         {
-            dy = speed * (1 - Math.Clamp(h - _lastDragPointer.Y, 0, edge) / edge);
+            dy = speed * (1 - Math.Clamp(h - py, 0, edge) / edge);
         }
 
         return (dx, dy);
     }
+
+    /// <summary>
+    /// 把「一段时间区间 + 一段纵向范围」滚进可视区（四周留 24px 余量）。
+    /// 用于「片段被自动挪到视口外」之后把用户视线带过去：拖到别轨 / 被自动腾到很靠后的位置时，
+    /// 不滚过去用户会以为片段凭空消失了。只在超出视口时滚，已在视口内则一动不动。
+    /// </summary>
+    private void ScrollTimelineIntoView(double startSeconds, double endSeconds, double contentTop, double contentBottom)
+    {
+        const double pad = 24;
+        var px = Math.Max(1, _pxPerSecond);
+
+        var viewX = _lanesScroll.Offset.X;
+        var viewW = _lanesScroll.Bounds.Width;
+        if (viewW > 0)
+        {
+            var left = startSeconds * px;
+            var right = Math.Max(left + 1, endSeconds * px);
+            var newX = viewX;
+            if (left - pad < viewX)
+            {
+                newX = Math.Max(0, left - pad);
+            }
+            else if (right + pad > viewX + viewW)
+            {
+                newX = Math.Max(0, right + pad - viewW);
+            }
+
+            if (Math.Abs(newX - viewX) > 0.5)
+            {
+                _lanesScroll.Offset = new Vector(newX, 0);
+            }
+        }
+
+        var viewY = _timelineScroll.Offset.Y;
+        var viewH = _timelineScroll.Bounds.Height;
+        if (viewH <= 0)
+        {
+            return;
+        }
+
+        var newY = viewY;
+        if (contentTop - pad < viewY)
+        {
+            newY = Math.Max(0, contentTop - pad);
+        }
+        else if (contentBottom + pad > viewY + viewH)
+        {
+            newY = Math.Max(0, contentBottom + pad - viewH);
+        }
+
+        if (Math.Abs(newY - viewY) > 0.5)
+        {
+            _timelineScroll.Offset = new Vector(0, newY);
+        }
+    }
+
+    /// <summary>把一组片段（拖拽落轨的整组）整体滚进视口。布局重建后下一帧执行，那时滚动范围才是新的。</summary>
+    private void EnsureClipsVisible(List<VideoClip> clips)
+    {
+        if (clips.Count == 0)
+        {
+            return;
+        }
+
+        var start = clips.Min(c => c.StartTime);
+        var end = clips.Max(c => c.StartTime + c.Duration);
+        var top = double.MaxValue;
+        var bottom = double.MinValue;
+        foreach (var clip in clips)
+        {
+            var lane = LaneOfClip(clip);
+            var laneTop = LaneVisualTop(lane);
+            top = Math.Min(top, laneTop);
+            bottom = Math.Max(bottom, laneTop + LaneHeightOf(lane));
+        }
+
+        if (top == double.MaxValue)
+        {
+            return;
+        }
+
+        Dispatcher.UIThread.Post(
+            () => ScrollTimelineIntoView(start, end, top, bottom),
+            DispatcherPriority.Background);
+    }
+
+    /// <summary>把单个片段滚进视口。</summary>
+    private void EnsureClipVisible(VideoClip clip) => EnsureClipsVisible([clip]);
 
     /// <summary>拖拽落点提示标签（目标轨道号 / 新建轨道；accent 底白字，跟随目标泳道顶部移动）。</summary>
     private Border BuildDropTrackBadge()
@@ -4268,21 +4518,30 @@ internal sealed class VideoEditorWindow : MyWindow
         };
     }
 
-    /// <summary>插入位置对应的水平边界 Y（0..trackCount；0 = 顶边，trackCount = 底边，中间 = 两轨之间）。</summary>
+    /// <summary>插入位置对应的水平边界 Y（0..trackCount；0 = 顶边，trackCount = 底边，中间 = 两轨之间）。
+    /// 行序按 <see cref="LaneOrder"/>（视频轨区在最上方，从 y=0 开始）。</summary>
     private double BoundaryYOfInsert(int insertPos, int trackCount)
     {
         var acc = 0.0;
         for (var r = 0; r < Math.Min(insertPos, trackCount); r++)
         {
-            acc += LaneHeightOf(RowOfTrackInverse(r, trackCount));
+            acc += LaneHeightOf(LaneAtRow(r));
         }
 
         return acc;
     }
 
+    /// <summary>泳道显示名：视频轨「轨道 N」（轨号大的在上 = 轨道 1），音频轨「A1…An」。</summary>
+    private string LaneDisplayName(int lane) => IsAudioLane(lane)
+        ? $"A{AudioTrackOfLane(lane) + 1}"
+        : TrackName(lane, _project.TrackCount);
+
     /// <summary>拖拽反馈：insertPosition &gt;= 0 = 在两轨之间插入（显示水平插入指示线），否则高亮目标泳道。
-    /// overlap = 目标位置被同轨素材占用，标签变红提示「释放后自动腾位」。</summary>
-    private void UpdateDropHighlight(int targetTrack, int trackCount, bool overlap = false, int insertPosition = -1)
+    /// overlap = 目标位置被同轨素材占用，标签变红提示「释放后自动腾位」。
+    /// <paramref name="laneSpace"/> = true 时 targetTrack 是<b>泳道号</b>（含音频泳道，素材拖放用，
+    /// 与 <see cref="ResolveDropTarget"/> 的 laneSpace 对应，保证「高亮哪条 = 落在哪条」）。</summary>
+    private void UpdateDropHighlight(int targetTrack, int trackCount, bool overlap = false, int insertPosition = -1,
+        bool laneSpace = false)
     {
         var badge = _dropTrackBadge ??= BuildDropTrackBadge();
         if (badge.Parent != _timelineRoot)
@@ -4309,7 +4568,7 @@ internal sealed class VideoEditorWindow : MyWindow
                 {
                     0 => "＋ 在顶部插入新轨道",
                     _ when insertPosition >= trackCount => "＋ 在底部插入新轨道",
-                    _ => $"＋ 在轨道 {insertPosition + 1} 上方插入"
+                    _ => $"＋ 在{LaneDisplayName(LaneAtRow(Math.Min(insertPosition, trackCount - 1)))}上方插入"
                 };
             }
 
@@ -4320,10 +4579,10 @@ internal sealed class VideoEditorWindow : MyWindow
             return;
         }
 
-        // 正常落轨：高亮目标泳道（_lanes 下标 = 视觉行，须由数据轨号换算行号）。
+        // 正常落轨：高亮目标泳道（_lanes 按视觉行存放，须由轨号换算行号）。
         _insertIndicator.IsVisible = false;
         var row = trackCount > 0 && _lanes.Count > 0
-            ? Math.Clamp(RowOfTrack(Math.Clamp(targetTrack, 0, trackCount - 1), trackCount), 0, _lanes.Count - 1)
+            ? Math.Clamp(RowOfLane(Math.Clamp(targetTrack, 0, trackCount - 1)), 0, _lanes.Count - 1)
             : 0;
         for (var i = 0; i < _lanes.Count; i++)
         {
@@ -4334,13 +4593,14 @@ internal sealed class VideoEditorWindow : MyWindow
 
         if (badge.Child is TextBlock text2)
         {
-            text2.Text = overlap ? $"{TrackName(targetTrack, trackCount)}（占用）" : TrackName(targetTrack, trackCount);
+            var name = laneSpace ? LaneDisplayName(targetTrack) : TrackName(targetTrack, trackCount);
+            text2.Text = overlap ? $"{name}（占用）" : name;
         }
 
         badge.Background = overlap
             ? new SolidColorBrush(Color.FromRgb(0xE8, 0x11, 0x23))
             : ThemePalette.AccentBrushWithAlpha(235);
-        var top = VisualTopOfTrack(Math.Clamp(targetTrack, 0, trackCount - 1), trackCount) + 2;
+        var top = LaneVisualTop(Math.Clamp(targetTrack, 0, trackCount - 1)) + 2;
         Canvas.SetTop(badge, top);
         Canvas.SetLeft(badge, 8);
         badge.IsVisible = true;
@@ -4385,15 +4645,84 @@ internal sealed class VideoEditorWindow : MyWindow
                 return;
             }
 
-            var width = Math.Max(12, clip.Duration * _pxPerSecond);
-            var height = host.Height > 4 ? host.Height : 28;
-            var buckets = Math.Clamp((int)width, 8, 4000);
-            host.Children.Add(BuildWaveformVisual(AudioWaveform.Resample(slice, buckets), width, height));
+            var visual = new Avalonia.Controls.Shapes.Path
+            {
+                Fill = new SolidColorBrush(WaveformColor()),
+                Stretch = Stretch.None,
+                IsHitTestVisible = false
+            };
+            host.Children.Add(visual);
+
+            // 画布尺寸要等布局完成才有值（此处刚 Add，Bounds 还是 0），而且时间轴缩放、
+            // 拖动轨道高度都会改变它，所以统一在尺寸变化时按实际宽高重画 —— 波形因此与
+            // 片段块严格等宽，不再像旧版那样按 Duration*px 画、右侧被裁掉一截。
+            void Redraw()
+            {
+                var width = host.Bounds.Width;
+                var height = host.Bounds.Height;
+                if (width < 2 || height < 2)
+                {
+                    return;
+                }
+
+                var buckets = Math.Clamp((int)Math.Round(width), 8, 4000);
+                var scaled = AudioWaveform.Resample(slice, buckets);
+                // 按「实际出声的增益」缩放（音量 × 淡入淡出 × 所在音频轨静音/音量）：
+                // 调音量、拉淡入淡出、勾静音时波形立刻跟着变，看到的和听到的一致。
+                var maxGain = 0.0;
+                for (var i = 0; i < scaled.Length; i++)
+                {
+                    var gain = WaveformGainAt(clip, i, scaled.Length);
+                    maxGain = Math.Max(maxGain, gain);
+                    // 增益可到 200%，但波形带高固定：超过 1 的部分按 1 显示（只体现"更响"，不再顶出块外）。
+                    scaled[i] = (float)Math.Clamp(scaled[i] * gain, 0f, 1f);
+                }
+
+                visual.Opacity = maxGain <= 0.0001 ? 0.55 : 1; // 整段不出声：细线压暗，一眼看出是"哑的"
+                visual.Data = BuildWaveformGeometry(scaled, width, height);
+            }
+
+            host.SizeChanged += (_, _) => Redraw();
+            Redraw();
         }
         catch
         {
             // 装饰性内容，失败不影响编辑。
         }
+    }
+
+    /// <summary>
+    /// 波形第 <paramref name="index"/>/<paramref name="count"/> 列处的**实际出声增益**。
+    /// 直接用片段的 <see cref="VideoClip.AudioGainAt"/>（音量 × 淡入 × 淡出，与混音器同一套算法）
+    /// 再乘所在音频轨的静音/音量（与 <c>ProjectAudioMixer.TrackGainOf</c> 一致），
+    /// 这样时间轴上的波形就是「听到的波形」：调音量/加淡入淡出/勾静音立刻可见。
+    /// </summary>
+    private double WaveformGainAt(VideoClip clip, int index, int count)
+    {
+        if (count <= 0)
+        {
+            return 0;
+        }
+
+        var local = (index + 0.5) / count * Math.Max(0, clip.Duration);
+        return clip.AudioGainAt(local) * AudioTrackGainOf(clip);
+    }
+
+    /// <summary>音频片段所在音频轨的增益（静音 = 0）；视频片段的自带原声不叠轨增益。</summary>
+    private double AudioTrackGainOf(VideoClip clip)
+    {
+        if (!clip.IsAudio)
+        {
+            return 1;
+        }
+
+        var state = _project.GetAudioTrackState(clip.AudioTrack);
+        if (state == null)
+        {
+            return 1;
+        }
+
+        return state.Muted ? 0 : Math.Clamp(state.Volume, 0, 2);
     }
 
     /// <summary>按片段入出点从整段包络里裁出可见区间（素材时长未知时按整段处理）。</summary>
@@ -4420,43 +4749,61 @@ internal sealed class VideoEditorWindow : MyWindow
         return slice;
     }
 
-    /// <summary>把峰值数组画成上下对称的波形填充（以 0 轴为中心）。</summary>
-    private static Control BuildWaveformVisual(float[] peaks, double width, double height)
+    /// <summary>
+    /// 把峰值数组画成以 0 轴上下对称的**阶梯**波形：每个像素列一根竖条（列内取该列峰值），
+    /// 列与列之间垂直跳变、不画斜线 —— 采样点用斜线相连时，一眼看去全是来回斜拉的锯齿，
+    /// 这正是「波形看着怪怪的」的观感来源之一。静音段保留 1.5px 细线，波形不会断开成碎段。
+    /// </summary>
+    private static StreamGeometry BuildWaveformGeometry(float[] peaks, double width, double height)
     {
         var geometry = new StreamGeometry();
+        if (peaks.Length == 0)
+        {
+            return geometry;
+        }
+
+        var mid = height / 2;
+        // 上下各留 1px：波峰顶到块边缘会显得很挤。
+        var amplitude = Math.Max(1, mid - 1);
+        var columns = peaks.Length;
+        var columnWidth = width / columns;
+        double Half(int i) => Math.Max(0.75, Math.Clamp(peaks[i], 0f, 1f) * amplitude);
+        double Left(int i) => i <= 0 ? 0 : columnWidth * i;
+        double Right(int i) => i >= columns - 1 ? width : columnWidth * (i + 1);
+
         using (var ctx = geometry.Open())
         {
-            var mid = height / 2;
-            var amplitude = mid * 0.86;
-            ctx.BeginFigure(new Point(0, mid), true);
-
-            for (var i = 0; i < peaks.Length; i++)
+            // 上边缘：自左向右逐列走阶梯。
+            ctx.BeginFigure(new Point(0, mid - Half(0)), true);
+            for (var i = 0; i < columns; i++)
             {
-                var x = peaks.Length <= 1 ? 0 : width * i / (peaks.Length - 1);
-                ctx.LineTo(new Point(x, mid - peaks[i] * amplitude));
+                ctx.LineTo(new Point(Right(i), mid - Half(i)));
+                if (i < columns - 1)
+                {
+                    ctx.LineTo(new Point(Right(i), mid - Half(i + 1)));
+                }
             }
 
-            for (var i = peaks.Length - 1; i >= 0; i--)
+            // 下边缘：自右向左镜像折回。
+            for (var i = columns - 1; i >= 0; i--)
             {
-                var x = peaks.Length <= 1 ? 0 : width * i / (peaks.Length - 1);
-                ctx.LineTo(new Point(x, mid + peaks[i] * amplitude));
+                ctx.LineTo(new Point(Left(i), mid + Half(i)));
+                if (i > 0)
+                {
+                    ctx.LineTo(new Point(Left(i), mid + Half(i - 1)));
+                }
             }
 
             ctx.EndFigure(true);
         }
 
-        // 注意用全名：本文件大量使用 System.IO.Path，简写 Path 会解析成它。
-        return new Avalonia.Controls.Shapes.Path
-        {
-            Data = geometry,
-            Fill = new SolidColorBrush(WaveformColor()),
-            Stretch = Stretch.None,
-            IsHitTestVisible = false
-        };
+        return geometry;
     }
 
-    /// <summary>波形填充色（半透明青绿，深浅主题下都看得清）。</summary>
-    private static Color WaveformColor() => Color.FromArgb(190, 130, 220, 185);
+    /// <summary>波形填充色：浅色主题用深青绿（压在浅灰块上才看得清），深色主题用亮青绿。</summary>
+    private static Color WaveformColor() => ThemePalette.IsDarkTheme()
+        ? Color.FromArgb(205, 104, 214, 178)
+        : Color.FromArgb(205, 38, 136, 116);
 
     private Border BuildClipBlock(VideoClip clip)
     {
@@ -4467,34 +4814,58 @@ internal sealed class VideoEditorWindow : MyWindow
             : _project.GetTrackState(clip.Track);
         var isLocked = trackState is { Locked: true };
         var isHiddenTrack = trackState is { Hidden: true };
+        // 静音标记：视频片段被「分离音频」或手动静音后，块上直接显示喇叭静音图标，
+        // 免得只看到画面块却不知道它的原声已经没了。
+        var muted = clip.Muted && (clip.IsAudio || string.Equals(clip.Kind, "Video", StringComparison.OrdinalIgnoreCase));
+        var nameText = new TextBlock
+        {
+            Text = ClipDisplayName(clip) + (muted ? " \uE816" : "") + (isLocked ? " \uE72E" : ""),
+            FontSize = 11,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center
+        };
         var durationText = new TextBlock
         {
             Text = $"{clip.StartTime:0.#}s · {clip.Duration:0.#}s",
             FontSize = 10,
-            Opacity = 0.7
+            Opacity = 0.7,
+            VerticalAlignment = VerticalAlignment.Center
         };
-        var content = new StackPanel
+        // 内容容器统一用 Grid 包一层（Margin/Clip 都在这一层，块内元素不会溢出到相邻轨道）。
+        var content = new Grid
         {
-            Margin = new Thickness(6),
-            VerticalAlignment = VerticalAlignment.Center,
-            Spacing = 2,
-            Children =
-            {
-                new TextBlock
-                {
-                    Text = ClipDisplayName(clip) + (isLocked ? " \uE72E" : ""),
-                    FontSize = 11,
-                    TextTrimming = TextTrimming.CharacterEllipsis
-                },
-                durationText
-            }
+            Margin = new Thickness(6, 4, 6, 4),
+            ClipToBounds = true
         };
         if (clip.IsAudio)
         {
-            // PR 风格：音频块内直接画波形。提取走后台线程，完成后回到 UI 线程把图形填进 Canvas。
-            var waveHost = new Canvas { Height = 28, ClipToBounds = true };
+            // 音频块（PR 风格）：第一行横排「名称 + 起止/时长」，剩下的高度全给波形。
+            // ⚠️ 旧版把 28px 波形追加在两行文字下面，内容总高（67px）超过块高（默认 48px），
+            // 波形被挤出块下缘、文字被裁掉 —— 波形「看着怪怪的」的另一半原因。
+            content.RowDefinitions = new RowDefinitions("Auto,*");
+            var info = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 6,
+                Children = { nameText, durationText }
+            };
+            Grid.SetRow(info, 0);
+            content.Children.Add(info);
+
+            var waveHost = new Canvas { ClipToBounds = true, IsHitTestVisible = false };
+            Grid.SetRow(waveHost, 1);
             content.Children.Add(waveHost);
+            // 提取走后台线程，完成后回到 UI 线程把图形填进 Canvas。
             LoadWaveformAsync(clip, waveHost);
+        }
+        else
+        {
+            content.Children.Add(new StackPanel
+            {
+                VerticalAlignment = VerticalAlignment.Center,
+                Spacing = 2,
+                Children = { nameText, durationText }
+            });
         }
         // 选中时显示左右裁剪手柄（拖左 = 改入点，拖右 = 改出点）。
         // 触摸友好：外层 18px 透明命中区（手指可轻松点到），内层 8px 白色可见条贴块边缘。
@@ -4533,8 +4904,8 @@ internal sealed class VideoEditorWindow : MyWindow
         var block = new Border
         {
             Width = Math.Max(30, clip.Duration * _pxPerSecond),
-            // 高度跟随所在轨道的实际高度（每轨可拖拽调高），上下各留 6px 边距。
-            Height = Math.Max(20, LaneHeightOf(clip.Track) - 12),
+            // 高度跟随所在泳道的实际高度（每轨可拖拽调高），上下各留 6px 边距。
+            Height = Math.Max(20, LaneHeightOfClip(clip) - 12),
             CornerRadius = new CornerRadius(6),
             Background = isSelected
                 ? ThemePalette.AccentBrushWithAlpha(170)
@@ -4611,11 +4982,22 @@ internal sealed class VideoEditorWindow : MyWindow
         }
 
         _selected = clip;
-        // 按下点相对块：左缘 = StartTime*px；顶缘在根画布坐标 = 所在轨视觉顶部 + 泳道内 6px 边距。
-        // （必须含轨道偏移 VisualTopOfTrack，否则从下方轨道拖起时块会比鼠标高一段、越靠下越偏。）
-        var grabX = rootPos.X - clip.StartTime * _pxPerSecond;
-        var blockRootTop = VisualTopOfTrack(clip.Track, _project.TrackCount) + 6;
-        var grabY = Math.Max(0, rootPos.Y - blockRootTop);
+        // 按下点相对块左上角的偏移 —— **直接量块的真实位置**（TranslatePoint），不要用模型推算。
+        // 曾经用 `VisualTopOfTrack(clip.Track, _project.TrackCount) + 6` 推块顶：泳道行序/轨道数
+        // 任何一处与真实布局不一致（例如音频泳道被排在视频泳道上方），抓取偏移就会差一整个泳道高，
+        // 拖起来片段永远比指针高/低一截。量真实几何就没有这个可能。
+        var grabX = Math.Max(0, rootPos.X - clip.StartTime * _pxPerSecond);
+        var grabY = 0.0;
+        if (_blockByClip.TryGetValue(clip, out var pressedBlock))
+        {
+            var origin = pressedBlock.TranslatePoint(new Point(0, 0), _timelineRoot);
+            if (origin is { } o)
+            {
+                grabX = Math.Max(0, rootPos.X - o.X);
+                grabY = Math.Max(0, rootPos.Y - o.Y);
+            }
+        }
+
         _dragOffsetX = grabX;
         var origins = new Dictionary<VideoClip, double>();
         var tracks = new Dictionary<VideoClip, int>();
@@ -4637,29 +5019,23 @@ internal sealed class VideoEditorWindow : MyWindow
         UpdateStageHandles();
     }
 
-    /// <summary>命中测试：_timelineRoot 坐标处是否有片段（时间落在片段区间且纵向在片段所在轨道泳道内）。
-    /// 供播放头 seek 线按下时判断「用户是想点片段」——有片段就交给片段，不让 seek 抢。</summary>
+    /// <summary>命中测试：_timelineRoot 坐标处是否有片段（时间落在片段区间且纵向在片段所在泳道内）。
+    /// 供播放头 seek 线按下时判断「用户是想点片段」——有片段就交给片段，不让 seek 抢。
+    /// 按<b>泳道</b>遍历（含音频泳道，音频片段的 Track 恒为 -1，按 Track 比会永远命不中）。</summary>
     private VideoClip? ClipAtTimelinePoint(Point rootPos)
     {
-        var trackCount = _project.TrackCount;
-        if (trackCount <= 0)
-        {
-            return null;
-        }
-
         var time = rootPos.X / _pxPerSecond;
-        for (var t = trackCount - 1; t >= 0; t--)
+        for (var lane = 0; lane < TotalLaneCount; lane++)
         {
-            var top = VisualTopOfTrack(t, trackCount);
-            var bottom = top + LaneHeightOf(t);
-            if (rootPos.Y < top || rootPos.Y >= bottom)
+            var top = LaneVisualTop(lane);
+            if (rootPos.Y < top || rootPos.Y >= top + LaneHeightOf(lane))
             {
                 continue;
             }
 
-            // 该泳道内覆盖该时刻的最上层（同轨起始最晚）片段。
+            // 该泳道内覆盖该时刻的最上层（起得最晚的）片段。
             return _project.Clips
-                .Where(c => c.Track == t && time >= c.StartTime && time < c.StartTime + c.Duration)
+                .Where(c => LaneOfClip(c) == lane && time >= c.StartTime && time < c.StartTime + c.Duration)
                 .OrderByDescending(c => c.StartTime)
                 .FirstOrDefault();
         }
@@ -4667,7 +5043,12 @@ internal sealed class VideoEditorWindow : MyWindow
         return null;
     }
 
-    /// <summary>把当前多选集合的所有块浮到根画布（跨泳道拖动用），保持相对布局。</summary>
+    /// <summary>
+    /// 把当前多选集合的所有块浮到根画布（跨泳道拖动用），保持相对布局。
+    /// 幂等：已在根画布上的块跳过，因此可以在每次指针移动时无脑调用 —— 这样即使拖拽过程中
+    /// 时间轴被重建（缩放、自动保存、别的刷新），块也会立刻重新浮回来。否则重建后的块回到泳道画布，
+    /// 而拖拽代码写入的是根画布坐标 → 块会突然跳到另一个位置（表现为“拖一下就跑偏”）。
+    /// </summary>
     private void FloatSelectedBlocks()
     {
         foreach (var (c, b) in _blockByClip)
@@ -4677,6 +5058,9 @@ internal sealed class VideoEditorWindow : MyWindow
                 continue;
             }
 
+            // 换父级前先量出它在根画布坐标里的真实位置，挂上去后写回，
+            // 否则 Canvas 附加属性仍按旧父级（泳道）解释 → 位置跳变。
+            var origin = b.TranslatePoint(new Point(0, 0), _timelineRoot);
             if (b.Parent is Panel p)
             {
                 p.Children.Remove(b);
@@ -4684,6 +5068,12 @@ internal sealed class VideoEditorWindow : MyWindow
 
             b.ZIndex = 30; // 高于播放头（20），拖动时浮在所有泳道上
             b.Opacity = 0.8; // 半透明：目标泳道的高亮/落点标签在块下仍可见
+            if (origin is { } o)
+            {
+                Canvas.SetLeft(b, o.X);
+                Canvas.SetTop(b, o.Y);
+            }
+
             _timelineRoot.Children.Add(b);
         }
     }
@@ -4746,24 +5136,37 @@ internal sealed class VideoEditorWindow : MyWindow
             _moveUndoPushed = true;
         }
 
-        // 开始拖动时才把整组块浮到根画布（跨泳道需要；纯点击不挪动）。
-        if (_selectedClips.Any(c => _blockByClip.TryGetValue(c, out var b) && b.Parent != _timelineRoot))
+        UpdateDragAutoScroll(e.GetPosition(_timelineScroll).Y, e.GetPosition(_lanesScroll).X, FollowClipDragScroll);
+        ApplyClipDrag(rootPos);
+        _dragLogMoves++;
+    }
+
+    /// <summary>
+    /// 按指针（时间轴内容坐标）更新整组拖拽块的位置与落点高亮。
+    /// <para>
+    /// 横向：整组相对按下基准平移（时间增量 = 指针位移像素 / 像素每帧）。吸附要排除被拖的片段本身，
+    /// 否则会吸回自己刚才的位置（详见 <see cref="SnapTime"/>）。纵向：块顶 = 指针 Y − 按下时的真实抓取偏移，
+    /// 因此块与指针**始终零误差**。指针事件与「边缘自动滚动后的跟随」都走这里，两条路完全一致。
+    /// </para>
+    /// </summary>
+    private void ApplyClipDrag(Point rootPos)
+    {
+        if (_moveGroup is not { } md)
         {
-            FloatSelectedBlocks();
-            if (_dragLogMoves == 0)
-            {
-                EditorLog("DRAG 首次移动 → 浮块到根画布");
-            }
+            return;
         }
 
-        UpdateDragAutoScroll(e.GetPosition(_timelineScroll));
-        // 横向：整组相对按下基准平移（时间增量 = 指针位移像素 / 像素每帧；跟手）。
+        _lastDragRootPoint = rootPos;
+        // 每次移动都重新浮块（幂等）：拖拽中时间轴若被重建，块会掉回泳道画布，
+        // 此时写入根画布坐标会让它跳到别处。
+        FloatSelectedBlocks();
+
         var timeDelta = (rootPos.X - md.GrabX) / _pxPerSecond;
         var blockTop = Math.Max(0, rootPos.Y - md.GrabY);
         foreach (var (c, orig) in md.Origins)
         {
             var moved = orig + timeDelta;
-            c.StartTime = _snapEnabled ? Math.Max(0, SnapTime(moved)) : Math.Max(0, moved);
+            c.StartTime = _snapEnabled ? Math.Max(0, SnapTime(moved, md.Origins.Keys)) : Math.Max(0, moved);
             if (_blockByClip.TryGetValue(c, out var b))
             {
                 Canvas.SetLeft(b, c.StartTime * _pxPerSecond);
@@ -4781,12 +5184,47 @@ internal sealed class VideoEditorWindow : MyWindow
                       $"start={md.Pressed.StartTime:0.###}s blockLeft={blockText}");
         }
 
-        _dragLogMoves++;
         // 落点按指针 Y 判定：贴近轨界 / 轨道区外顶部底部 = 提示「新建轨道」（整组来自同一数据轨时）。
         var trackCount = _project.TrackCount;
         var (targetTrack, insertPos) = ResolveDropTarget(rootPos.Y, trackCount);
         var canInsertNewTrack = insertPos >= 0 && md.Tracks.Values.Distinct().Count() <= 1;
         UpdateDropHighlight(targetTrack, trackCount, false, canInsertNewTrack ? insertPos : -1);
+    }
+
+    /// <summary>
+    /// 边缘自动滚动后的跟随（横向 dx / 纵向 dy = 实际滚动像素）：指针在边缘停住不动时内容仍在滚，
+    /// 「指针在内容坐标里的位置」就变了（= 视口坐标 + 滚动偏移）。把上一次的内容坐标外推同样多，
+    /// 再走一遍正常拖拽流程即可 —— 块与落点判定自动跟着滚，不需要另写一套补偿逻辑。
+    /// </summary>
+    private void FollowClipDragScroll(double dx, double dy)
+    {
+        if (_moveGroup == null)
+        {
+            return;
+        }
+
+        _lastDragRootPoint = new Point(_lastDragRootPoint.X + dx, _lastDragRootPoint.Y + dy);
+        ApplyClipDrag(_lastDragRootPoint);
+    }
+
+    /// <summary>
+    /// 播放头擦洗（拖 seek 线或标尺头）的自动滚动：指针拖到时间轴左右边缘时持续滚动并带着播放头走。
+    /// <paramref name="contentX"/> = 此刻指针在时间轴内容坐标里的横向位置（滚动跟随按此推导）。
+    /// </summary>
+    private void UpdateScrubAutoScroll(PointerEventArgs e, double contentX)
+    {
+        _lastDragRootPoint = new Point(contentX, _lastDragRootPoint.Y);
+        UpdateDragAutoScroll(e.GetPosition(_timelineScroll).Y, e.GetPosition(_lanesScroll).X, (dx, _) =>
+        {
+            if (!_scrubbing)
+            {
+                return;
+            }
+
+            // 内容滚了 dx → 同一屏幕位置对应的时间轴内容坐标也 +dx（指针没动，但时间在走）。
+            _lastDragRootPoint = new Point(_lastDragRootPoint.X + dx, _lastDragRootPoint.Y);
+            SetPlayhead(Math.Max(0, _lastDragRootPoint.X / _pxPerSecond));
+        });
     }
 
     /// <summary>根画布指针释放：完成裁剪（刷新并保存）或完成整组落轨。</summary>
@@ -4885,6 +5323,9 @@ internal sealed class VideoEditorWindow : MyWindow
         RefreshTimeline();
         FillPropertyPanel();
         ScheduleSave();
+        // 落点若被自动腾位/自动吸附挪到了视口外（很常见：该轨挤不下 → 被排到最后一个片段之后），
+        // 滚过去让用户看得到，否则会以为片段拖丢了。
+        EnsureClipsVisible(md.Tracks.Keys.ToList());
     }
 
     /// <summary>拖拽/裁剪意外中断（捕获丢失等）：清状态并重建时间轴把浮动块收回归位。</summary>
@@ -4999,24 +5440,24 @@ internal sealed class VideoEditorWindow : MyWindow
         return (Math.Max(0, prevEnd - clip.StartTime), Math.Min(maxOut, nextStart - clip.StartTime + clip.InPoint));
     }
 
-    /// <summary>视觉行 → 数据轨号：轨道号越大（越上层）显示在越上面（图层面板习惯）。</summary>
-    private static int RowOfTrack(int track, int trackCount) => trackCount - 1 - track;
-
-    /// <summary>数据轨号 → 视觉行。</summary>
-    private static int RowOfTrackInverse(int track, int trackCount) => trackCount - 1 - track;
-
     /// <summary>轨道显示名：最上层（数据轨号最大）= 「轨道 1」。</summary>
     private static string TrackName(int track, int trackCount) => $"轨道 {trackCount - track}";
 
     /// <summary>
-    /// 把泳道区内的纵向坐标解析为落点：返回（数据轨号, 插入位置）。
+    /// 把泳道区内的纵向坐标解析为落点：返回（轨号, 插入位置）。
     /// insertPosition = -1 = 直接落到该轨道；0..trackCount = 在视觉位置 p 插入新轨
     /// （0 = 最顶层上方，trackCount = 最底层下方，中间 = 两轨之间）。
     /// 判定碰撞体积较大：每轨顶部的判定带为 <see cref="DropBoundaryThreshold"/> 像素
     /// （贴近某轨顶部即视为在该轨上方新建），轨道区上方空白（y&lt;0）与最底轨底边
     /// 及更下方空白都视为新建轨道——因此“碰到轨道附近（含轨道外）区域”即可新建。
+    /// <para>
+    /// <paramref name="laneSpace"/> = true 时按**泳道视觉顺序**（视频在上、音频在下）解析，返回的是
+    /// 泳道号（素材拖放用，可落到音频泳道）；false 时只在**视频轨区**解析（0..trackCount-1 行，
+    /// 返回视频轨号），供片段拖拽（片段不能落进音频泳道）。视频轨区位于整条时间轴最上方，
+    /// 因此两种模式的行序都从 y=0 开始。
+    /// </para>
     /// </summary>
-    private (int Track, int InsertPosition) ResolveDropTarget(double y, int trackCount)
+    private (int Track, int InsertPosition) ResolveDropTarget(double y, int trackCount, bool laneSpace = false)
     {
         if (trackCount <= 0)
         {
@@ -5027,7 +5468,7 @@ internal sealed class VideoEditorWindow : MyWindow
         var acc = 0.0;
         for (var row = 0; row < trackCount; row++)
         {
-            var t = RowOfTrackInverse(row, trackCount);
+            var t = laneSpace ? LaneAtRow(row) : trackCount - 1 - row;
             var h = LaneHeightOf(t);
             // 本轨顶部判定带（含轨道区上方空白，y<0 也命中这里 → 顶部新建）：
             // 前一轨底部的这一小段 + 本轨顶部这一小段都算「两轨之间新建」。
@@ -5046,24 +5487,11 @@ internal sealed class VideoEditorWindow : MyWindow
         }
 
         // 超出底部（含最底轨底部判定带与更下方空白）：底部新建。
-        return (0, trackCount);
+        return (laneSpace ? LaneAtRow(trackCount - 1) : 0, trackCount);
     }
 
     /// <summary>新建轨道判定带的半带宽（像素）：贴近轨顶 / 轨外的这个范围内都视为“新建轨道”。</summary>
     private const double DropBoundaryThreshold = 14;
-
-    /// <summary>把泳道区内的纵向坐标解析为所在轨的视觉顶部（落点标签定位用）。</summary>
-    private double VisualTopOfTrack(int track, int trackCount)
-    {
-        var row = RowOfTrack(track, trackCount);
-        var acc = 0.0;
-        for (var r = 0; r < row; r++)
-        {
-            acc += LaneHeightOf(RowOfTrackInverse(r, trackCount));
-        }
-
-        return acc;
-    }
 
     /// <summary>框选：返回与矩形（时间轴内容坐标）相交的所有片段（含锁定轨，只读选中）。</summary>
     private List<VideoClip> MarqueeSelect(Point a, Point b)
@@ -5072,14 +5500,15 @@ internal sealed class VideoEditorWindow : MyWindow
         var y1 = Math.Min(a.Y, b.Y);
         var x2 = Math.Max(a.X, b.X);
         var y2 = Math.Max(a.Y, b.Y);
-        var trackCount = _project.TrackCount;
         var result = new List<VideoClip>();
         foreach (var clip in _project.Clips)
         {
+            // 按泳道定位（音频片段的 Track 恒为 -1，用 Track 会算到轨道区之外 → 框选永远选不中音频片段）。
+            var lane = LaneOfClip(clip);
             var cx = clip.StartTime * _pxPerSecond;
-            var cy = VisualTopOfTrack(clip.Track, trackCount);
+            var cy = LaneVisualTop(lane);
             var cw = Math.Max(6, clip.Duration * _pxPerSecond);
-            var ch = LaneHeightOf(clip.Track);
+            var ch = LaneHeightOf(lane);
             if (cx < x2 && cx + cw > x1 && cy < y2 && cy + ch > y1)
             {
                 result.Add(clip);
@@ -5089,12 +5518,12 @@ internal sealed class VideoEditorWindow : MyWindow
         return result;
     }
 
-    /// <summary>拖拽调高：写入每轨高度并同步泳道/头部/总高（拖动中不重建时间轴，避免打断捕获）。
-    /// 注意 _lanes 按下标 = 视觉行，须由数据轨号换算行号。</summary>
-    private void SetLaneHeight(int track, double h)
+    /// <summary>拖拽调高：写入每泳道高度并同步泳道/头部/总高（拖动中不重建时间轴，避免打断捕获）。
+    /// 参数是<b>泳道号</b>（轨道头按下时传的就是泳道号；音频泳道也走这里），行号按 LaneOrder 换算。</summary>
+    private void SetLaneHeight(int lane, double h)
     {
-        _laneHeights[track] = h;
-        var row = RowOfTrack(track, _project.TrackCount);
+        _laneHeights[lane] = h;
+        var row = RowOfLane(lane);
         if (row >= 0 && row < _lanes.Count)
         {
             _lanes[row].Height = h;
@@ -5104,16 +5533,16 @@ internal sealed class VideoEditorWindow : MyWindow
             }
         }
 
-        if (_headerByTrack.TryGetValue(track, out var header))
+        if (_headerByTrack.TryGetValue(lane, out var header))
         {
             header.Height = h;
         }
 
-        var trackCount = _project.TrackCount;
+        // 总高要含音频泳道（用 TotalLaneCount）：否则内容高度少一个泳道，音频泳道底部滚不到。
         var lanesHeight = 0.0;
-        for (var t = 0; t < trackCount; t++)
+        for (var laneIndex = 0; laneIndex < TotalLaneCount; laneIndex++)
         {
-            lanesHeight += LaneHeightOf(t);
+            lanesHeight += LaneHeightOf(laneIndex);
         }
 
         _timelineRoot.Height = lanesHeight;
@@ -5123,10 +5552,12 @@ internal sealed class VideoEditorWindow : MyWindow
             _timelineContent.Height = lanesHeight;
         }
 
-        // 该轨片段块高度实时跟随轨道高度（拖动中不重建时间轴，避免打断指针捕获）。
+        // 该泳道片段块高度实时跟随泳道高度（拖动中不重建时间轴，避免打断指针捕获）。
+        // 用 LaneOfClip 而不是 clip.Track：音频片段的 Track 恒为 -1，按 Track 比会永远不匹配
+        // → 音频泳道调高后音频块不跟随。波形画布高度随之变化，由 SizeChanged 触发重画。
         foreach (var clip in _project.Clips)
         {
-            if (clip.Track == track && _blockByClip.TryGetValue(clip, out var block))
+            if (LaneOfClip(clip) == lane && _blockByClip.TryGetValue(clip, out var block))
             {
                 block.Height = Math.Max(20, h - 12);
             }
@@ -5152,8 +5583,11 @@ internal sealed class VideoEditorWindow : MyWindow
         var rawStart = Math.Max(0, rawX / _pxPerSecond);
         var startTime = _snapEnabled ? SnapTime(rawStart) : rawStart;
         // 泳道数含音频轨：落点解析要按总泳道算，否则拖到音频轨会被算成超出范围。
+        // laneSpace=true：按泳道视觉顺序解析（视频在上、音频在下），返回值是泳道号（下方用
+        // IsAudioLane/AudioTrackOfLane 判定），不能按「视频轨数反推行号」——音频泳道在下、
+        // 行序相同但泳道号不连续，反推会把最后一行算成音频轨之外。
         var trackCount = TotalLaneCount;
-        var (dropTrack, insertPos) = ResolveDropTarget(pointer.Y, trackCount);
+        var (dropTrack, insertPos) = ResolveDropTarget(pointer.Y, trackCount, laneSpace: true);
 
         VideoClip? clip = null;
         if (isMove &&
@@ -5274,20 +5708,25 @@ internal sealed class VideoEditorWindow : MyWindow
             {
                 // 在两轨之间插入新轨（视觉位置 insertPos），把片段放上新轨道：
                 // 视觉行在插入点上方（数据轨号 &gt; n-1-insertPos）的轨道整体下移一格。
+                // 落点在音频泳道区内时（insertPos &gt; 视频轨数）按「视频区最下方插入」处理：
+                // 否则 n - insertPos 会算出 ≤ 0 的轨道号，把视频片段塞到一个不存在的轨上。
                 var n = _project.TrackCount;
+                var insertAt = Math.Clamp(insertPos, 0, n);
                 foreach (var c in _project.Clips)
                 {
-                    if (!ReferenceEquals(c, clip) && c.Track > n - 1 - insertPos)
+                    if (!ReferenceEquals(c, clip) && c.Track > n - 1 - insertAt)
                     {
                         c.Track++;
                     }
                 }
 
-                clip.Track = n - insertPos;
+                clip.Track = n - insertAt;
             }
             else
             {
-                clip.Track = Math.Max(0, dropTrack);
+                // 视频/图片/形状/文字只有视频轨可用：落点若在音频泳道（用泳道号解析，可能 ≥ 视频轨数），
+                // 归到最下面的视频轨（离音频区最近），不要凭空新建一条视频轨。
+                clip.Track = IsAudioLane(dropTrack) ? 0 : Math.Max(0, dropTrack);
             }
 
             clip.StartTime = startTime;
@@ -5337,12 +5776,24 @@ internal sealed class VideoEditorWindow : MyWindow
         RefreshTimeline();
         FillPropertyPanel();
         ScheduleSave();
+        // 目标位置被自动腾位挪到视口外时（例如该轨挤不下、被排到最后一个片段之后）滚过去。
+        if (clip != null)
+        {
+            EnsureClipVisible(clip);
+        }
+
         e.Handled = true;
     }
 
     /// <summary>时间吸附：距离时间轴开头、任意片段边缘（头/尾）或播放头约 8px 内自动对齐，便于头贴尾拼接/素材上下对齐。
     /// 阈值按像素换算（8px / pxPerSecond）：时间轴缩放后吸附手感一致。</summary>
-    private double SnapTime(double time)
+    /// <param name="exclude">
+    /// 不参与吸附的片段（**正在被拖动的那些**）。这是必须的：被拖片段的 StartTime 在拖动中实时变化，
+    /// 它自己的首/尾永远落在吸附半径内 → 每次指针移动都会被「吸回自己刚才的位置」，
+    /// 表现为片段永远比指针落后一小段（8px 内）+ 一跳一跳（“不跟手”的元凶之一）。
+    /// </param>
+    /// <param name="skipPlayhead">擦洗播放头时传 true（同理：播放头会吸回自己）。</param>
+    private double SnapTime(double time, IReadOnlyCollection<VideoClip>? exclude = null, bool skipPlayhead = false)
     {
         var best = time;
         var bestDist = 8.0 / Math.Max(1.0, _pxPerSecond);
@@ -5354,6 +5805,11 @@ internal sealed class VideoEditorWindow : MyWindow
 
         foreach (var clip in _project.Clips)
         {
+            if (exclude != null && exclude.Contains(clip))
+            {
+                continue;
+            }
+
             var head = clip.StartTime;
             var tail = clip.StartTime + clip.Duration;
             if (Math.Abs(time - head) < bestDist)
@@ -5369,7 +5825,7 @@ internal sealed class VideoEditorWindow : MyWindow
             }
         }
 
-        if (Math.Abs(time - _playheadTime) < bestDist)
+        if (!skipPlayhead && Math.Abs(time - _playheadTime) < bestDist)
         {
             best = _playheadTime;
         }
@@ -5601,6 +6057,10 @@ internal sealed class VideoEditorWindow : MyWindow
             _fadeInSpin.IsEnabled = audioCapable;
             _fadeOutSpin.IsEnabled = audioCapable;
             _muteToggle.IsEnabled = audioCapable;
+            // 分离音频只对视频片段有意义（图片/文本/形状/滤镜没有声音，音频片段本身已经是音频）。
+            _detachAudioButton.IsVisible = clip is { Kind: "Video" };
+            _detachAudioButton.IsEnabled = _detachAudioButton.IsVisible;
+            UpdateAudioHint(clip, audioCapable);
             foreach (var control in _propertyControls)
             {
                 control.IsEnabled = has;
@@ -5725,6 +6185,134 @@ internal sealed class VideoEditorWindow : MyWindow
         {
             _updatingUi = false;
         }
+    }
+
+    /// <summary>
+    /// 音频区块的状态提示：把「这个片段其实听不见」的几种原因直说出来。
+    /// 音量为 0% / 静音 / 所在音频轨被静音时片段不出声，但界面上完全看不出来——
+    /// 曾经让人以为「剪视频没声音 = 声卡坏了」（诊断日志里也只有混音器开了几条流）。
+    /// </summary>
+    private void UpdateAudioHint(VideoClip? clip, bool audioCapable)
+    {
+        if (clip == null || !audioCapable)
+        {
+            _audioHint.IsVisible = false;
+            return;
+        }
+
+        var reasons = new List<string>();
+        if (clip.Muted)
+        {
+            reasons.Add(clip.IsAudio ? "该音频片段已静音" : "该片段的原声已静音（分离音频/静音开关造成）");
+        }
+
+        if (clip.Volume <= 0.0001)
+        {
+            reasons.Add("音量为 0%");
+        }
+
+        if (clip.IsAudio)
+        {
+            var state = _project.GetAudioTrackState(clip.AudioTrack);
+            if (state is { Muted: true })
+            {
+                reasons.Add($"所在音频轨 A{clip.AudioTrack + 1} 已被静音");
+            }
+            else if (state is { Volume: <= 0.0001 })
+            {
+                reasons.Add($"所在音频轨 A{clip.AudioTrack + 1} 轨音量是 0");
+            }
+        }
+
+        if (reasons.Count == 0)
+        {
+            _audioHint.IsVisible = false;
+            return;
+        }
+
+        _audioHint.Text = "⚠ " + string.Join("、", reasons) + " → 播放时听不到声音。";
+        _audioHint.IsVisible = true;
+    }
+
+    /// <summary>
+    /// 分离音频（PR 的「取消链接」同类）：把视频片段自带原声拆成一条独立音频片段放到音频轨，
+    /// 原视频片段置为静音（声音只在分离出的那条音频片段上）。
+    /// 音频轨优先用「同时刻能放下」的已有轨，都放不下就新开一条。
+    /// </summary>
+    private void DetachAudioFromSelection()
+    {
+        if (_selected is not { Kind: "Video" } video)
+        {
+            _statusText.Text = "只有视频片段可以分离音频（图片/文本/形状/滤镜没有声音）。";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(video.SourcePath) || !File.Exists(video.SourcePath))
+        {
+            _statusText.Text = "该片段的素材文件不存在，无法分离音频。";
+            return;
+        }
+
+        var sourceAudio = ProbeAudioDuration(video.SourcePath);
+        if (sourceAudio <= 0.05)
+        {
+            _statusText.Text = "该素材没有音频轨，无需分离。";
+            return;
+        }
+
+        // 音量为 0 的原片段：直接照抄会得到一个同样听不见的音频片段，按 100% 分离并说明。
+        var copySilentVolume = video.Volume <= 0.0001;
+        var detached = new VideoClip
+        {
+            Kind = "Audio",
+            SourcePath = video.SourcePath,
+            Track = -1,
+            AudioTrack = FindAudioTrackFor(video.StartTime, video.Duration),
+            StartTime = video.StartTime,
+            InPoint = video.InPoint,
+            OutPoint = video.OutPoint,
+            SourceDuration = video.SourceDuration > 0 ? video.SourceDuration : sourceAudio,
+            Volume = copySilentVolume ? 1 : video.Volume,
+            AudioFadeIn = video.AudioFadeIn,
+            AudioFadeOut = video.AudioFadeOut,
+            Muted = false
+        };
+
+        PushUndo();
+        _project.Clips.Add(detached);
+        video.Muted = true; // 原视频片段自己的声音消失（原声改由分离出的音频片段负责）
+        _selected = detached;
+        _selectedClips.Clear();
+        _selectedClips.Add(detached);
+        RefreshTimeline();
+        FillPropertyPanel();
+        UpdateAllBlockSelection();
+        ScheduleSave();
+        EnsureClipsVisible([video, detached]);
+        var extra = copySilentVolume ? "（原片段音量是 0%，已按 100% 分离）" : "";
+        _statusText.Text =
+            $"已分离音频到 A{detached.AudioTrack + 1}（{detached.Duration:0.#}s），原视频片段已静音。{extra}";
+        EditorLog($"DETACH 分离音频 {Path.GetFileName(video.SourcePath)} → A{detached.AudioTrack + 1} " +
+                  $"start={detached.StartTime:0.###}s dur={detached.Duration:0.###}s");
+    }
+
+    /// <summary>给分离出来的音频片段找一条音频轨：优先已有轨（同时刻放得下且未被静音），都满了就新开一条。</summary>
+    private int FindAudioTrackFor(double start, double duration)
+    {
+        for (var track = 0; track < _project.AudioTrackCount; track++)
+        {
+            if (_project.GetAudioTrackState(track) is { Muted: true })
+            {
+                continue; // 静音的轨不往里放
+            }
+
+            if (FitsOnAudioTrack(track, start, duration))
+            {
+                return track;
+            }
+        }
+
+        return _project.AudioTrackCount; // 新开一条 A(n+1)
     }
 
     private void ApplyPropertyEdits()

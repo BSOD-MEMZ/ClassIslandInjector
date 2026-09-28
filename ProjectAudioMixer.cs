@@ -87,7 +87,11 @@ internal sealed class ProjectAudioMixer : IDisposable
         {
             if (!project.HasAudioContent)
             {
-                Log("工程不含音频内容，不建立音频输出");
+                // 「没声音」最常见的原因就是这里：有音频/视频片段，但全都被静音或音量 0 筛掉了。
+                // 把每个被筛掉的片段和原因写进日志，免得又要怀疑声卡。
+                Log("工程不含**可出声**的音频内容，不建立音频输出"
+                    + DescribeInaudible(project, out var anyAudioClip)
+                    + (anyAudioClip ? "" : "（工程里也没有音频/视频片段）"));
                 return false;
             }
 
@@ -106,7 +110,9 @@ internal sealed class ProjectAudioMixer : IDisposable
 
             _provider = provider;
             _output = output;
-            Log($"工程音频已启动：起点={startTime:0.###}s，片段数={project.Clips.Count(c => c.IsAudio || c.Kind == "Video")}");
+            Log($"工程音频已启动：起点={startTime:0.###}s，"
+                + $"可出声片段={project.Clips.Count(c => c.ContributesAudio)}"
+                + DescribeInaudible(project, out _));
             return true;
         }
         catch (Exception ex)
@@ -115,6 +121,37 @@ internal sealed class ProjectAudioMixer : IDisposable
             Stop();
             return false;
         }
+    }
+
+    /// <summary>
+    /// 「有音轨但不出声」的片段清单（日志用）：静音 / 音量 0 的逐条列出，方便定位
+    /// 「剪视频听不到声音」到底是哪一条被筛掉了。<paramref name="anyAudioCapable"/> 表示工程里
+    /// 是否存在音频/视频片段（区分「根本没素材」与「素材都不出声」）。
+    /// </summary>
+    private static string DescribeInaudible(VideoProject project, out bool anyAudioCapable)
+    {
+        var parts = new List<string>();
+        anyAudioCapable = false;
+        foreach (var clip in project.Clips)
+        {
+            if (!clip.IsAudio && !string.Equals(clip.Kind, "Video", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            anyAudioCapable = true;
+            if (clip.ContributesAudio)
+            {
+                continue;
+            }
+
+            var reason = clip.Muted ? "已静音" : $"音量 {clip.Volume * 100:0.#}%";
+            parts.Add(clip.IsAudio
+                ? $"音频片段 {Path.GetFileName(clip.SourcePath)}@{clip.StartTime:0.##}s（{reason}）"
+                : $"视频片段 {Path.GetFileName(clip.SourcePath)}@{clip.StartTime:0.##}s（{reason}）");
+        }
+
+        return parts.Count == 0 ? "" : "；不出声的片段：" + string.Join("、", parts);
     }
 
     /// <summary>暂停输出（保留位置，<see cref="Resume"/> 继续）。</summary>
