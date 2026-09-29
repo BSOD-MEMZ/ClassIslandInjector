@@ -81,6 +81,12 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
   - `tools\RaceProbe`：`RaceProbe.exe [视频] [FFmpeg库目录]` = 「解码线程正在 `ReadFrame` 时另一线程 `Dispose`」的竞态回归（5 轮）。
     守护的是这个坑：**释放解码器必须先 `Join` 播放线程、且 `ReadFrame`/`SeekTo`/`Restart` 与 `Dispose` 共用 `FFmpegVideoDecoder._gate` 互斥**，
     否则 native 上下文被 free 后继续读 → `AccessViolationException`(0xc0000005) 静默击穿宿主进程（点「渲染并应用」第一步 `StopPreview` 就会踩到）。
+   还有 `RaceProbe.exe --stress [视频] [音频] [FFmpeg库目录]` = **预览播放压力测试**（种子）：
+   用一个 3 视频轨 + 1 音频轨的工程跑矩阵（1/2/3 轨 × 解码 400/640/800px × 空闲/加载 CPU × UI 卡顿 0/60ms），
+   量每轨投递帧率与最大间隔、seek 后到首帧延迟、改倍速后是否还在动；另有
+   音频 20ms 块耗时（回调欠载）、以及「声卡位置 vs 渲染位置」偏差（漂移校正的输入是否可信）。
+   加 3 个 AboveNormal 忙线程模拟「开着浏览器」，用 `UiSimulator` 把 UI 代价放在**另一条线程**上
+   （压在播放线程里就测错东西了）。卡顿类问题先跑它，别靠肉眼。
    另有 `RaceProbe.exe --audio [视频] [FFmpeg库目录] [输出目录]` = 「渲染带音频」端到端回归（探针自己合成 1kHz 正弦当音源，跑真实 `VideoProjectRenderer` 后从 mp4 里解回音频量化）：断言音频时长 == 工程时长、片段起点前静音、片段区间内有声、**变速下频率正确**（2× 保持音调仍 1kHz、2× 变调 2kHz），以及关掉「包含音频」时产物确实没有音轨。守护的是**复用器 `stream_index`** 这个坑（见约束 10）。
   - 探针跑通 **不等于** 宿主里不出问题——很多崩溃只在「解码帧进 Avalonia 渲染层」之后才发生（见约束 9 的 16 对齐）。
 
@@ -185,9 +191,34 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
 - **音频时间轴用「累计样本号」推进**（`endSample = round(t × 48000)`），不要按帧长做浮点累加——非整数帧率（29.97 等）下后者会积累漂移。AAC 有 ~1024 样本（21ms）前置延迟，mp4 复用器会自己写 edit list 补偿，不用手动处理。
 - 渲染选项里的「包含音频」（`InjectorSettings.RenderIncludeAudio`，默认开）会在产物带音频时**顺手打开底图的「播放声音」**（`VideoFillAudioEnabled`），否则用户会以为渲染没声音。
 
+### 11. 预览播放器的调度陷阱（`VideoProjectPlayer`，2026-09-29 压力测试后定稿）
+
+「画面突然卡住只剩声音 / 音频断续 / 音画越来越不同步」这三类症状，实测根因如下（探针 `--stress` 可复现）：
+
+- **消费信号会丢（最致命，症状=画面永久卡住）**：`PumpTrack` 里必须**先 `Consumed.Reset()` 再调 `_onFrame`**。
+  反过来写时，UI 线程可能在 `_onFrame` 返回**之前**就消费完并 `MarkTrackConsumed`（Set），
+  随后那句 `Reset()` 把信号抹掉 → 此后 `!Consumed.IsSet` 恒成立 → **该轨永久不再投递**
+  （片段不换就一直不动）。实测修前 8 秒只投递 6 帧，修后 139 帧。
+- **追赶必须有上限**：源帧率远高于显示帧率时（手机视频常见 54fps vs 显示 24fps），
+  「把中间帧顺序解出来丢掉」要 54 次解码/秒/轨；解码全在**一条线程上串行**，
+  一旦拍内解码超过拍长就会滚成正反馈（拍越耗时→落后越多→解得越多），投递率崩到 1fps。
+  故 `CatchUpSeekFrames = 8`（落后超 0.33s 直接 seek：实测 seek+解一帧 76ms，硬解 32 帧要 370ms）
+  + `MaxSkipPerTick = 4`（单拍解码量封顶）。
+- **`Consumed.Wait` 不要等久**：pump 是逐轨串行的，等 150ms 时 3 轨 + UI 忙会被拖到 450ms/拍。
+  现在只等 5ms —— 防覆写的判断在下一拍的 `!Consumed.IsSet → return`，不靠这个等待。
+- **`AudibleTime` 必须按锚点算，不能拿声卡累计位置当绝对时间**：`WasapiOut.GetPosition()` 是
+  「自流启动起算」的累计值，而我们自己的 `Seek` 只改 `_baseTime`。直接相加会在每次 seek 后
+  凭空多出「已播时长」的偏移（实测 Seek(10) 后恒定偏 **+3.01s**），于是音画漂移校正拿到假漂移、
+  每 5 秒重定位一次 —— 每次重定位都丢弃并重开音频源（听感断续），且持锁阻塞视频线程（画面卡顿）。
+  现在按 `锚点渲染位置 +（声卡位置 − 锚点声卡位置）` 算，起播 / Seek / Resume 都重新锚定。
+  漂移容差也从 0.15s 放宽到 **0.30s**（声卡缓冲本身就有 ~0.12s 固定延迟，容差贴太近会被噪声触发），
+  并加 10s 冷却（一次重定位 = 一次可听的断点）。
+- **诊断入口**：`video-player.log` 每 2 秒一行，现在带**单拍耗时**（`拍 均28ms/峰67ms`）与
+  **每轨闲置原因**（`此刻无片段 / 无解码器 / 源已播完 / 等UI消化 / 正常`）—— 卡顿时先看这行。
+- 已知上限（本机 4 核实测，解码 800px 约 10ms/帧）：单轨 ~17fps、3 轨 @800px ~12fps，
+  低于 24fps 目标；再往上要么按轨并行解码、要么提高定时精度（`Thread.Sleep` 15.6ms 粒度拖着拍长），
+  暂时靠编辑器的**预览画质自适应**降分辨率换取帧率。
 ## 预设商店（PresetStore）
-
-
 
 - 数据源与格式沿用此前约定：索引 `https://xxtsoft.top/support/injector/presets/index.json`（schemaVersion 1，camelCase、大小写不敏感），条目字段 = `Defaults/preset-index.sample.json`（id/name/author/school/description/pluginVersion/minPluginVersion/createdAt/downloadUrl(.cizip)/previewUrl(.png)/sizeBytes，可选 downloads 供热门排序）。
 - 入口：设置页「用户预设 → 预设商店」；窗口单实例（`PresetStoreWindow.Current`）。窗口用 `MyWindow`（FA `AppWindow`）+ `TitleBar.ExtendsContentIntoTitleBar` + `TitleBarHitTestType.Complex`（宿主 SettingsWindowNew 同款）。

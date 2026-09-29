@@ -25,6 +25,7 @@
     <Compile Include="..\..\VideoFrameSource.cs" Link="VideoFrameSource.cs" />
     <Compile Include="..\..\VideoProject.cs" Link="VideoProject.cs" />
     <Compile Include="..\..\ProjectAudioMixer.cs" Link="ProjectAudioMixer.cs" />
+    <Compile Include="..\..\VideoProjectPlayer.cs" Link="VideoProjectPlayer.cs" />
     <Compile Include="..\..\VideoProjectRenderer.cs" Link="VideoProjectRenderer.cs" />
     <Compile Include="..\..\OverlayFrameGenerator.cs" Link="OverlayFrameGenerator.cs" />
     <Compile Include="..\..\FilterUtils.cs" Link="FilterUtils.cs" />

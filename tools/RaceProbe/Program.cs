@@ -40,6 +40,16 @@ internal static class Program
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
 
+        // stress：[视频] [音频] [FFmpeg库目录] → 预览播放压力测试（把卡顿/音画不同步量成数字）。
+        if (args.Length > 0 && args[0] == "--stress")
+        {
+            Console.WriteLine("=== 预览播放压力测试 ===");
+            return Stress.Run(
+                args.Length > 3 ? args[3] : @"D:\Dev\ClassIsland\data\Config\Plugins\classisland.injector\ffmpeg",
+                args.Length > 1 ? args[1] : @"D:\Downloads\injector-video.mp4",
+                args.Length > 2 ? args[2] : @"D:\Downloads\bgm.mp3");
+        }
+
         // --audio：[视频] [FFmpeg库目录] [输出目录] → 「渲染带音频」端到端回归。
         if (args.Length > 0 && args[0] == "--audio")
         {

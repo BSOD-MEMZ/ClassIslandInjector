@@ -44,6 +44,16 @@
 - 主界面底图音频链路：产物带音轨 → `VideoAudioPlayer`（「播放声音」开关）出声。**循环同步**靠 `VideoFrameSource.OnLoopRestart`（画面复位时音频 `Seek(0)`）；「播放声音」开启时底图按**源帧率**播放（否则视频循环周期 ≠ 音频时长，一个循环里音频会重复若干遍）。回归探针：`tools\RaceProbe --audio`。
 
 
+## 预览播放器（卡顿 / 音画不同步，四铁律）
+
+用户反复报「预览时画面突然卡住只剩声音 / 音频断续 / 音画越来越不同步」。压力探针 `RaceProbe --stress` 测出并已修（详见 `agents.md` 约束 11）：
+
+1. **`PumpTrack` 必须先 `Consumed.Reset()` 再调 `_onFrame`**。反过来写会丢消费信号（UI 可能在回调返回前就 Set），此后该轨 `!Consumed.IsSet` 恒成立 = **永久不再投递**（画面卡死）。日志特征：`显N 丢N seekN[等UI消化]` 长期完全冻结。
+2. **追赶必须有上限**：`CatchUpSeekFrames = 8`（落后 0.33s 直接 seek；seek+解一帧 57ms ≪ 硬解 32 帧 371ms）+ `MaxSkipPerTick = 4`。否则「解码丢弃」滚成正反馈，投递率崩到 1fps。
+3. **`Consumed.Wait` 只等 5ms**：pump 逐轨串行，等久了 3 轨会把一拍拖到 450ms。
+4. **`AudibleTime` 不能拿声卡累计位置当绝对时间**：`WasapiOut.GetPosition()` 自流启动起算，而 `Seek` 只改 `_baseTime` → 每次 seek 后凭空多出「已播时长」（实测 +3.01s）→ 漂移校正反复重定位（声音断续 + 锁阻塞视频线程）。按锚点算，起播/Seek/Resume 重锚；容差 0.30s + 10s 冷却。
+
+诊断入口：`video-player.log` 每 2 秒一行（单拍耗时 + 每轨闲置原因）。本机上限：单轨 ~17fps、3 轨 @800px ~12fps。
 ## 调试与排查（沙箱环境）
 
 - **判宿主存活不能看进程**：`ClassIsland.exe` 只是启动器，真身是它拉起的 `ClassIsland.Desktop.exe`。可靠判据是宿主日志里 `MemoryWatchDogService` 的 **60 秒心跳条数**。
