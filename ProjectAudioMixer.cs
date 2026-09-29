@@ -68,26 +68,69 @@ internal sealed class ProjectAudioMixer : IDisposable
     /// 拿声卡真实播放字节数，才是能用做音画同步校正的时钟。
     /// </para>
     /// </summary>
+    /// <summary>
+    /// 声卡播放位置（秒）。**经过锚点校正**：<c>WasapiOut.GetPosition()</c> 是**累计值**
+    /// （自流启动起算），而我们自己的 <see cref="Seek"/> 只改 <c>_baseTime</c>，
+    /// 直接相加会在每次 seek 之后凭空多出「已播时长」的偏移 ——
+    /// 实测 Seek(10) 后声卡位置比渲染位置恒定偏 +3.01s（正好是已播墙钟），
+    /// 于是音画漂移校正拿到假漂移、每 5 秒重定位一次（每次都丢掉并重开音频源 → 声音断续、
+    /// 且重定位期间持锁阻塞视频线程 → 画面卡顿）。
+    /// <para>
+    /// 正确口径：<c>锚点渲染位置 +（声卡累计位置 − 锚点声卡位置）</c>，
+    /// 起点（起播）与每次 seek / 恢复播放时重新锚定；设备位置若被复位（小于锚点）也自动重锚。
+    /// </para>
+    /// </summary>
     public double AudibleTime
     {
         get
         {
             var output = _output;
+            var rendered = _baseTime + _frames / (double)SampleRate;
             if (output == null)
             {
-                return _baseTime + _frames / (double)SampleRate;
+                return rendered;
             }
 
-            try
+            var pos = ReadDevicePosition();
+            var anchor = _audibleAnchor;
+            if (anchor == null || pos < anchor.Device)
             {
-                var bytesPerSecond = SampleRate * FFmpegAudioDecoder.OutBytesPerSample;
-                return _baseTime + output.GetPosition() / (double)bytesPerSecond;
+                ReanchorAudible();
+                anchor = _audibleAnchor;
             }
-            catch
+
+            if (anchor == null)
             {
-                // 设备拔出 / 音频服务重启：退回渲染进度（不精确但不会抛）。
-                return _baseTime + _frames / (double)SampleRate;
+                return rendered;
             }
+
+            var bytesPerSecond = SampleRate * FFmpegAudioDecoder.OutBytesPerSample;
+            return anchor.Rendered + (pos - anchor.Device) / (double)bytesPerSecond;
+        }
+    }
+
+    /// <summary>声卡位置锚点（单一引用赋值 = 原子，读侧不加锁）。</summary>
+    private sealed record AudibleAnchor(double Rendered, long Device);
+
+    private volatile AudibleAnchor? _audibleAnchor;
+
+    /// <summary>重新锚定「渲染位置 ↔ 声卡累计位置」的对应关系（起播 / seek / 恢复播放时调）。</summary>
+    private void ReanchorAudible()
+    {
+        _audibleAnchor = new AudibleAnchor(_baseTime + _frames / (double)SampleRate, ReadDevicePosition());
+    }
+
+    /// <summary>声卡累计位置（字节，自流启动起算）；失败返回 0（调用方会据此重新锚定）。</summary>
+    private long ReadDevicePosition()
+    {
+        try
+        {
+            return _output?.GetPosition() ?? 0;
+        }
+        catch
+        {
+            // 设备拔出 / 音频服务重启。
+            return 0;
         }
     }
 
@@ -141,6 +184,7 @@ internal sealed class ProjectAudioMixer : IDisposable
 
             _provider = provider;
             _output = output;
+            ReanchorAudible(); // 起播：把「渲染位置 ↔ 声卡累计位置」的起点对齐
             Log($"工程音频已启动：起点={startTime:0.###}s，"
                 + $"可出声片段={project.Clips.Count(c => c.ContributesAudio)}"
                 + DescribeInaudible(project, out _));
@@ -243,6 +287,7 @@ internal sealed class ProjectAudioMixer : IDisposable
         try
         {
             _output?.Play();
+            ReanchorAudible(); // 恢复：设备位置可能已被复位，重锚一次
         }
         catch (Exception ex)
         {
@@ -258,6 +303,7 @@ internal sealed class ProjectAudioMixer : IDisposable
             _baseTime = Math.Max(0, time);
             _frames = 0;
             ReleaseAllSources();
+            ReanchorAudible(); // 跳转：声卡累计位置不会跟着我们复位，必须重锚，否则 AudibleTime 凭空多出已播时长
         }
     }
 

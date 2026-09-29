@@ -16,7 +16,14 @@ namespace ClassIslandInjector;
 ///    <see cref="TrackState.LastFrameIndex"/> 的差 = 本拍应消费的帧数：前面的帧顺序
 ///    解码丢弃、最后一帧发给 UI。60fps 素材在 24fps 拍下每拍消费 2~3 帧，速度精确
 ///    （旧版每拍固定消费 1 帧 = 高帧率素材被慢放 2.5 倍）。
-///  - 落后超过 48 帧（约 2s@24fps）：一次 SeekTo 跳过（顺序解码追不上时的兜底）。
+///  - **追赶有上限**（2026-09-29 实测后收紧，见 <see cref="CatchUpSeekFrames"/> /
+///    <see cref="MaxSkipPerTick"/>）：源帧率远高于显示帧率时（手机视频常见 54fps vs 显示 24fps），
+///    「把中间帧顺序解出来丢掉」的代价是每分钟 54 次解码 —— 单轨就要 0.63 个核，多轨时
+///    解码全在**一条线程上串行**，永远追不上；一旦拍内解码超过拍长就会滚成
+///    「拍越耗时→落后越多→解得越多」的正反馈，投递率崩到 1fps 左右，
+///    表现就是「画面卡住只剩声音」（音频在另一条线程照常走）。
+///    因此落后超过阈值直接 seek 跳过（实测 seek+解一帧 76ms，而硬解 32 帧要 370ms），
+///    并且每拍的解码量封顶，保证单拍耗时可控、绝不雪崩。
 ///  - UI 未消费上帧（<see cref="MarkTrackConsumed"/> 未回）本拍不发帧，队列永不积压。
 ///
 /// 帧回调在播放器线程触发，调用方负责把像素复制到自己的缓冲并把 UI 更新 Post 到 UI 线程。
@@ -62,12 +69,39 @@ internal sealed class VideoProjectPlayer : IDisposable
     private TrackState[] _tracks = [];
     /// <summary>统计日志节流时间戳。</summary>
     private long _lastStatsTimestamp;
+    /// <summary>上一统计周期内的拍耗时累计 / 峰值 / 拍数（诊断「一拍为什么这么慢」）。</summary>
+    private double _tickSumMs;
+    private double _tickMaxMs;
+    private int _tickCount;
     /// <summary>上次音画漂移检查的时间戳。</summary>
     private long _lastAudioSyncCheck;
     /// <summary>音画漂移检查间隔（秒）。</summary>
     private const double AudioSyncCheckSeconds = 5.0;
-    /// <summary>允许的音画偏差（秒）：超过就把音频拉回视频时钟。</summary>
-    private const double AudioSyncToleranceSeconds = 0.15;
+    /// <summary>
+    /// 允许的音画偏差（秒）：超过就把音频拉回视频时钟。
+    /// 别调太小：声卡输出缓冲本身就有 ~0.1s 延迟（实测「声卡位置 vs 渲染位置」恒定偏差 0.12s），
+    /// 容差贴着这个量会被噪声触发，而每次重定位都要丢弃并重开音频源 = 一次可听的断点。
+    /// </summary>
+    private const double AudioSyncToleranceSeconds = 0.30;
+
+    /// <summary>两次音画重定位的最小间隔（秒）：一次重定位会丢掉音频源，别频繁做。</summary>
+    private const double AudioSyncCooldownSeconds = 10.0;
+
+    /// <summary>上次音画重定位的时间戳。</summary>
+    private long _lastAudioResyncTimestamp;
+
+    /// <summary>
+    /// 落后多少帧就改用 seek 跳过（不再顺序解码追赶）。
+    /// 8 帧@24fps ≈ 0.33s：再落后就说明「本拍解码量已经超过拍长」，顺序解码只会雪崩
+    /// （实测 3 轨 × 800px 时单拍解码可涨到 1.1s，投递率崩到 1fps = 画面卡死）。
+    /// </summary>
+    private const int CatchUpSeekFrames = 8;
+
+    /// <summary>
+    /// 每拍单轨最多顺序解码丢弃多少帧（封顶值）。宁可让画面稍微落后于媒体时间，
+    /// 也不能让单拍耗时失控 —— 投递率稳住比「每帧都精确」重要得多。
+    /// </summary>
+    private const int MaxSkipPerTick = 4;
 
     private sealed class TrackState
     {
@@ -355,6 +389,9 @@ internal sealed class VideoProjectPlayer : IDisposable
                 PumpTrack(state, time);
             }
 
+            _tickSumMs += sw.Elapsed.TotalMilliseconds;
+            _tickMaxMs = Math.Max(_tickMaxMs, sw.Elapsed.TotalMilliseconds);
+            _tickCount++;
             LogStats();
             CheckAudioSync(time);
 
@@ -403,12 +440,18 @@ internal sealed class VideoProjectPlayer : IDisposable
             return; // 起播/刚跳转的前几秒缓冲还没填满，位置不可信
         }
 
+        if ((now - _lastAudioResyncTimestamp) / (double)Stopwatch.Frequency < AudioSyncCooldownSeconds)
+        {
+            return; // 冷却中：别把重定位当常规操作做（每次都要重开音频源）
+        }
+
         var drift = _mixer.AudibleTime - time;
         if (Math.Abs(drift) <= AudioSyncToleranceSeconds)
         {
             return;
         }
 
+        _lastAudioResyncTimestamp = now;
         Log($"音画漂移 {drift:+0.###;-0.###}s → 音频重定位到 {time:0.###}s");
         _mixer.Seek(time);
     }
@@ -468,22 +511,24 @@ internal sealed class VideoProjectPlayer : IDisposable
                 return; // 还没到下一帧时间（低帧率素材隔拍显示，防快放）。
             }
 
-            if (behind > 48)
+            if (behind > CatchUpSeekFrames)
             {
-                // 落后约 2s 以上（大跳/解码长期跟不上）：一次 seek 跳过，避免顺序解码永远追不上。
+                // 落后约 0.33s 以上（大跳 / 源帧率远高于显示帧率）：一次 seek 跳过，
+                // 别顺序解码追赶 —— 实测顺序解一帧 11.6ms、seek+解一帧 76ms，
+                // 而硬解 32 帧要 370ms；「解码丢弃」把整拍吃光就是画面卡死的根因。
                 if (state.Source.SeekTo(mediaTime))
                 {
                     state.LastFrameIndex = targetN;
                     state.SeekCount++;
-                    Log($"轨{state.Track} 落后{behind}帧 → seek 到 {mediaTime:0.##}s");
                     return;
                 }
 
-                behind = 48; // seek 失败退化为顺序快进。
+                behind = MaxSkipPerTick + 1; // seek 失败退化为有限度的顺序快进。
             }
 
             // 顺序消费 behind 帧：前 behind-1 帧丢弃（每帧几毫秒），最后一帧发给 UI。
-            var skip = (int)Math.Min(behind - 1, 32);
+            // skip 封顶（见 MaxSkipPerTick）：单拍解码量可控，落后就靠下一拍的 seek 收敛。
+            var skip = (int)Math.Min(behind - 1, MaxSkipPerTick);
             for (var i = 0; i < skip; i++)
             {
                 state.SkippedFrames++;
@@ -505,6 +550,12 @@ internal sealed class VideoProjectPlayer : IDisposable
                 // LastFrameIndex 反映实际消费量（落后多时 targetN 一次追不完，下拍继续）。
                 state.LastFrameIndex = Math.Min(state.LastFrameIndex + skip + 1, targetN);
                 state.ShownFrames++;
+                // ⚠️ **必须先把消费门复位、再调回调**。反过来写会丢信号：回调里把帧交给 UI 后，
+                // UI 线程可能在 `_onFrame` 返回**之前**就消费完并调 MarkTrackConsumed（Set），
+                // 随后这里的 Reset 会把这个 Set 抹掉 —— 此后没有任何人来 Set，
+                // 该轨 `!Consumed.IsSet` 恒成立 = **永久停止投递**（片段不换就一直不动），
+                // 表现就是「画面突然卡住、只剩声音在走」。2026-09-29 压力测试复现。
+                state.Consumed.Reset();
                 try
                 {
                     _onFrame(frame, state.ActiveClip, state.Track);
@@ -514,8 +565,11 @@ internal sealed class VideoProjectPlayer : IDisposable
                     // 调用方异常不中断播放。
                 }
 
-                state.Consumed.Reset();
-                state.Consumed.Wait(150);
+                // 只等极短时间：这个等待是「让 UI 在拍内消化完」的延迟优化，
+                // 真正的防覆写判断在下一拍的 `!Consumed.IsSet → return`。
+                // 别等久（曾 150ms）：pump 是逐轨串行跑的，3 轨 + UI 忙时一拍会被拖到 450ms，
+                // 投递率直接掉到 1fps（压力测试实测）。UI 慢就让这一轨本拍不出帧即可。
+                state.Consumed.Wait(5);
             }
             else
             {
@@ -530,6 +584,8 @@ internal sealed class VideoProjectPlayer : IDisposable
             if (state.OverlayFrame != null)
             {
                 state.OverlaySent = true;
+                // 同样的顺序要求：先复位消费门再回调（见上面视频分支的说明），否则丢信号后永久不投递。
+                state.Consumed.Reset();
                 try
                 {
                     _onFrame(state.OverlayFrame, state.ActiveClip, state.Track);
@@ -539,8 +595,7 @@ internal sealed class VideoProjectPlayer : IDisposable
                     // 调用方异常不中断播放。
                 }
 
-                state.Consumed.Reset();
-                state.Consumed.Wait(300);
+                state.Consumed.Wait(5);
             }
         }
     }
@@ -567,10 +622,46 @@ internal sealed class VideoProjectPlayer : IDisposable
         }
 
         _lastStatsTimestamp = now;
+        var tick = _tickCount > 0
+            ? $"拍 均{_tickSumMs / _tickCount:0.#}ms/峰{_tickMaxMs:0.#}ms（{_tickCount} 次/{_tickSumMs / 1000:0.#}s） | "
+            : string.Empty;
+        _tickSumMs = 0;
+        _tickMaxMs = 0;
+        _tickCount = 0;
         var parts = _tracks.Select(t =>
             $"轨{t.Track}={t.ActiveClip?.Kind ?? "-"} 显{t.ShownFrames} 丢{t.SkippedFrames} seek{t.SeekCount}" +
-            (t.Eof ? "[EOF]" : ""));
-        Log($"t={CurrentTime:0.##}s | {string.Join(" | ", parts)}");
+            $"[{IdleReason(t)}]");
+        Log($"t={CurrentTime:0.##}s | {tick}{string.Join(" | ", parts)}");
+    }
+
+    /// <summary>
+    /// 该轨当前「没在投递帧」的原因（进日志，一行定位）。
+    /// 「画面卡住只剩声音」这类问题必须一眼看出卡在哪一环：没片段 / 没解码器 / 到尾巴 /
+    /// 在等 UI 消化上一帧（UI 线程忙）/ 解码追不上。
+    /// </summary>
+    private static string IdleReason(TrackState t)
+    {
+        if (t.ActiveClip == null)
+        {
+            return "此刻无片段";
+        }
+
+        if (t.ActiveClip.Kind != "Video")
+        {
+            return t.OverlaySent ? "覆盖层已发" : "覆盖层待发";
+        }
+
+        if (t.Source == null)
+        {
+            return "无解码器";
+        }
+
+        if (t.Eof)
+        {
+            return "源已播完";
+        }
+
+        return t.Consumed.IsSet ? "正常" : "等UI消化";
     }
 
     /// <summary>
