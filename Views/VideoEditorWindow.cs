@@ -5,6 +5,8 @@ using Avalonia.Animation;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
+using Avalonia.Interactivity;
+using Avalonia.VisualTree;
 // Shapes 命名空间与 System.IO.Path 冲突，只取需要的类型。
 using Ellipse = Avalonia.Controls.Shapes.Ellipse;
 using Avalonia.Layout;
@@ -552,6 +554,16 @@ internal sealed class VideoEditorWindow : MyWindow
         Background = Brushes.Transparent,
         BorderThickness = new Thickness(0)
     };
+    /// <summary>时间轴上方工具条：定格（把播放头处的画面做成图片片段）。仅选中视频片段时可用。</summary>
+    private readonly Button _freezeButton = new()
+    {
+        Content = new IconText { Glyph = "\uE391", Text = "" },
+        Padding = new Thickness(6, 3),
+        MinWidth = 28,
+        Background = Brushes.Transparent,
+        BorderThickness = new Thickness(0),
+        IsEnabled = false
+    };
     /// <summary>时间轴工具：false=选择工具(A)，true=分割工具(B)。</summary>
     private bool _splitTool;
     /// <summary>时间轴工具下拉（最左，默认选择工具）。</summary>
@@ -722,10 +734,13 @@ internal sealed class VideoEditorWindow : MyWindow
             _assetMenu.Items.Add(remove);
         };
         // 快捷键：空格 = 播放/暂停，Delete/Backspace = 删除选中片段，Ctrl+Z/Y = 撤销/重做，
-        // Ctrl+C/V = 复制/粘贴片段（焦点在文本输入框时不拦截）。
-        KeyDown += (_, e) =>
+        // Ctrl+C/V = 复制/粘贴片段。
+        // ⚠️ 必须挂在**隧道（Tunnel）阶段**并标 Handled：按钮/开关/下拉在冒泡阶段会先吃掉空格
+        // （Button 触发 Click、ToggleSwitch 切换），挂冒泡就变成"空格看焦点行事"了。
+        // 唯一例外是用户正在打字：焦点在文本框（含数字框、字体下拉内部的编辑框）或对话框里时全部放行。
+        AddHandler(KeyDownEvent, (_, e) =>
         {
-            if (TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement() is TextBox)
+            if (IsKeyboardInputFocused())
             {
                 return;
             }
@@ -801,7 +816,7 @@ internal sealed class VideoEditorWindow : MyWindow
                     e.Handled = true;
                     break;
             }
-        };
+        }, RoutingStrategies.Tunnel);
         // 播放时钟：轮询播放器当前时间驱动播放头与时间码；顺带监听动态主题强调色变化。
         _clockTimer.Tick += (_, _) =>
         {
@@ -992,6 +1007,8 @@ internal sealed class VideoEditorWindow : MyWindow
         ToolTip.SetTip(_cutButton, "刀片切割：在播放头位置切割片段（有选中时只切选中的片段，否则切所有覆盖该时刻的片段）");
         ToolTip.SetTip(_deleteButton, "删除选中片段");
         ToolTip.SetTip(_canvasButton, "自定义画幅：修改输出宽高");
+        _freezeButton.Click += (_, _) => FreezeFrame();
+        ToolTip.SetTip(_freezeButton, "定格：把播放头处的画面定格成一张图片片段（需先选中视频片段）");
         // 素材列表按住拖出 → 拖到时间轴指定轨道/位置（更符合人类操作习惯）。
         _assetList.PointerMoved += (_, e) => StartAssetDrag(e);
 
@@ -1440,7 +1457,7 @@ internal sealed class VideoEditorWindow : MyWindow
             Orientation = Orientation.Horizontal,
             Spacing = 4,
             VerticalAlignment = VerticalAlignment.Center,
-            Children = { _timelineToolCombo, _cutButton, _deleteButton, _canvasButton, _statusText }
+            Children = { _timelineToolCombo, _cutButton, _deleteButton, _canvasButton, _freezeButton, _statusText }
         };
         var zoomControls = new StackPanel
         {
@@ -2148,6 +2165,219 @@ internal sealed class VideoEditorWindow : MyWindow
                 InspectorRow("", _detachAudioButton)
             }
         };
+    }
+
+    /// <summary>
+    /// 定格：把播放头处的画面截成一张图片片段。
+    /// <para>
+    /// 取的是**选中视频片段**在该时刻的帧（按片段速度换算成素材时间；播放头不在片段内时取最近画面），
+    /// 并把该片段当前的变换（缩放/位置/旋转/裁切/不透明度/灰度/翻转）复制到新图片片段上 ——
+    /// 画面构图与视频完全一致，可直接拉长做「暂停」效果。
+    /// 新片段放在最上方的新轨道：与视频片段同轨会重叠而被自动挪位，用户会以为没生效。
+    /// </para>
+    /// </summary>
+    private async void FreezeFrame()
+    {
+        if (_selected is not { Kind: "Video" } clip || string.IsNullOrWhiteSpace(clip.SourcePath))
+        {
+            _statusText.Text = "先选中一个视频片段再定格。";
+            return;
+        }
+
+        var local = _playheadTime - clip.StartTime;
+        var clamped = Math.Clamp(local, 0, Math.Max(0, clip.Duration - 0.001));
+        var mediaTime = clip.SourceTimeAt(clamped);
+        var outside = Math.Abs(clamped - local) > 0.001;
+
+        _statusText.Text = "正在取帧…";
+        _freezeButton.IsEnabled = false;
+        var png = await Task.Run(() => CaptureFramePng(clip, mediaTime));
+        if (png == null)
+        {
+            _statusText.Text = "定格失败：取不到该时刻的画面。";
+            _freezeButton.IsEnabled = true;
+            return;
+        }
+
+        var freeze = new VideoClip
+        {
+            Kind = "Image",
+            SourcePath = png,
+            // 放在最上方的新轨道：同轨会与视频片段重叠，规则会把它挪到别处。
+            Track = _project.TrackCount,
+            StartTime = Math.Max(0, _playheadTime),
+            InPoint = 0,
+            OutPoint = 5,
+            SourceDuration = 5,
+            // 复制变换：定格画面与视频的构图一致（之后可自由改）。
+            Scale = clip.Scale,
+            ScaleX = clip.ScaleX,
+            ScaleY = clip.ScaleY,
+            OffsetX = clip.OffsetX,
+            OffsetY = clip.OffsetY,
+            Rotation = clip.Rotation,
+            Opacity = clip.Opacity,
+            CropLeft = clip.CropLeft,
+            CropTop = clip.CropTop,
+            CropRight = clip.CropRight,
+            CropBottom = clip.CropBottom,
+            Grayscale = clip.Grayscale,
+            FlipH = clip.FlipH,
+            FlipV = clip.FlipV
+        };
+
+        PushUndo();
+        _project.Clips.Add(freeze);
+        // 定格图也进素材库：以后可以直接拖回时间轴复用。
+        if (!_project.Assets.Any(a => string.Equals(a.Path, png, StringComparison.OrdinalIgnoreCase)))
+        {
+            _project.Assets.Add(new ProjectAsset
+            {
+                Path = png,
+                Name = Path.GetFileName(png),
+                Kind = "Image",
+                Duration = 5
+            });
+        }
+
+        _selected = freeze;
+        _selectedClips.Clear();
+        _selectedClips.Add(freeze);
+        RefreshTimeline();
+        RefreshAssetList();
+        FillPropertyPanel();
+        UpdateAllBlockSelection();
+        ScheduleSave();
+        EnsureClipVisible(freeze);
+        EditorLog($"FREEZE 定格 {Path.GetFileName(clip.SourcePath)}@{mediaTime:0.###}s → {Path.GetFileName(png)}");
+        _statusText.Text = outside
+            ? "已定格（播放头不在该片段内，取了最近的画面），新图片放在最上方新轨道。"
+            : "已定格，新图片片段放在最上方新轨道（时长 5s，可拖动/拉长）。";
+    }
+
+    /// <summary>
+    /// 帧的真实（未做 16 对齐填充的）尺寸：按 <see cref="FFmpegVideoDecoder"/> 的缩放口径复算 ——
+    /// 只有长边超过 maxDimension 才缩小、且偶数对齐；16 对齐是解码器为宏块补的，显示/存图都不要它。
+    /// </summary>
+    private static (int W, int H) LogicalFrameSize(VideoFrameSource source, VideoFrame frame)
+    {
+        var (srcW, srcH) = source.SourceSize;
+        if (srcW <= 0 || srcH <= 0)
+        {
+            return (frame.Width, frame.Height);
+        }
+
+        var w = srcW;
+        var h = srcH;
+        if (Math.Max(srcW, srcH) > FreezeMaxDimension)
+        {
+            var scale = (double)FreezeMaxDimension / Math.Max(srcW, srcH);
+            w = Math.Max(2, (int)(srcW * scale)) & ~1;
+            h = Math.Max(2, (int)(srcH * scale)) & ~1;
+        }
+
+        // 兜底：不能超过帧缓冲本身。
+        return (Math.Min(w, frame.Width), Math.Min(h, frame.Height));
+    }
+
+    /// <summary>定格取帧的长边上限（与 <see cref="CaptureFramePng"/> 里 Open 用的一致）。</summary>
+    private const int FreezeMaxDimension = 1920;
+
+    /// <summary>把片段在指定素材时间的一帧解码出来写成 PNG（定格用）。失败返回 null。路径在配置目录 frames 下。</summary>
+    private string? CaptureFramePng(VideoClip clip, double mediaTime)
+    {
+        try
+        {
+            if (!FFmpegRuntime.IsAvailable || !FFmpegRuntime.EnsureLoaded())
+            {
+                return null;
+            }
+
+            using var source = new VideoFrameSource();
+            // 定格图可能被放大使用，取帧尺寸尽量大（上限 1920 长边）。
+            if (!source.Open(clip.SourcePath, FreezeMaxDimension))
+            {
+                return null;
+            }
+
+            if (mediaTime > 0.01)
+            {
+                source.SeekTo(mediaTime);
+            }
+
+            if (!source.TryReadFrame(out var frame) || frame == null)
+            {
+                return null;
+            }
+
+            var dir = Path.Combine(InjectorRuntime.ConfigDirectory, "frames");
+            Directory.CreateDirectory(dir);
+            var stamp = DateTime.Now.ToString("HHmmssfff");
+            var name = $"{Path.GetFileNameWithoutExtension(clip.SourcePath)}_{mediaTime:0.00}s_{stamp}.png";
+            foreach (var bad in Path.GetInvalidFileNameChars())
+            {
+                name = name.Replace(bad, '_');
+            }
+
+            var path = Path.Combine(dir, name);
+            // ⚠️ 解码输出尺寸被向上对齐到 16（H.264 宏块，见 FFmpegVideoDecoder.AlignUp16），
+            // 于是帧缓冲比真实画面多出最多 15 行/列。定格图要裁回**逻辑尺寸**，否则图片底部会留一条边条。
+            var (logicalW, logicalH) = LogicalFrameSize(source, frame);
+            using (var bmp = new System.Drawing.Bitmap(logicalW, logicalH,
+                       System.Drawing.Imaging.PixelFormat.Format32bppArgb))
+            {
+                var bits = bmp.LockBits(
+                    new System.Drawing.Rectangle(0, 0, logicalW, logicalH),
+                    System.Drawing.Imaging.ImageLockMode.WriteOnly,
+                    System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                try
+                {
+                    // 帧缓冲是自上而下的 BGRA，行距 = 帧宽 × 4（可能含右侧对齐列）。
+                    var srcStride = frame.Width * 4;
+                    var rowBytes = logicalW * 4;
+                    for (var y = 0; y < logicalH; y++)
+                    {
+                        Marshal.Copy(frame.Pixels, y * srcStride, bits.Scan0 + y * bits.Stride, rowBytes);
+                    }
+                }
+                finally
+                {
+                    bmp.UnlockBits(bits);
+                }
+
+                bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+            }
+
+            return path;
+        }
+        catch (Exception ex)
+        {
+            EditorLog($"FREEZE 取帧失败：{ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 焦点是否落在「需要按键输入的控件」上：文本框（含数字框 / 字体下拉内部的编辑框）、对话框。
+    /// 命中时全局快捷键（空格播放暂停、Delete 删片段、A/B 切工具等）一律放行，
+    /// 否则用户打字时会被快捷键吃掉按键。
+    /// </summary>
+    private bool IsKeyboardInputFocused()
+    {
+        if (TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement() is not Visual focused)
+        {
+            return false;
+        }
+
+        for (Visual? v = focused; v != null; v = v.GetVisualParent())
+        {
+            if (v is TextBox or AutoCompleteBox or ContentDialog)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>刷新滑条右侧的数值读数与速度说明（拖动与回填都要调）。</summary>
@@ -6187,6 +6417,9 @@ internal sealed class VideoEditorWindow : MyWindow
             // 分离音频只对视频片段有意义（图片/文本/形状/滤镜没有声音，音频片段本身已经是音频）。
             _detachAudioButton.IsVisible = clip is { Kind: "Video" };
             _detachAudioButton.IsEnabled = _detachAudioButton.IsVisible;
+            // 定格只对视频片段有意义（要有可解码的帧）。
+            _freezeButton.IsEnabled = clip is { Kind: "Video" } &&
+                                      !string.IsNullOrWhiteSpace(clip.SourcePath);
             UpdateAudioHint(clip, audioCapable);
             // 音频分段页：只有「有声音的片段」（音频片段 / 视频片段原声）才显示该 Tab。
             _segmentButtons["audio"].IsVisible = audioCapable;
