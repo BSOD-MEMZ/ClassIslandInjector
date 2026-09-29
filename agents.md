@@ -78,6 +78,9 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
 - 现有回归探针（都是独立项目，用 `dotnet run -c Release` 直接跑，**不需要宿主 GUI**）：
   - `tools\AudioProbe`：无参=解音频轨并写 wav（`--play` 顺带测设备输出）；`--project`=工程 v2 格式往返与迁移校验（22 项）；`--vdec <视频> <ffmpeg库目录>`=用插件自己的 `FFmpegVideoDecoder` 完整解一遍视频，用于定位「解码侧」问题（区分「文件/解码坏了」与「渲染侧崩了」）。
   - `tools\FFmpegProbe`：`--enc` 生成对照 mp4（尺寸写在 `EncodeTest` 里的 `const int w/h`，排查尺寸相关崩溃时临时改），无参=解若干帧。
+  - `tools\RaceProbe`：`RaceProbe.exe [视频] [FFmpeg库目录]` = 「解码线程正在 `ReadFrame` 时另一线程 `Dispose`」的竞态回归（5 轮）。
+    守护的是这个坑：**释放解码器必须先 `Join` 播放线程、且 `ReadFrame`/`SeekTo`/`Restart` 与 `Dispose` 共用 `FFmpegVideoDecoder._gate` 互斥**，
+    否则 native 上下文被 free 后继续读 → `AccessViolationException`(0xc0000005) 静默击穿宿主进程（点「渲染并应用」第一步 `StopPreview` 就会踩到）。
   - 探针跑通 **不等于** 宿主里不出问题——很多崩溃只在「解码帧进 Avalonia 渲染层」之后才发生（见约束 9 的 16 对齐）。
 
 ### 3. Avalonia 派生控件必须覆写 `StyleKeyOverride`

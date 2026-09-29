@@ -359,6 +359,20 @@ internal sealed class VideoProjectPlayer : IDisposable
             }
             // 拍超耗时（解码慢）不补偿到时钟：墙钟永远按真实时间走，画面靠丢帧追赶。
         }
+
+        // 退出前收尾：若 Dispose 已经在等（或被超时放弃），解码器由**本线程**释放 ——
+        // 只有在这里释放才能保证「释放时不会有人正在读它」。Dispose 侧的 3s Join 超时后
+        // 就是靠这条路径兜底（否则要么泄漏，要么释放竞态击穿进程）。
+        if (_disposed)
+        {
+            foreach (var state in _tracks)
+            {
+                state.Source?.Dispose();
+                state.Source = null;
+            }
+
+            Log("播放线程退出：已释放各轨解码器");
+        }
     }
 
     /// <summary>单轨调度：按墙钟对应的目标帧号消费帧（前面丢弃、最后一帧显示）。</summary>
@@ -577,15 +591,35 @@ internal sealed class VideoProjectPlayer : IDisposable
     {
         _disposed = true;
         _running = false;
+        // 先解除帧消费等待，让播放线程尽快走到退出点（它此刻可能正卡在 Consumed.Wait 里）。
         foreach (var state in _tracks)
         {
-            state.Consumed.Set(); // 解除等待
+            state.Consumed.Set();
+        }
+
+        // ⚠️ **必须先等线程退出，再释放解码器**。旧实现先 `state.Source.Dispose()` 再 Join：
+        // 线程可能正卡在 FFmpegVideoDecoder.ReadFrame 里读那一路解码器，native 上下文被 free 掉
+        // 之后继续读 → `System.AccessViolationException`（0xc0000005，coreclr.dll）
+        // 直接击穿进程、托管层完全抓不到，表现为「点渲染并应用 → 卡死 → 静默崩溃」
+        // （点渲染第一步就是 StopPreview → 这里）。
+        _worker?.Join(3000);
+        if (_worker is { IsAlive: true })
+        {
+            // 线程还卡在解码 / seek 里（大文件慢解、机械盘）：此时**绝不能**释放解码器，
+            // 交给线程自己在退出前收尾（见 Loop 退出路径），本轮只放掉与它无关的音频输出。
+            Log("播放线程未在 3s 内退出：解码器交给线程自行释放（避免释放竞态击穿进程）");
+            _worker = null;
+            _mixer.Dispose();
+            return;
+        }
+
+        _worker = null;
+        foreach (var state in _tracks)
+        {
             state.Source?.Dispose();
             state.Source = null;
         }
 
-        _worker?.Join(800);
-        _worker = null;
         _mixer.Dispose();
     }
 }

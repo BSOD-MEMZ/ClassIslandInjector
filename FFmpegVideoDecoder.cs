@@ -50,6 +50,10 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
     private AVPixelFormat _swsInFormat;
     /// <summary>硬件解码是否激活（Open 内部状态，失败回退软解时清除）。</summary>
     private bool _hwActive;
+    /// <summary>ReadFrame 与 Dispose 的互斥门：防止「解码中释放」造成 native 上下文被 free 后继续读。</summary>
+    private readonly object _gate = new();
+    /// <summary>已释放（Dispose 幂等 + ReadFrame 早退，避免踩已 free 的指针）。</summary>
+    private bool _disposed;
 
     /// <summary>输出帧宽（BGRA）。</summary>
     public int OutputWidth => _outW;
@@ -253,7 +257,19 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
     public bool ReadFrame(out byte[] pixels)
     {
         pixels = _bgra!;
-        if (_fmtCtx == null || _codecCtx == null || _sws == null || _pkt == null || _frame == null || _bgra == null)
+        // 与 Dispose 互斥：Dispose 可能在另一线程（UI 线程停止预览）与解码线程并发。
+        // 没有这道门就可能「进入本方法 → native 上下文被 free → 继续读」→
+        // AccessViolationException(0xc0000005) 击穿进程（托管层抓不到，表现为静默崩溃）。
+        lock (_gate)
+        {
+            return ReadFrameLocked(out pixels);
+        }
+    }
+
+    private bool ReadFrameLocked(out byte[] pixels)
+    {
+        pixels = _bgra!;
+        if (_disposed || _fmtCtx == null || _codecCtx == null || _sws == null || _pkt == null || _frame == null || _bgra == null)
         {
             return false;
         }
@@ -316,6 +332,15 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
         }
     }
 
+    /// <summary>在互斥门下执行（与 Dispose 互斥；native 调用期间绝不允许释放上下文）。</summary>
+    private bool RunGated(Func<bool> action)
+    {
+        lock (_gate)
+        {
+            return _disposed ? false : action();
+        }
+    }
+
     /// <summary>向上对齐到 16 的倍数（H.264 宏块尺寸）。见 <see cref="Open"/> 里的说明。</summary>
     private static int AlignUp16(int value) => (value + 15) / 16 * 16;
 
@@ -328,9 +353,11 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
     };
 
     /// <summary>循环播放：seek 回开头并刷新解码器缓冲。</summary>
-    public bool Restart()
+    public bool Restart() => RunGated(RestartLocked);
+
+    private bool RestartLocked()
     {
-        if (_fmtCtx == null || _codecCtx == null)
+        if (_disposed || _fmtCtx == null || _codecCtx == null)
         {
             return false;
         }
@@ -355,9 +382,11 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
     }
 
     /// <summary>跳到指定时间点（秒），供视频片段入点裁剪。用视频流的 time_base 换算 timestamp。</summary>
-    public bool SeekTo(double seconds)
+    public bool SeekTo(double seconds) => RunGated(() => SeekToLocked(seconds));
+
+    private bool SeekToLocked(double seconds)
     {
-        if (_fmtCtx == null || _codecCtx == null || _streamIndex < 0)
+        if (_disposed || _fmtCtx == null || _codecCtx == null || _streamIndex < 0)
         {
             return false;
         }
@@ -366,7 +395,7 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
         {
             if (seconds <= 0)
             {
-                return Restart();
+                return RestartLocked();
             }
 
             var stream = _fmtCtx->streams[_streamIndex];
@@ -396,6 +425,22 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
     }
 
     public void Dispose()
+    {
+        // 与 ReadFrame 互斥（见 ReadFrame 的说明）：持有门期间释放 native 上下文，
+        // 就不会出现「解码线程正在用 → 这边 free 掉」的释放竞态。
+        lock (_gate)
+        {
+            if (_disposed)
+            {
+                return; // 幂等：重复释放（玩家与帧源都可能调到）直接返回
+            }
+
+            _disposed = true;
+            DisposeLocked();
+        }
+    }
+
+    private void DisposeLocked()
     {
         try
         {

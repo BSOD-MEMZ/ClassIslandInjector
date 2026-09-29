@@ -32,6 +32,8 @@
 - 目标框架锁定 `net8.0-windows10.0.19041.0`（必须与宿主的 WinRT SDK 对齐）
 - Avalonia 派生控件必须覆写 `StyleKeyOverride`
 - 判断 SMTC 焦点会话必须用 `SourceAppUserModelId` 字符串比较，不能用 `ReferenceEquals`
+- **FFmpeg native 上下文（AVCodecContext/SwsContext/AVFormatContext）的释放规则**：①先停线程并 `Join`；②释放要与「可能正在用它做 native 调用的入口」互斥。`FFmpegVideoDecoder` 用 `_gate` 把 `ReadFrame`/`SeekTo`/`Restart` 与 `Dispose` 串起来；持有者（`VideoProjectPlayer`）必须先 Join 再释放各轨 Source。违反任一条 → `sws_scale`/`ReadFrame` 读已释放内存 → `AccessViolationException`(0xc0000005) **静默击穿宿主进程**（无托管异常、无 crash.log，只有事件日志里 `coreclr.dll` + `Application Error`）。回归探针：`tools\RaceProbe`。
+- **排查「静默崩溃」用**：`wevtutil qe Application /c:15 /rd:true /f:text /q:"*[System[Provider[@Name='.NET Runtime']]]"`（给出异常类型 + 完整托管栈，比 Application Error 的单行有用得多）。
 - **FFmpeg 解码输出尺寸必须向上对齐到 16**（H.264 宏块；`FFmpegVideoDecoder.AlignUp16`）。非 16 倍数的尺寸（如 412×68）会让 `sws_scale` 越界写坏托管堆，随后以 `coreclr.dll` + `0xc0000005` **静默击穿进程**，无任何托管异常可抓。详见 `agents.md` 第 9 节。
 
 ## 调试与排查（沙箱环境）
