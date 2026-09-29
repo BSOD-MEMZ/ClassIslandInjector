@@ -5,8 +5,6 @@ using Avalonia.Animation;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
-using Avalonia.Interactivity;
-using Avalonia.VisualTree;
 // Shapes 命名空间与 System.IO.Path 冲突，只取需要的类型。
 using Ellipse = Avalonia.Controls.Shapes.Ellipse;
 using Avalonia.Layout;
@@ -772,13 +770,12 @@ internal sealed class VideoEditorWindow : MyWindow
             _assetMenu.Items.Add(remove);
         };
         // 快捷键：空格 = 播放/暂停，Delete/Backspace = 删除选中片段，Ctrl+Z/Y = 撤销/重做，
-        // Ctrl+C/V = 复制/粘贴片段。
-        // ⚠️ 必须挂在**隧道（Tunnel）阶段**并标 Handled：按钮/开关/下拉在冒泡阶段会先吃掉空格
-        // （Button 触发 Click、ToggleSwitch 切换），挂冒泡就变成"空格看焦点行事"了。
-        // 唯一例外是用户正在打字：焦点在文本框（含数字框、字体下拉内部的编辑框）或对话框里时全部放行。
-        AddHandler(KeyDownEvent, (_, e) =>
+        // Ctrl+C/V = 复制/粘贴片段（焦点在文本输入框时不拦截）。
+        // 注意：这是冒泡阶段的窗口级处理器，焦点在按钮/开关/下拉上时控件会先吃掉空格
+        // （Button 触发 Click、ToggleSwitch 切换）—— 这是 Avalonia 的默认行为，保留。
+        KeyDown += (_, e) =>
         {
-            if (IsKeyboardInputFocused())
+            if (TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement() is TextBox)
             {
                 return;
             }
@@ -854,7 +851,7 @@ internal sealed class VideoEditorWindow : MyWindow
                     e.Handled = true;
                     break;
             }
-        }, RoutingStrategies.Tunnel);
+        };
         // 编辑器打开期间挂起主界面底图的视频解码：低配机器上「编辑器预览 + 主界面底图」
         // 两路全尺寸解码 + 两处贴图会把核心抢满（预览卡顿、声音断续的主要来源之一）。
         Opened += (_, _) => InjectorRuntime.SuspendBackgroundPlayback(true);
@@ -2408,29 +2405,6 @@ internal sealed class VideoEditorWindow : MyWindow
             EditorLog($"FREEZE 取帧失败：{ex.Message}");
             return null;
         }
-    }
-
-    /// <summary>
-    /// 焦点是否落在「需要按键输入的控件」上：文本框（含数字框 / 字体下拉内部的编辑框）、对话框。
-    /// 命中时全局快捷键（空格播放暂停、Delete 删片段、A/B 切工具等）一律放行，
-    /// 否则用户打字时会被快捷键吃掉按键。
-    /// </summary>
-    private bool IsKeyboardInputFocused()
-    {
-        if (TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement() is not Visual focused)
-        {
-            return false;
-        }
-
-        for (Visual? v = focused; v != null; v = v.GetVisualParent())
-        {
-            if (v is TextBox or AutoCompleteBox or ContentDialog)
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /// <summary>刷新滑条右侧的数值读数与速度说明（拖动与回填都要调）。</summary>
