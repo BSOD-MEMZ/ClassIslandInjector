@@ -74,6 +74,22 @@ internal sealed class VideoFrameSource : IDisposable
     /// <summary>请求后台线程尽快退出（不 Join；资源由 Dispose 释放）。</summary>
     public void Stop() => _running = false;
 
+    /// <summary>是否处于挂起（不解码、不回调，解码器与位置都保留）。</summary>
+    private volatile bool _suspended;
+
+    /// <summary>
+    /// 挂起 / 恢复解码线程：编辑器打开时挂起主界面底图用 —— 低配机器上「预览 + 底图」两路解码
+    /// 加两处贴图会互相抢核，表现为预览卡顿、声音断续。挂起期间不消耗 CPU，恢复后从原位置继续。
+    /// </summary>
+    public void SetSuspended(bool suspended)
+    {
+        _suspended = suspended;
+        if (!suspended)
+        {
+            _uiConsumed.Set(); // 唤醒等待中的线程
+        }
+    }
+
     /// <summary>UI 线程处理完当前帧后调用，允许后台线程写入下一帧。</summary>
     public void MarkFrameConsumed() => _uiConsumed.Set();
 
@@ -84,6 +100,12 @@ internal sealed class VideoFrameSource : IDisposable
         var sw = new Stopwatch();
         while (_running)
         {
+            if (_suspended)
+            {
+                Thread.Sleep(50); // 挂起：不动解码器，等恢复
+                continue;
+            }
+
             sw.Restart();
             if (!ReadNextFrame())
             {

@@ -324,6 +324,22 @@ internal static class InjectorRuntime
         });
     }
 
+    /// <summary>
+    /// 挂起 / 恢复主界面底图解码（编辑器打开时挂起，省 CPU）。
+    /// 未附着 / 未启用底图时是空操作。
+    /// </summary>
+    public static void SuspendBackgroundPlayback(bool suspend)
+    {
+        try
+        {
+            _injector?.SuspendBackgroundPlayback(suspend);
+        }
+        catch
+        {
+            // 与编辑器无关的失败一律吞掉。
+        }
+    }
+
     /// <summary>当前 ClassIsland 宿主版本号（供对照表匹配与展示）。</summary>
     public static string HostVersion => ContractCatalogService.GetHostVersion();
 

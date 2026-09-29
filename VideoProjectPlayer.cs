@@ -62,6 +62,12 @@ internal sealed class VideoProjectPlayer : IDisposable
     private TrackState[] _tracks = [];
     /// <summary>统计日志节流时间戳。</summary>
     private long _lastStatsTimestamp;
+    /// <summary>上次音画漂移检查的时间戳。</summary>
+    private long _lastAudioSyncCheck;
+    /// <summary>音画漂移检查间隔（秒）。</summary>
+    private const double AudioSyncCheckSeconds = 5.0;
+    /// <summary>允许的音画偏差（秒）：超过就把音频拉回视频时钟。</summary>
+    private const double AudioSyncToleranceSeconds = 0.15;
 
     private sealed class TrackState
     {
@@ -189,6 +195,7 @@ internal sealed class VideoProjectPlayer : IDisposable
         }
 
         _running = true;
+        _lastAudioSyncCheck = Stopwatch.GetTimestamp();
         _worker = new Thread(Loop) { IsBackground = true, Name = "VideoProject" };
         _worker.Start();
         // 音频与视频共用同一工程时间轴，一起从 0 起播（没有音频内容时内部直接返回 false）。
@@ -269,6 +276,7 @@ internal sealed class VideoProjectPlayer : IDisposable
         {
             _seekTo = Math.Max(0, time);
             _seekRequested = true;
+            _lastAudioSyncCheck = Stopwatch.GetTimestamp(); // 跳转后重新计时（缓冲需要时间跟上）
         }
     }
 
@@ -348,6 +356,7 @@ internal sealed class VideoProjectPlayer : IDisposable
             }
 
             LogStats();
+            CheckAudioSync(time);
 
             if (intervalMs > 0)
             {
@@ -373,6 +382,35 @@ internal sealed class VideoProjectPlayer : IDisposable
 
             Log("播放线程退出：已释放各轨解码器");
         }
+    }
+
+    /// <summary>
+    /// 音画漂移校正：视频走系统墙钟、音频走声卡采样时钟，长视频里两者差 0.1% 也会累积成
+    /// 肉眼可见的不同步（266s 的时间轴差 0.1% ≈ 0.27s）。每 5s 比一次「声卡可听位置」与墙钟，
+    /// 超过 0.15s 就把音频重定位回墙钟（一次轻微重定位，比持续错位好）。
+    /// </summary>
+    private void CheckAudioSync(double time)
+    {
+        var now = Stopwatch.GetTimestamp();
+        if ((now - _lastAudioSyncCheck) / (double)Stopwatch.Frequency < AudioSyncCheckSeconds)
+        {
+            return;
+        }
+
+        _lastAudioSyncCheck = now;
+        if (time < 2.0 || !_mixer.IsRunning)
+        {
+            return; // 起播/刚跳转的前几秒缓冲还没填满，位置不可信
+        }
+
+        var drift = _mixer.AudibleTime - time;
+        if (Math.Abs(drift) <= AudioSyncToleranceSeconds)
+        {
+            return;
+        }
+
+        Log($"音画漂移 {drift:+0.###;-0.###}s → 音频重定位到 {time:0.###}s");
+        _mixer.Seek(time);
     }
 
     /// <summary>单轨调度：按墙钟对应的目标帧号消费帧（前面丢弃、最后一帧显示）。</summary>

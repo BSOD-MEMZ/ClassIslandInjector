@@ -34,9 +34,41 @@ internal sealed class VideoEditorWindow : MyWindow
 {
     public static VideoEditorWindow? Current { get; private set; }
 
-    /// <summary>预览解码降采样上限（舞台显示尺寸远小于此；1280 时 UI 写帧吃力会导致预览丢帧卡顿）。</summary>
-    private const int PreviewMaxDimension = 800;
-    private readonly int _targetFps = 24;
+    /// <summary>
+    /// 预览画质档位（解码降采样上限 + 目标帧率）。低配机器上「卡顿 / 音画不同步」的主因是
+    /// 预览这条链路（解码 + 投递 + 贴图）跟不上，而这两个旋钮是唯一能真正减负的东西，
+    /// 所以做成自适应：实测帧率跟不上就降档，富余了再升回去（见 <see cref="AdaptPreviewQuality"/>）。
+    /// </summary>
+    private static readonly (int Dimension, int Fps)[] PreviewQualityLevels =
+    [
+        (800, 24), // 0 高（默认）
+        (640, 24), // 1 中
+        (480, 20), // 2 低
+        (400, 16)  // 3 最低（老机器/软渲染）
+    ];
+
+    /// <summary>当前预览画质档位（0..3）。</summary>
+    private int _previewQualityLevel;
+    /// <summary>预览解码降采样上限（随档位变）。</summary>
+    private int _previewMaxDimension = PreviewQualityLevels[0].Dimension;
+    /// <summary>预览目标帧率（随档位变）。</summary>
+    private int _targetFps = PreviewQualityLevels[0].Fps;
+
+    // ---- 预览帧率实测（自适应用）----
+    /// <summary>各轨道上一次收到预览帧的时间戳。</summary>
+    private readonly long[] _previewLastTicks = new long[16];
+    /// <summary>各轨道帧间隔累计（秒）与样本数 → 实际帧率 = 样本数 / 累计间隔。</summary>
+    private readonly double[] _previewIntervalSum = new double[16];
+    private readonly int[] _previewIntervalCount = new int[16];
+    private long _previewWindowStart;
+    private long _previewLastLevelChange;
+    /// <summary>统计窗口长度（秒）：太短会被瞬时抖动误判。</summary>
+    private const double PreviewAdaptWindowSeconds = 2.0;
+    /// <summary>同一方向连续调整的最小间隔（秒）：降档要快、升档要慢，避免抖动。</summary>
+    private const double PreviewAdaptDownCooldown = 3.0;
+    private const double PreviewAdaptUpCooldown = 12.0;
+    /// <summary>已经提示过的档位（避免状态栏被反复刷）。</summary>
+    private int _previewNotifiedLevel = -1;
 
     private readonly VideoProject _project = VideoProjectStore.Load(VideoProjectStore.DefaultPath);
     private readonly List<string> _assets = [];
@@ -510,8 +542,9 @@ internal sealed class VideoEditorWindow : MyWindow
     private readonly Button _playButton = new()
     {
         Content = new IconText { Glyph = "\uEDB9", Text = "" },
-        Padding = new Thickness(8, 3),
-        MinWidth = 32,
+        Padding = new Thickness(10, 6),
+        MinWidth = 40,
+        MinHeight = 36,
         Background = Brushes.Transparent,
         BorderThickness = new Thickness(0),
         Cursor = new Cursor(StandardCursorType.Hand)
@@ -520,8 +553,9 @@ internal sealed class VideoEditorWindow : MyWindow
     private readonly Button _fullscreenButton = new()
     {
         Content = new IconText { Glyph = "\uE8D0", Text = "" },
-        Padding = new Thickness(8, 3),
-        MinWidth = 32,
+        Padding = new Thickness(10, 6),
+        MinWidth = 40,
+        MinHeight = 36,
         Background = Brushes.Transparent,
         BorderThickness = new Thickness(0),
         Cursor = new Cursor(StandardCursorType.Hand)
@@ -532,16 +566,18 @@ internal sealed class VideoEditorWindow : MyWindow
     private readonly Button _cutButton = new()
     {
         Content = new IconText { Glyph = "\uE5C9", Text = "" },
-        Padding = new Thickness(6, 3),
-        MinWidth = 28,
+        Padding = new Thickness(9, 6),
+        MinWidth = 36,
+        MinHeight = 34,
         Background = Brushes.Transparent,
         BorderThickness = new Thickness(0)
     };
     private readonly Button _deleteButton = new()
     {
         Content = new IconText { Glyph = "\uE61D", Text = "" },
-        Padding = new Thickness(6, 3),
-        MinWidth = 28,
+        Padding = new Thickness(9, 6),
+        MinWidth = 36,
+        MinHeight = 34,
         Background = Brushes.Transparent,
         BorderThickness = new Thickness(0)
     };
@@ -549,8 +585,9 @@ internal sealed class VideoEditorWindow : MyWindow
     private readonly Button _canvasButton = new()
     {
         Content = new IconText { Glyph = "\uE0EC", Text = "" },
-        Padding = new Thickness(6, 3),
-        MinWidth = 28,
+        Padding = new Thickness(9, 6),
+        MinWidth = 36,
+        MinHeight = 34,
         Background = Brushes.Transparent,
         BorderThickness = new Thickness(0)
     };
@@ -558,8 +595,9 @@ internal sealed class VideoEditorWindow : MyWindow
     private readonly Button _freezeButton = new()
     {
         Content = new IconText { Glyph = "\uE391", Text = "" },
-        Padding = new Thickness(6, 3),
-        MinWidth = 28,
+        Padding = new Thickness(9, 6),
+        MinWidth = 36,
+        MinHeight = 34,
         Background = Brushes.Transparent,
         BorderThickness = new Thickness(0),
         IsEnabled = false
@@ -817,11 +855,16 @@ internal sealed class VideoEditorWindow : MyWindow
                     break;
             }
         }, RoutingStrategies.Tunnel);
+        // 编辑器打开期间挂起主界面底图的视频解码：低配机器上「编辑器预览 + 主界面底图」
+        // 两路全尺寸解码 + 两处贴图会把核心抢满（预览卡顿、声音断续的主要来源之一）。
+        Opened += (_, _) => InjectorRuntime.SuspendBackgroundPlayback(true);
+        Closed += (_, _) => InjectorRuntime.SuspendBackgroundPlayback(false);
         // 播放时钟：轮询播放器当前时间驱动播放头与时间码；顺带监听动态主题强调色变化。
         _clockTimer.Tick += (_, _) =>
         {
             UpdateClock();
             WatchTimelineAccent();
+            AdaptPreviewQuality();
         };
         _clockTimer.Start();
         // 时间轴宽度变化（窗口调整）防抖后重建，让时间轴铺满视口。
@@ -1011,6 +1054,16 @@ internal sealed class VideoEditorWindow : MyWindow
         ToolTip.SetTip(_freezeButton, "定格：把播放头处的画面定格成一张图片片段（需先选中视频片段）");
         // 素材列表按住拖出 → 拖到时间轴指定轨道/位置（更符合人类操作习惯）。
         _assetList.PointerMoved += (_, e) => StartAssetDrag(e);
+        // 列表视图：双击（鼠标）或双击点按（触摸）把选中素材加到播放头 ——
+        // 触摸屏上 OLE 拖拽不可用，点按是唯一可靠的添加方式。
+        _assetList.DoubleTapped += (_, _) =>
+        {
+            var idx = _assetList.SelectedIndex;
+            if (idx >= 0 && idx < _assets.Count)
+            {
+                AddAssetAtPlayhead(_assets[idx]);
+            }
+        };
 
         // 顶部命令栏（仿底图图层编辑器 CommandBar：图标 + 文字，无 emoji）。
         _undoButton = CommandButton("\uE195", "撤销", "撤销上一步操作（Ctrl+Z）", Undo);
@@ -2767,6 +2820,86 @@ internal sealed class VideoEditorWindow : MyWindow
         }
     }
 
+    /// <summary>
+    /// 把素材直接加到播放头位置（触摸屏「点按素材卡片」用；鼠标仍可拖到指定轨道/位置）。
+    /// 落轨规则与拖入一致：音频进音频轨（放不下就换一条/新开）、图片/视频进当前选中轨道
+    /// （选中的是音频泳道时落到视频轨 0），同轨重叠自动挪到最近空位。
+    /// </summary>
+    private void AddAssetAtPlayhead(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            _statusText.Text = "素材文件不存在，可能已被移动或删除。";
+            return;
+        }
+
+        var isAudio = VideoTranscoder.IsAudioFile(path);
+        var isImage = VideoTranscoder.IsImageFile(path);
+        var start = Math.Max(0, _snapEnabled ? SnapTime(_playheadTime) : _playheadTime);
+        PushUndo();
+
+        VideoClip clip;
+        if (isAudio)
+        {
+            var duration = ProbeAudioDuration(path);
+            clip = new VideoClip
+            {
+                Kind = "Audio",
+                SourcePath = path,
+                Track = -1,
+                AudioTrack = FindAudioTrackFor(start, duration > 0.5 ? duration : 10),
+                StartTime = start,
+                InPoint = 0,
+                OutPoint = duration > 0.5 ? duration : 10,
+                SourceDuration = duration
+            };
+            _project.Clips.Add(clip);
+            if (!FitsOnAudioTrack(clip.AudioTrack, clip.StartTime, clip.Duration, clip))
+            {
+                clip.StartTime = FitToAudioTrack(clip, clip.StartTime, clip.AudioTrack);
+                _statusText.Text = "该音频轨此处已被占用，已自动放到最近空位。";
+            }
+        }
+        else
+        {
+            var duration = isImage ? 5 : GetAssetDuration(path);
+            clip = new VideoClip
+            {
+                Kind = isImage ? "Image" : "Video",
+                SourcePath = path,
+                // 当前选中的是音频泳道时落到视频轨 0，避免把画面片段放到音频泳道号上。
+                Track = IsAudioLane(_selectedTrack) ? 0 : Math.Max(0, _selectedTrack),
+                StartTime = start,
+                InPoint = 0,
+                OutPoint = isImage ? 5 : duration > 0.5 ? duration : 10,
+                SourceDuration = isImage ? 5 : duration
+            };
+            _project.Clips.Add(clip);
+            if (!FitsOnTrack(clip.Track, clip.StartTime, clip.Duration, clip))
+            {
+                clip.StartTime = FitToTrack(clip, clip.StartTime, clip.Track);
+                _statusText.Text = "该轨道此处已被占用，已自动放到最近空位。";
+            }
+        }
+
+        _selected = clip;
+        _selectedClips.Clear();
+        _selectedClips.Add(clip);
+        CompactTracks();
+        RefreshTimeline();
+        FillPropertyPanel();
+        UpdateAllBlockSelection();
+        ScheduleSave();
+        EnsureClipVisible(clip);
+        EditorLog($"TAP 添加素材 {Path.GetFileName(path)} → start={clip.StartTime:0.###}s track={clip.Track}");
+        if (string.IsNullOrEmpty(_statusText.Text) || !_statusText.Text.Contains("自动放到最近空位"))
+        {
+            _statusText.Text = isAudio
+                ? $"已添加音频到 A{clip.AudioTrack + 1}（{clip.Duration:0.#}s，可拖动/裁剪）。"
+                : $"已添加{(isImage ? "图片" : "视频")}片段（{clip.Duration:0.#}s，可拖动/裁剪）。";
+        }
+    }
+
     /// <summary>把新素材加入素材库：图片直接加入（Kind=Image 覆盖层）；视频逐个询问压缩后加入。</summary>
     private async Task ImportAssetsAsync(List<string> paths)
     {
@@ -3088,6 +3221,13 @@ internal sealed class VideoEditorWindow : MyWindow
     /// <summary>素材列表按住并拖动时发起拖拽（数据为素材路径，供时间轴泳道接收）。</summary>
     private void StartAssetDrag(PointerEventArgs e)
     {
+        // 触摸/笔不做 OLE 拖拽（Windows 上拖拽需要鼠标输入；手指滑动应留给滚动列表），
+        // 触摸添加素材走「点按卡片 / 双击列表项」那条路。
+        if (e.Pointer.Type != PointerType.Mouse)
+        {
+            return;
+        }
+
         if (_assetList.SelectedIndex < 0 || _assetList.SelectedIndex >= _assets.Count)
         {
             return;
@@ -3334,18 +3474,39 @@ internal sealed class VideoEditorWindow : MyWindow
             Padding = new Thickness(4),
             Child = new StackPanel { Spacing = 3, Children = { thumb, name } }
         };
+        // 触摸/笔：按下位置记下来，抬起时若几乎没移动就当作「点按添加」
+        // （触摸屏上没法用 OLE 拖拽，点按是唯一可靠的添加方式）。
+        Point? touchPress = null;
         item.PointerPressed += (_, e) =>
         {
             // 左/右键都先选中（右键随后弹 per-item 菜单：查看媒体信息 / 删除）。
             _assetList.SelectedIndex = index;
             UpdateAssetCoverSelection();
             UpdateAssetButtons();
+            touchPress = e.Pointer.Type == PointerType.Mouse ? null : e.GetPosition(item);
+        };
+        item.PointerReleased += (_, e) =>
+        {
+            if (touchPress is not { } start)
+            {
+                return;
+            }
+
+            touchPress = null;
+            var end = e.GetPosition(item);
+            if (Math.Abs(end.X - start.X) > 10 || Math.Abs(end.Y - start.Y) > 10)
+            {
+                return; // 移动过 → 是滑动/拖拽，不当点按
+            }
+
+            AddAssetAtPlayhead(path);
         };
         item.ContextFlyout = BuildAssetCoverMenu(path);
-        // 封面项同样支持按住拖到时间轴（数据为素材路径，与列表视图一致）。
+        // 封面项同样支持按住拖到时间轴（鼠标；数据为素材路径，与列表视图一致）。
         item.PointerMoved += (_, e) =>
         {
-            if (!e.GetCurrentPoint(item).Properties.IsLeftButtonPressed)
+            if (e.Pointer.Type != PointerType.Mouse ||
+                !e.GetCurrentPoint(item).Properties.IsLeftButtonPressed)
             {
                 return;
             }
@@ -4532,8 +4693,8 @@ internal sealed class VideoEditorWindow : MyWindow
             MinWidth = 0,
             MinHeight = 0,
             // 触摸友好命中尺寸（轨道头行高默认 60，足够容纳）；桌面鼠标同样更易点中。
-            Width = 28,
-            Height = 24,
+            Width = 34,
+            Height = 28,
             HorizontalContentAlignment = HorizontalAlignment.Center,
             VerticalContentAlignment = VerticalAlignment.Center
         };
@@ -5224,7 +5385,7 @@ internal sealed class VideoEditorWindow : MyWindow
         // 触摸友好：外层 18px 透明命中区（手指可轻松点到），内层 8px 白色可见条贴块边缘。
         var leftHandle = new Border
         {
-            Width = 18,
+            Width = 26,
             HorizontalAlignment = HorizontalAlignment.Left,
             Background = Brushes.Transparent,
             Cursor = new Cursor(StandardCursorType.SizeWestEast),
@@ -5240,7 +5401,7 @@ internal sealed class VideoEditorWindow : MyWindow
         };
         var rightHandle = new Border
         {
-            Width = 18,
+            Width = 26,
             HorizontalAlignment = HorizontalAlignment.Right,
             Background = Brushes.Transparent,
             Cursor = new Cursor(StandardCursorType.SizeWestEast),
@@ -6834,7 +6995,7 @@ internal sealed class VideoEditorWindow : MyWindow
             try
             {
                 using var source = new VideoFrameSource();
-                if (!source.Open(path, PreviewMaxDimension))
+                if (!source.Open(path, _previewMaxDimension))
                 {
                     return;
                 }
@@ -6982,8 +7143,8 @@ internal sealed class VideoEditorWindow : MyWindow
         _seekFrameBusy = true;
         // 覆盖层帧尺寸（保持输出比例，后台线程不可访问 UI）。
         var overlayAspect = _project.OutputWidth / Math.Max(1.0, _project.OutputHeight);
-        var overlayW = PreviewMaxDimension;
-        var overlayH = Math.Max(2, (int)(PreviewMaxDimension / overlayAspect));
+        var overlayW = _previewMaxDimension;
+        var overlayH = Math.Max(2, (int)(_previewMaxDimension / overlayAspect));
         Task.Run(() =>
         {
             var results = new List<(int Track, VideoFrame Frame, VideoClip Clip)>();
@@ -7116,7 +7277,7 @@ internal sealed class VideoEditorWindow : MyWindow
         var source = new VideoFrameSource();
         try
         {
-            if (!source.Open(clip.SourcePath, PreviewMaxDimension))
+            if (!source.Open(clip.SourcePath, _previewMaxDimension))
             {
                 source.Dispose();
                 return null;
@@ -7240,7 +7401,7 @@ internal sealed class VideoEditorWindow : MyWindow
         PositionPlayheadLine();
         PositionPlayheadHead();
         _timeText.Text = FormatTime(_playheadTime);
-        _player = new VideoProjectPlayer(_project, PreviewMaxDimension, _targetFps, OnPreviewFrame);
+        _player = new VideoProjectPlayer(_project, _previewMaxDimension, _targetFps, OnPreviewFrame);
         // 某轨道不再有活跃片段（片段被删/播完/轨道隐藏）时隐藏该轨图层：
         // 否则最后一帧会一直冻结在舞台上，看起来像「删掉的片段还在预览里」。
         _player.TrackCleared += track => Dispatcher.UIThread.Post(() => HideStageTrack(track));
@@ -7329,6 +7490,7 @@ internal sealed class VideoEditorWindow : MyWindow
             try
             {
                 UpdateStageLayer(track, ApplyActiveFilter(frame, clip, _player?.CurrentTime ?? _playheadTime), clip);
+                RecordPreviewFrame(track);
             }
             catch
             {
@@ -7341,6 +7503,138 @@ internal sealed class VideoEditorWindow : MyWindow
             }
         });
     }
+
+    /// <summary>记录一次预览帧到达（测实际帧率用：UI 线程上「拿到并贴完图」的时刻才算数）。</summary>
+    private void RecordPreviewFrame(int track)
+    {
+        if (track < 0 || track >= _previewLastTicks.Length)
+        {
+            return;
+        }
+
+        var now = System.Diagnostics.Stopwatch.GetTimestamp();
+        var last = _previewLastTicks[track];
+        _previewLastTicks[track] = now;
+        if (last == 0)
+        {
+            return;
+        }
+
+        var dt = (now - last) / (double)System.Diagnostics.Stopwatch.Frequency;
+        if (dt <= 0 || dt > 1.0)
+        {
+            return; // 起播/跳转/长时间无帧：不计入
+        }
+
+        _previewIntervalSum[track] += dt;
+        _previewIntervalCount[track]++;
+    }
+
+    /// <summary>
+    /// 预览画质自适应：每 <see cref="PreviewAdaptWindowSeconds"/> 秒看一次实际帧率，
+    /// 明显跟不上（&lt; 目标 60%）就降档、明显富余（&gt; 目标 95%）再升档。
+    /// 取「有帧产出的轨道里最慢的一条」作为实测帧率 —— 多轨时瓶颈就在最慢那条。
+    /// </summary>
+    private void AdaptPreviewQuality()
+    {
+        var now = System.Diagnostics.Stopwatch.GetTimestamp();
+        if (!_playing || _player == null)
+        {
+            _previewWindowStart = now;
+            Array.Clear(_previewIntervalCount);
+            Array.Clear(_previewIntervalSum);
+            return;
+        }
+
+        if (_previewWindowStart == 0)
+        {
+            _previewWindowStart = now;
+            return;
+        }
+
+        var window = (now - _previewWindowStart) / (double)System.Diagnostics.Stopwatch.Frequency;
+        if (window < PreviewAdaptWindowSeconds)
+        {
+            return;
+        }
+
+        var fps = double.MaxValue;
+        var any = false;
+        for (var t = 0; t < _previewIntervalCount.Length; t++)
+        {
+            if (_previewIntervalCount[t] < 4 || _previewIntervalSum[t] <= 0)
+            {
+                continue;
+            }
+
+            fps = Math.Min(fps, _previewIntervalCount[t] / _previewIntervalSum[t]);
+            any = true;
+        }
+
+        _previewWindowStart = now;
+        Array.Clear(_previewIntervalCount);
+        Array.Clear(_previewIntervalSum);
+        if (!any)
+        {
+            return;
+        }
+
+        var sinceChange = (now - _previewLastLevelChange) / (double)System.Diagnostics.Stopwatch.Frequency;
+        if (fps < _targetFps * 0.6 &&
+            _previewQualityLevel < PreviewQualityLevels.Length - 1 &&
+            sinceChange >= PreviewAdaptDownCooldown)
+        {
+            ApplyPreviewQuality(_previewQualityLevel + 1, fps);
+        }
+        else if (fps > _targetFps * 0.95 && _previewQualityLevel > 0 && sinceChange >= PreviewAdaptUpCooldown)
+        {
+            ApplyPreviewQuality(_previewQualityLevel - 1, fps);
+        }
+    }
+
+    /// <summary>切换预览画质档位并重启预览（参数在播放器构造时固定，只能重建）。</summary>
+    private void ApplyPreviewQuality(int level, double measuredFps)
+    {
+        level = Math.Clamp(level, 0, PreviewQualityLevels.Length - 1);
+        if (level == _previewQualityLevel)
+        {
+            return;
+        }
+
+        _previewQualityLevel = level;
+        _previewLastLevelChange = System.Diagnostics.Stopwatch.GetTimestamp();
+        var (dimension, fps) = PreviewQualityLevels[level];
+        _previewMaxDimension = dimension;
+        _targetFps = fps;
+        EditorLog($"预览画质自适应：档位 {level}（解码 {dimension}px / {fps}fps），实测 {measuredFps:0.#}fps");
+        // 换档会重建播放器：清空统计窗口，避免把重建那一下的间隔当成「帧率掉了」。
+        Array.Clear(_previewIntervalCount);
+        Array.Clear(_previewIntervalSum);
+        Array.Clear(_previewLastTicks);
+        _previewWindowStart = System.Diagnostics.Stopwatch.GetTimestamp();
+
+        var notice = level > 0
+            ? $"机器跟不上，预览画质已自动降到「{PreviewQualityName(level)}」（实测 {measuredFps:0.#}fps）。"
+            : "预览画质已恢复「高」。";
+        if (_playing)
+        {
+            StartPreview(); // 内部按播放头重新起播（会把状态栏改成「预览播放中」）
+        }
+
+        if (_previewNotifiedLevel != level)
+        {
+            _previewNotifiedLevel = level;
+            _statusText.Text = notice; // 放在 StartPreview 之后，否则被它覆盖
+        }
+    }
+
+    private static string PreviewQualityName(int level) => level switch
+    {
+        1 => "中",
+        2 => "低",
+        3 => "最低",
+        _ => "高"
+    };
 
     /// <summary>隐藏指定轨道的舞台预览图层（该轨当前时刻无活跃片段：片段已删/播完/轨道隐藏）。</summary>
     private void HideStageTrack(int track)

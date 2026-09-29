@@ -2693,6 +2693,33 @@ internal sealed class MainWindowStyleInjector : IDisposable
         _videoProjectSignature = string.Empty;
     }
 
+    /// <summary>
+    /// 挂起 / 恢复主界面底图的两路解码（单文件视频背景 + 视频工程背景）。
+    /// <para>
+    /// 编辑器打开时挂起：低配机器上「编辑器预览 + 主界面底图」同时全尺寸解码 + 各自贴图，
+    /// 会把本就不多的核心抢满 —— 表现就是预览卡顿、声音断续。编辑器关闭后恢复。
+    /// </para>
+    /// </summary>
+    public void SuspendBackgroundPlayback(bool suspend)
+    {
+        try
+        {
+            _videoSource?.SetSuspended(suspend);
+            if (suspend)
+            {
+                _videoProjectPlayer?.Pause();
+            }
+            else
+            {
+                _videoProjectPlayer?.Resume();
+            }
+        }
+        catch
+        {
+            // 挂起失败最多是多占些 CPU，不能影响编辑器。
+        }
+    }
+
     /// <summary>把视频填充宿主插到底图宿主之后（wallpaper 之上、宿主内容之下）。</summary>
     private void PositionVideoFillHost(Grid islandGrid)
     {

@@ -60,6 +60,37 @@ internal sealed class ProjectAudioMixer : IDisposable
     /// <summary>音频输出是否已建立。</summary>
     public bool IsRunning => _output != null;
 
+    /// <summary>
+    /// 当前**可听**的工程时间（秒）：以声卡实际播放位置为准。
+    /// <para>
+    /// 不能用「已渲染帧数」：输出总是领先可听位置一个 WASAPI 缓冲（约 100~200ms），
+    /// 拿它跟视频的墙钟比会一直差着一个缓冲量。这里用 <see cref="IWavePosition.GetPosition"/>
+    /// 拿声卡真实播放字节数，才是能用做音画同步校正的时钟。
+    /// </para>
+    /// </summary>
+    public double AudibleTime
+    {
+        get
+        {
+            var output = _output;
+            if (output == null)
+            {
+                return _baseTime + _frames / (double)SampleRate;
+            }
+
+            try
+            {
+                var bytesPerSecond = SampleRate * FFmpegAudioDecoder.OutBytesPerSample;
+                return _baseTime + output.GetPosition() / (double)bytesPerSecond;
+            }
+            catch
+            {
+                // 设备拔出 / 音频服务重启：退回渲染进度（不精确但不会抛）。
+                return _baseTime + _frames / (double)SampleRate;
+            }
+        }
+    }
+
     /// <summary>输出采样率（固定 48kHz）。</summary>
     public static int SampleRate => FFmpegAudioDecoder.OutSampleRate;
 
