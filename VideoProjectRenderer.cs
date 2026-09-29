@@ -23,6 +23,8 @@ internal sealed class VideoProjectRenderer
     private readonly string? _hwDecoder;
     private readonly int _fps;
     private readonly int _maxDimension;
+    /// <summary>是否把工程音频混进来输出（false = 只出画面）。</summary>
+    private readonly bool _includeAudio;
     private readonly Action<double, string>? _progress;
     private readonly CancellationToken _token;
 
@@ -47,7 +49,8 @@ internal sealed class VideoProjectRenderer
 
     public VideoProjectRenderer(VideoProject project, string outputPath, int outW, int outH, int crf, int fps,
         Action<double, string>? progress = null, string preset = "veryfast",
-        string? hwEncoder = null, string? hwDecoder = null, CancellationToken token = default)
+        string? hwEncoder = null, string? hwDecoder = null, CancellationToken token = default,
+        bool includeAudio = true)
     {
         _project = project;
         _outputPath = outputPath;
@@ -61,6 +64,7 @@ internal sealed class VideoProjectRenderer
         _hwEncoder = hwEncoder;
         _hwDecoder = hwDecoder;
         _token = token;
+        _includeAudio = includeAudio;
     }
 
     public void Render()
@@ -85,8 +89,21 @@ internal sealed class VideoProjectRenderer
             states[t] = new TrackState { Track = t };
         }
 
-        using var encoder = TryCreateEncoder();
+        // 音频：离线混音（不建立输出设备），与画面同一条时间轴。
+        // 时间位置用「累计样本号」整数推进（endSample = round(t × 48000)），
+        // 而非按帧长浮点累加 —— 非整数帧率（如 29.97）下后者会累积漂移。
+        using var mixer = new ProjectAudioMixer();
+        var hasAudio = _includeAudio && mixer.StartOffline(_project);
+        if (_includeAudio && !hasAudio)
+        {
+            _progress?.Invoke(0, "工程里没有可出声的音频片段，只输出画面");
+        }
+
+        using var encoder = TryCreateEncoder(hasAudio);
         var output = new byte[_outW * _outH * 4];
+        var audioBlock = Array.Empty<byte>();
+        long audioSampleCursor = 0;
+        const int audioRate = FFmpegAudioDecoder.OutSampleRate;
 
         for (var frame = 0; frame < totalFrames; frame++)
         {
@@ -207,6 +224,26 @@ internal sealed class VideoProjectRenderer
             }
 
             encoder.EncodeFrame(output);
+
+            if (hasAudio)
+            {
+                // 本输出帧对应的音频区间（样本号精确对齐，不漂）。
+                var endSample = (long)Math.Round((frame + 1) / (double)_fps * audioRate);
+                var frames = (int)(endSample - audioSampleCursor);
+                audioSampleCursor = endSample;
+                if (frames > 0)
+                {
+                    var bytes = frames * FFmpegAudioDecoder.OutBytesPerSample;
+                    if (audioBlock.Length < bytes)
+                    {
+                        audioBlock = new byte[bytes];
+                    }
+
+                    mixer.ReadForRender(audioBlock, 0, bytes);
+                    encoder.EncodeAudio(audioBlock, 0, frames);
+                }
+            }
+
             _progress?.Invoke((double)(frame + 1) / totalFrames, $"渲染 {frame + 1}/{totalFrames} 帧");
         }
 
@@ -217,7 +254,7 @@ internal sealed class VideoProjectRenderer
     /// 创建编码器：硬件编码器（qsv→nvenc→amf→mf）优先，打开失败（无对应硬件/驱动）时
     /// 逐个回退，最后落到软编 libx264。渲染慢的主因是 x264 编码，核显机器硬编可提速数倍。
     /// </summary>
-    private FFmpegVideoEncoder TryCreateEncoder()
+    private FFmpegVideoEncoder TryCreateEncoder(bool withAudio)
     {
         var candidates = new List<string?>();
         if (string.IsNullOrEmpty(_hwEncoder))
@@ -239,8 +276,10 @@ internal sealed class VideoProjectRenderer
             try
             {
                 var encoder = candidate == null
-                    ? new FFmpegVideoEncoder(_outputPath, _outW, _outH, _crf, _fps, _preset)
-                    : new FFmpegVideoEncoder(_outputPath, _outW, _outH, _crf, _fps, _preset, candidate);
+                    ? new FFmpegVideoEncoder(_outputPath, _outW, _outH, _crf, _fps, _preset,
+                        withAudio: withAudio)
+                    : new FFmpegVideoEncoder(_outputPath, _outW, _outH, _crf, _fps, _preset, candidate,
+                        withAudio: withAudio);
                 if (candidate != null)
                 {
                     _progress?.Invoke(0, $"使用硬件编码器 {candidate}（失败自动回退软件）");

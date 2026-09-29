@@ -155,6 +155,45 @@ internal sealed class ProjectAudioMixer : IDisposable
     }
 
     /// <summary>
+    /// 离线混音（渲染用）：**不建立音频输出**，直接按工程时间轴产出 PCM。
+    /// <para>
+    /// 与实时播放共用同一套 <see cref="MixChunk"/>（音量 × 淡入淡出 × 变速 / 保持音调 × 轨静音），
+    /// 所以「渲染出来的声音」与「预览里听到的声音」口径完全一致，也不会因为渲染是离线跑
+    /// 就丢掉变速/变调这些处理。
+    /// </para>
+    /// 返回 false = 工程没有可出声内容（调用方跳过音轨，只出画面）。
+    /// </summary>
+    public bool StartOffline(VideoProject project, double startTime = 0)
+    {
+        lock (_sync)
+        {
+            if (!project.HasAudioContent)
+            {
+                Log("离线混音：工程不含可出声的音频内容，不产出音轨"
+                    + DescribeInaudible(project, out _));
+                return false;
+            }
+
+            _disposed = false;
+            _project = project;
+            _baseTime = Math.Max(0, startTime);
+            _frames = 0;
+            ReleaseAllSources();
+            Log($"离线混音已开始：起点={startTime:0.###}s，"
+                + $"可出声片段={project.Clips.Count(c => c.ContributesAudio)}"
+                + DescribeInaudible(project, out _));
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// 离线取一块混音 PCM（<paramref name="count"/> 应为 1 采样帧字节数的整数倍）。
+    /// 时间轴按「已产出样本数」整数推进，与声卡时钟无关，因此渲染不会漂移。
+    /// 返回写入的字节数。
+    /// </summary>
+    public int ReadForRender(byte[] buffer, int offset, int count) => Fill(buffer, offset, count);
+
+    /// <summary>
     /// 「有音轨但不出声」的片段清单（日志用）：静音 / 音量 0 的逐条列出，方便定位
     /// 「剪视频听不到声音」到底是哪一条被筛掉了。<paramref name="anyAudioCapable"/> 表示工程里
     /// 是否存在音频/视频片段（区分「根本没素材」与「素材都不出声」）。

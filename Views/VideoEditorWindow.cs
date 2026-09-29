@@ -8527,7 +8527,7 @@ internal sealed class VideoEditorWindow : MyWindow
         }
 
         // 3. 保存工程快照并弹出模态渲染对话框（进度条 + 剩余时间 + 取消 / 后台渲染）。
-        var (outW, outH, crf, hw, fps) = options.Value;
+        var (outW, outH, crf, hw, fps, audio) = options.Value;
         VideoProjectStore.Save(_project, VideoProjectStore.DefaultPath);
         // 渲染前停掉预览播放：预览解码、渲染编码、以及渲染完成后注入器为应用产物再开的
         // 那一路解码，三路并发既抢 CPU，也容易在窗口关闭时踩到解码器释放竞态。
@@ -8538,12 +8538,12 @@ internal sealed class VideoEditorWindow : MyWindow
 
         _statusText.Text = "正在渲染…";
         var cts = new CancellationTokenSource();
-        EditorLog($"渲染开始 {outW}x{outH} crf={crf} hw={hw} fps={fps}");
-        var outcome = await ShowRenderProgressDialogAsync(outputPath, outW, outH, crf, hw, fps, cts);
+        EditorLog($"渲染开始 {outW}x{outH} crf={crf} hw={hw} fps={fps} audio={audio}");
+        var outcome = await ShowRenderProgressDialogAsync(outputPath, outW, outH, crf, hw, fps, audio, cts);
         switch (outcome)
         {
             case RenderOutcome.Succeeded:
-                ApplyRenderedVideo(outputPath, outW, outH);
+                ApplyRenderedVideo(outputPath, outW, outH, audio);
                 Close();
                 break;
             case RenderOutcome.Cancelled:
@@ -8564,7 +8564,7 @@ internal sealed class VideoEditorWindow : MyWindow
     /// 「取消」（删半成品）与「后台渲染」（关闭编辑器后台跑，完成后 Toast 通知）。
     /// </summary>
     private async Task<RenderOutcome> ShowRenderProgressDialogAsync(
-        string outputPath, int outW, int outH, int crf, bool hw, int fps, CancellationTokenSource cts)
+        string outputPath, int outW, int outH, int crf, bool hw, int fps, bool audio, CancellationTokenSource cts)
     {
         var bar = new ProgressBar { Minimum = 0, Maximum = 1, MinHeight = 4 };
         var statusText = new TextBlock
@@ -8617,7 +8617,8 @@ internal sealed class VideoEditorWindow : MyWindow
                 crf <= 20 ? "medium" : crf <= 24 ? "faster" : "veryfast",
                 hw ? "auto" : null,
                 hw ? "h264_qsv" : null,
-                cts.Token).Render();
+                cts.Token,
+                audio).Render();
         });
         // 正常完成 → 自动关闭对话框；失败 → 在对话框里显示错误。
         _ = renderTask.ContinueWith(t =>
@@ -8656,7 +8657,7 @@ internal sealed class VideoEditorWindow : MyWindow
         if (result == ContentDialogResult.Secondary)
         {
             // 后台渲染：关闭编辑器继续跑，完成后应用 + Toast 通知 + 移除托盘进度。
-            _ = RunBackgroundRenderAsync(renderTask, outputPath, outW, outH);
+            _ = RunBackgroundRenderAsync(renderTask, outputPath, outW, outH, audio);
             return RenderOutcome.Background;
         }
 
@@ -8677,7 +8678,7 @@ internal sealed class VideoEditorWindow : MyWindow
     }
 
     /// <summary>后台渲染收尾：等待任务完成后应用主界面并弹完成通知。</summary>
-    private async Task RunBackgroundRenderAsync(Task renderTask, string outputPath, int outW, int outH)
+    private async Task RunBackgroundRenderAsync(Task renderTask, string outputPath, int outW, int outH, bool audio)
     {
         try
         {
@@ -8689,9 +8690,10 @@ internal sealed class VideoEditorWindow : MyWindow
                 StopPreview();
             }
 
-            ApplyRenderedVideo(outputPath, outW, outH);
+            ApplyRenderedVideo(outputPath, outW, outH, audio);
             RemoveTrayProgress();
-            ShowRenderCompletedToast("渲染完成", $"视频已渲染为 {outW}×{outH} 并应用到主界面。");
+            ShowRenderCompletedToast("渲染完成",
+                $"视频已渲染为 {outW}×{outH}{(audio ? "（含音频）" : "")} 并应用到主界面。");
         }
         catch (Exception ex)
         {
@@ -8702,19 +8704,31 @@ internal sealed class VideoEditorWindow : MyWindow
     }
 
     /// <summary>把渲染出的 mp4 应用为主界面视频背景（单文件模式）。</summary>
-    private void ApplyRenderedVideo(string outputPath, int outW, int outH)
+    private void ApplyRenderedVideo(string outputPath, int outW, int outH, bool audio)
     {
-        EditorLog($"开始应用渲染产物 {outW}x{outH} → {outputPath}");
+        EditorLog($"开始应用渲染产物 {outW}x{outH} audio={audio} → {outputPath}");
         var settings = InjectorRuntime.Settings;
+        var soundWasOn = settings.VideoFillAudioEnabled;
         settings.BeginUpdate();
         settings.VideoFillEnabled = true;
         settings.VideoFillPath = outputPath;
         settings.VideoFillLoop = true;
         settings.VideoProjectEnabled = false;
+        // 产物带音频、但主界面的「播放声音」还关着：顺手打开，否则用户会以为渲染没声音。
+        // （想静音的话，设置页里那个开关一键关掉即可，音量也在那儿。）
+        if (audio)
+        {
+            settings.VideoFillAudioEnabled = true;
+        }
+
         settings.EndUpdate();
         InjectorRuntime.SaveAndApply();
-        EditorLog("渲染产物已应用到主界面");
-        _statusText.Text = $"已渲染 {outW}×{outH} 并应用到主界面。";
+        EditorLog($"渲染产物已应用到主界面（播放声音={settings.VideoFillAudioEnabled}，"
+                  + $"本次之前={soundWasOn}）");
+        _statusText.Text = audio
+            ? $"已渲染 {outW}×{outH}（含音频）并应用到主界面，主界面会播放声音"
+              + (soundWasOn ? "。" : "（已自动打开「播放声音」）。")
+            : $"已渲染 {outW}×{outH} 并应用到主界面。";
     }
 
     /// <summary>渲染完成/失败通知：优先 Windows 系统 Toast，失败回退应用内右上角 Toast。</summary>
@@ -8852,8 +8866,8 @@ internal sealed class VideoEditorWindow : MyWindow
         _trayItemRegistered = false;
     }
 
-    /// <summary>渲染选项对话框：横向分辨率（默认 1280）+ 帧率 + 画质（CRF）+ 硬件加速。返回 null 表示取消。</summary>
-    private async Task<(int outW, int outH, int crf, bool hw, int fps)?> AskRenderOptionsAsync()
+    /// <summary>渲染选项对话框：横向分辨率（默认 1280）+ 帧率 + 画质（CRF）+ 硬件加速 + 包含音频。返回 null 表示取消。</summary>
+    private async Task<(int outW, int outH, int crf, bool hw, int fps, bool audio)?> AskRenderOptionsAsync()
     {
         // 横向分辨率预设：主界面是超宽条（比例约 14:1），旧版按竖向分辨率（270p 等）
         // 换算会把宽度爆到 2K+（270p → 3888×270）。按横向算，1280 对课表展示足够。
@@ -8876,6 +8890,28 @@ internal sealed class VideoEditorWindow : MyWindow
             OnContent = "硬件加速",
             OffContent = "软解模式"
         };
+        var audioToggle = new ToggleSwitch
+        {
+            IsChecked = InjectorRuntime.Settings.RenderIncludeAudio,
+            OnContent = "包含音频",
+            OffContent = "仅画面"
+        };
+        var audioHint = new TextBlock
+        {
+            FontSize = 11,
+            Opacity = 0.65,
+            TextWrapping = TextWrapping.Wrap
+        };
+        void UpdateAudioHint()
+        {
+            var audible = _project.Clips.Count(c => c.ContributesAudio);
+            audioHint.Text = audible == 0
+                ? "当前工程没有会出声的片段（都被静音或音量 0），勾选也不会产生音轨。"
+                : $"混入 {audible} 个片段的声音（音量/淡入淡出/变速/轨道静音与预览一致）；"
+                  + "主界面播放声音由设置里的「播放声音」开关决定。";
+        }
+        audioToggle.IsCheckedChanged += (_, _) => UpdateAudioHint();
+        UpdateAudioHint();
         var dialog = new ContentDialog
         {
             Title = "渲染设置",
@@ -8898,7 +8934,9 @@ internal sealed class VideoEditorWindow : MyWindow
                         FontSize = 11,
                         Opacity = 0.65,
                         TextWrapping = TextWrapping.Wrap
-                    }
+                    },
+                    audioToggle,
+                    audioHint
                 }
             },
             PrimaryButtonText = "开始渲染",
@@ -8913,10 +8951,15 @@ internal sealed class VideoEditorWindow : MyWindow
             return null;
         }
 
-        // 记住硬件加速偏好（下次渲染默认沿用）。
+        // 记住硬件加速 / 包含音频偏好（下次渲染默认沿用）。
         if (InjectorRuntime.Settings.RenderHardwareAccelerated != (hwToggle.IsChecked == true))
         {
             InjectorRuntime.Settings.RenderHardwareAccelerated = hwToggle.IsChecked == true;
+        }
+
+        if (InjectorRuntime.Settings.RenderIncludeAudio != (audioToggle.IsChecked == true))
+        {
+            InjectorRuntime.Settings.RenderIncludeAudio = audioToggle.IsChecked == true;
         }
 
         var aspect2 = _project.OutputWidth / Math.Max(1.0, _project.OutputHeight);
@@ -8928,7 +8971,7 @@ internal sealed class VideoEditorWindow : MyWindow
             "低" => 28,
             _ => 24
         };
-        return (outW, outH, crf, hwToggle.IsChecked == true, fps);
+        return (outW, outH, crf, hwToggle.IsChecked == true, fps, audioToggle.IsChecked == true);
     }
 
     /// <summary>按横向分辨率预设计算渲染尺寸（高度按主界面宽高比换算，偶数对齐）。</summary>

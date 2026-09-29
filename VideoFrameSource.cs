@@ -39,6 +39,13 @@ internal sealed class VideoFrameSource : IDisposable
     public string? HardwareDecoder { get; set; }
 
     /// <summary>
+    /// 每次循环复位（EOF → 回到开头）时回调。供「视频背景播放声音」把音频也拉回开头 ——
+    /// 音频与视频是两条独立循环的链路，周期一旦不一致（目标帧率 ≠ 源帧率、音轨比画面长等），
+    /// 不给这个同步点就会越滚越错位。
+    /// </summary>
+    public Action? OnLoopRestart { get; set; }
+
+    /// <summary>
     /// 打开视频并建立 FFmpeg 解码（输出 BGRA，必要时缩放到 maxDimension）。
     /// 成功返回 true；任何错误返回 false（调用方降级为无视频）。
     /// </summary>
@@ -111,6 +118,16 @@ internal sealed class VideoFrameSource : IDisposable
             {
                 if (_loop && TryRestart())
                 {
+                    // 循环回到开头：通知外部（音频侧跟着回零，否则两条独立循环会越滚越错位）。
+                    try
+                    {
+                        OnLoopRestart?.Invoke();
+                    }
+                    catch
+                    {
+                        // 同步失败不影响画面。
+                    }
+
                     continue;
                 }
 

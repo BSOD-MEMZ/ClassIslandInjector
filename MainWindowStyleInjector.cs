@@ -2434,7 +2434,9 @@ internal sealed class MainWindowStyleInjector : IDisposable
         }
 
         // 参数或路径变化时重启解码线程（保留宿主与位图）。
-        var signature = $"{path}|{_settings.VideoFillMaxDimension}|{_settings.VideoFillTargetFps}|{_settings.VideoFillLoop}";
+        // 含「播放声音」开关：它决定帧率口径（见下），所以切换时要走完整重启而不是只同步音频。
+        var signature = $"{path}|{_settings.VideoFillMaxDimension}|{_settings.VideoFillTargetFps}" +
+                        $"|{_settings.VideoFillLoop}|{_settings.VideoFillAudioEnabled}";
         if (_videoSource != null && _videoFillSignature == signature)
         {
             UpdateVideoFillBounds();
@@ -2459,7 +2461,24 @@ internal sealed class MainWindowStyleInjector : IDisposable
 
         _videoFillSignature = signature;
         _videoSource = source;
-        source.Start(OnVideoFrame, _settings.VideoFillTargetFps, _settings.VideoFillLoop);
+        // 「播放声音」开启时按文件原帧率放：音频与视频是两条独立循环的链路，
+        // 只有视频循环周期 == 音频时长才不会错位。按设置帧率硬放等于把画面放慢/放快
+        // （30fps 素材按 24fps 播 → 一个画面循环里音频重复 1.25 遍），听着就是反复错位。
+        var targetFps = _settings.VideoFillTargetFps;
+        var sourceFps = source.SourceFps;
+        if (_settings.VideoFillAudioEnabled && sourceFps > 1 && Math.Abs(sourceFps - targetFps) > 0.5)
+        {
+            DebugLog($"播放声音已开启：底图按源帧率 {sourceFps:0.##}fps 播放（设置值 {targetFps:0.##}fps），"
+                     + "以免画面周期与音频时长不一致");
+            targetFps = sourceFps;
+        }
+
+        // 每次画面循环复位时把音频也拉回开头（两条链路各自的 EOF 时刻不会完全一样）。
+        source.OnLoopRestart = () =>
+        {
+            _videoAudio?.Seek(0);
+        };
+        source.Start(OnVideoFrame, targetFps, _settings.VideoFillLoop);
         ApplyVideoAudio(path);
         UpdateVideoFillBounds();
     }
