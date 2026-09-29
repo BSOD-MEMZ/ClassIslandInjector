@@ -240,9 +240,13 @@ internal sealed class VideoEditorWindow : MyWindow
     private readonly EditorSpin _cropRSpin = new(0, 1, 0.01, "0.##");
     private readonly EditorSpin _cropBSpin = new(0, 1, 0.01, "0.##");
     // ---- 音频（音频片段与视频片段自带原声共用；100% = 原始音量）----
-    private readonly EditorSpin _volumeSpin = new(0, 200, 5, "0");
-    private readonly EditorSpin _fadeInSpin = new(0, 60, 0.5, "0.##");
-    private readonly EditorSpin _fadeOutSpin = new(0, 60, 0.5, "0.##");
+    // 音量/淡入淡出用滑条（触屏与低配机器上比数值微调好操作得多）：拖动即时生效，右侧给数值读数。
+    private readonly Slider _volumeSlider = new() { Minimum = 0, Maximum = 200, Value = 100, TickFrequency = 1, IsSnapToTickEnabled = false };
+    private readonly Slider _fadeInSlider = new() { Minimum = 0, Maximum = 30, Value = 0, TickFrequency = 0.1, IsSnapToTickEnabled = false };
+    private readonly Slider _fadeOutSlider = new() { Minimum = 0, Maximum = 30, Value = 0, TickFrequency = 0.1, IsSnapToTickEnabled = false };
+    private readonly TextBlock _volumeValue = new() { Width = 46, FontSize = 11, Opacity = 0.8, TextAlignment = TextAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
+    private readonly TextBlock _fadeInValue = new() { Width = 46, FontSize = 11, Opacity = 0.8, TextAlignment = TextAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
+    private readonly TextBlock _fadeOutValue = new() { Width = 46, FontSize = 11, Opacity = 0.8, TextAlignment = TextAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
     private readonly ToggleSwitch _muteToggle = new();
     /// <summary>分离音频：把视频片段自带原声拆成独立音频片段，原片段静音（仅视频片段可用）。</summary>
     private readonly Button _detachAudioButton = new()
@@ -261,6 +265,8 @@ internal sealed class VideoEditorWindow : MyWindow
         Margin = new Thickness(0, 2, 0, 0)
     };
     private Control[] _propertyControls = [];
+    /// <summary>「变换」页里的画面相关行（选中音频片段时整组隐藏）。</summary>
+    private readonly List<Control> _pictureRows = [];
     /// <summary>px 投影基准缓存：当前选中片段在输出画布内的“适配基准矩形”（缩放=1 时的像素尺寸）。</summary>
     private (double BaseW, double BaseH) _pxBaseCache = (16, 9);
     /// <summary>px 基准是否已建立（素材未解码时兜底用整幅画布，仍可编辑）。</summary>
@@ -1744,7 +1750,7 @@ internal sealed class VideoEditorWindow : MyWindow
         [
             _inSpin, _outSpin, _pxXSpin, _pxYSpin, _pxWSpin, _pxHSpin,
             _rotationSpin, _opacitySpin, _cropLSpin, _cropTSpin, _cropRSpin, _cropBSpin,
-            _volumeSpin, _fadeInSpin, _fadeOutSpin
+            // 音量 / 淡入 / 淡出已换成滑条（见下方单独的事件绑定）。
         ];
         // 静音开关不是 Spin，单独绑它自己的属性变化（ToggleSwitch.IsCheckedProperty）。
         _muteToggle.PropertyChanged += (_, e) =>
@@ -1754,6 +1760,20 @@ internal sealed class VideoEditorWindow : MyWindow
                 ApplyPropertyEdits();
             }
         };
+        // 音量 / 淡入 / 淡出滑条：拖动即时写回（读数同步刷新）。
+        foreach (var slider in new[] { _volumeSlider, _fadeInSlider, _fadeOutSlider })
+        {
+            slider.PropertyChanged += (_, e) =>
+            {
+                if (e.Property == Slider.ValueProperty)
+                {
+                    UpdateSliderReadouts();
+                    ApplyPropertyEdits();
+                }
+            };
+        }
+
+        UpdateSliderReadouts();
         ToolTip.SetTip(_detachAudioButton, "把该视频片段的原声拆成独立音频片段（放到音频轨），原视频片段随之静音。");
         _detachAudioButton.Click += (_, _) => DetachAudioFromSelection();
         foreach (var spin in _propertyControls)
@@ -1858,38 +1878,35 @@ internal sealed class VideoEditorWindow : MyWindow
         _filterPanel.Children.Add(InspectorRow("类型", _filterCombo));
         _filterPanel.Children.Add(InspectorRow("强度", _filterIntensitySlider));
 
-        // Tab 选项卡分组：变换 / 覆盖层（仅 Text/Shape/Image）/ 滤镜（仅 Filter）。
-        var transformPanel = new StackPanel
+        // Tab 选项卡分组：变换 / 音频（音频片段与视频片段原声）/ 覆盖层（仅 Text/Shape/Image）/ 滤镜（仅 Filter）。
+        // 画面相关的行单独收进 _pictureRows：选中音频片段时整组隐藏（对音频来说 X/Y/缩放/裁剪没有意义），
+        // 那一页就只剩「入点 / 出点」这种对音频也有用的时间参数。
+        _pictureRows.AddRange(
+        [
+            new TextBlock { Text = "变换", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 8, 0, 0) },
+            InspectorRow("X（px）", _pxXSpin),
+            InspectorRow("Y（px）", _pxYSpin),
+            InspectorRow("宽度（px）", _pxWSpin),
+            InspectorRow("高度（px）", _pxHSpin),
+            InspectorRow("旋转（度）", _rotationSpin),
+            InspectorRow("不透明度", _opacitySpin),
+            new TextBlock { Text = "边缘裁剪", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 8, 0, 0) },
+            InspectorRow("裁左", _cropLSpin),
+            InspectorRow("裁上", _cropTSpin),
+            InspectorRow("裁右", _cropRSpin),
+            InspectorRow("裁下", _cropBSpin)
+        ]);
+        var transformPanel = new StackPanel { Spacing = 6 };
+        transformPanel.Children.Add(InspectorRow("入点（秒）", _inSpin));
+        transformPanel.Children.Add(InspectorRow("出点（秒）", _outSpin));
+        foreach (var row in _pictureRows)
         {
-            Spacing = 6,
-            Children =
-            {
-                InspectorRow("入点（秒）", _inSpin),
-                InspectorRow("出点（秒）", _outSpin),
-                new TextBlock { Text = "变换", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 8, 0, 0) },
-                InspectorRow("X（px）", _pxXSpin),
-                InspectorRow("Y（px）", _pxYSpin),
-                InspectorRow("宽度（px）", _pxWSpin),
-                InspectorRow("高度（px）", _pxHSpin),
-                InspectorRow("旋转（度）", _rotationSpin),
-                InspectorRow("不透明度", _opacitySpin),
-                new TextBlock { Text = "边缘裁剪", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 8, 0, 0) },
-                InspectorRow("裁左", _cropLSpin),
-                InspectorRow("裁上", _cropTSpin),
-                InspectorRow("裁右", _cropRSpin),
-                InspectorRow("裁下", _cropBSpin),
-                new TextBlock { Text = "音频（音量 / 淡入淡出）", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 8, 0, 0) },
-                InspectorRow("音量（%）", _volumeSpin),
-                InspectorRow("淡入（秒）", _fadeInSpin),
-                InspectorRow("淡出（秒）", _fadeOutSpin),
-                InspectorRow("静音", _muteToggle),
-                _audioHint,
-                InspectorRow("", _detachAudioButton)
-            }
-        };
+            transformPanel.Children.Add(row);
+        }
         _inspectorPages["transform"] = transformPanel;
         _inspectorPages["overlay"] = _overlayPanel;
         _inspectorPages["filter"] = _filterPanel;
+        _inspectorPages["audio"] = BuildAudioPanel();
         // 分段条：ClassIsland 原生 TabStrip（TabStripStyle + compact 类），与规则集
         // 「规则任一/全部满足时」同款外观；覆盖层/滤镜段按选中片段类型显隐。
         _inspectorContent = new ContentControl();
@@ -1906,6 +1923,7 @@ internal sealed class VideoEditorWindow : MyWindow
         foreach (var (key, label, glyph) in new[]
         {
             ("transform", "变换", "\uE0EC"),
+            ("audio", "音频", "\uF00C"),
             ("overlay", "覆盖层", "\uEA2E"),
             ("filter", "滤镜", "\uE832")
         })
@@ -2077,6 +2095,70 @@ internal sealed class VideoEditorWindow : MyWindow
         control.HorizontalAlignment = HorizontalAlignment.Right;
         Grid.SetColumn(control, 1);
         row.Children.Add(control);
+        return row;
+    }
+
+    /// <summary>
+    /// 音频分段页：音量 / 淡入 / 淡出（滑条）+ 静音 + 分离音频 + 状态提示。
+    /// 原来这些挤在「变换」段底部，跟画面参数混在一起；独立成页后视频片段与音频片段都只在这一页调声音。
+    /// </summary>
+    private Control BuildAudioPanel()
+    {
+        return new StackPanel
+        {
+            Spacing = 6,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = "音量 / 淡入淡出",
+                    FontWeight = FontWeight.SemiBold,
+                    Margin = new Thickness(0, 2, 0, 2)
+                },
+                InspectorSliderRow("音量（%）", _volumeSlider, _volumeValue),
+                InspectorSliderRow("淡入（秒）", _fadeInSlider, _fadeInValue),
+                InspectorSliderRow("淡出（秒）", _fadeOutSlider, _fadeOutValue),
+                InspectorRow("静音", _muteToggle),
+                _audioHint,
+                InspectorRow("", _detachAudioButton)
+            }
+        };
+    }
+
+    /// <summary>刷新滑条右侧的数值读数（拖动与回填都要调）。</summary>
+    private void UpdateSliderReadouts()
+    {
+        _volumeValue.Text = $"{_volumeSlider.Value:0}%";
+        _fadeInValue.Text = $"{_fadeInSlider.Value:0.#}s";
+        _fadeOutValue.Text = $"{_fadeOutSlider.Value:0.#}s";
+    }
+
+    /// <summary>
+    /// 滑条行：标签 | 滑条 | 数值读数。滑条本身撑满中间列并给足高度（≥32px），
+    /// 触摸屏上比数值微调（Spin）好按得多 —— 低配触屏机上拖动即时生效。
+    /// </summary>
+    private static Control InspectorSliderRow(string label, Slider slider, TextBlock valueText)
+    {
+        var row = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("92,*,52"),
+            ColumnSpacing = 8,
+            MinHeight = 34
+        };
+        row.Children.Add(new TextBlock
+        {
+            Text = label,
+            VerticalAlignment = VerticalAlignment.Center,
+            Opacity = 0.8,
+            FontSize = 12
+        });
+        slider.HorizontalAlignment = HorizontalAlignment.Stretch;
+        slider.VerticalAlignment = VerticalAlignment.Center;
+        slider.MinHeight = 32;
+        Grid.SetColumn(slider, 1);
+        row.Children.Add(slider);
+        Grid.SetColumn(valueText, 2);
+        row.Children.Add(valueText);
         return row;
     }
 
@@ -4819,7 +4901,7 @@ internal sealed class VideoEditorWindow : MyWindow
         var muted = clip.Muted && (clip.IsAudio || string.Equals(clip.Kind, "Video", StringComparison.OrdinalIgnoreCase));
         var nameText = new TextBlock
         {
-            Text = ClipDisplayName(clip) + (muted ? " \uE816" : "") + (isLocked ? " \uE72E" : ""),
+            Text = ClipDisplayName(clip) + (muted ? " \uF014" : "") + (isLocked ? " \uE72E" : ""),
             FontSize = 11,
             TextTrimming = TextTrimming.CharacterEllipsis,
             VerticalAlignment = VerticalAlignment.Center
@@ -6049,18 +6131,25 @@ internal sealed class VideoEditorWindow : MyWindow
             // 文本 / 形状 / 滤镜片段没有声音，这组控件置灰。
             var audioCapable = clip != null &&
                                (clip.IsAudio || string.Equals(clip.Kind, "Video", StringComparison.OrdinalIgnoreCase));
-            _volumeSpin.DoubleValue = Math.Round((clip?.Volume ?? 1) * 100);
-            _fadeInSpin.DoubleValue = clip?.AudioFadeIn ?? 0;
-            _fadeOutSpin.DoubleValue = clip?.AudioFadeOut ?? 0;
+            _volumeSlider.Value = Math.Clamp(Math.Round((clip?.Volume ?? 1) * 100), 0, 200);
+            _fadeInSlider.Value = Math.Clamp(clip?.AudioFadeIn ?? 0, 0, _fadeInSlider.Maximum);
+            _fadeOutSlider.Value = Math.Clamp(clip?.AudioFadeOut ?? 0, 0, _fadeOutSlider.Maximum);
             _muteToggle.IsChecked = clip?.Muted ?? false;
-            _volumeSpin.IsEnabled = audioCapable;
-            _fadeInSpin.IsEnabled = audioCapable;
-            _fadeOutSpin.IsEnabled = audioCapable;
+            _volumeSlider.IsEnabled = audioCapable;
+            _fadeInSlider.IsEnabled = audioCapable;
+            _fadeOutSlider.IsEnabled = audioCapable;
             _muteToggle.IsEnabled = audioCapable;
             // 分离音频只对视频片段有意义（图片/文本/形状/滤镜没有声音，音频片段本身已经是音频）。
             _detachAudioButton.IsVisible = clip is { Kind: "Video" };
             _detachAudioButton.IsEnabled = _detachAudioButton.IsVisible;
             UpdateAudioHint(clip, audioCapable);
+            // 音频分段页：只有「有声音的片段」（音频片段 / 视频片段原声）才显示该 Tab。
+            _segmentButtons["audio"].IsVisible = audioCapable;
+            // 音频片段隐藏「变换」页里的画面行（X/Y/缩放/旋转/裁剪对声音无意义）。
+            foreach (var row in _pictureRows)
+            {
+                row.IsVisible = clip is not { Kind: "Audio" };
+            }
             foreach (var control in _propertyControls)
             {
                 control.IsEnabled = has;
@@ -6156,23 +6245,29 @@ internal sealed class VideoEditorWindow : MyWindow
                 _filterIntensitySlider.Value = Math.Clamp(clip!.FilterIntensity, 0, 1);
             }
 
-            // 当前分段被隐藏（片段类型变化）时回退到变换；片段变化时自动切到对应分段。
+            // 当前分段被隐藏（片段类型变化）时回退到最合适的分段；片段变化时自动切到该片段的主分段。
+            var isAudioClip = clip is { Kind: "Audio" };
+            var preferredPage = isOverlay ? "overlay"
+                : isFilter ? "filter"
+                : isAudioClip ? "audio"
+                : "transform";
             var pageVisible = _currentInspectorPage switch
             {
                 "overlay" => isOverlay,
                 "filter" => isFilter,
+                "audio" => audioCapable,
                 "transform" => !isFilter,
                 _ => true
             };
             if (!pageVisible)
             {
-                SelectInspectorPage(isFilter ? "filter" : "transform");
+                SelectInspectorPage(preferredPage);
             }
 
             if (!ReferenceEquals(_lastInspectorClip, clip))
             {
                 _lastInspectorClip = clip;
-                SelectInspectorPage(isOverlay ? "overlay" : isFilter ? "filter" : "transform");
+                SelectInspectorPage(preferredPage);
             }
 
             // 未播放时选中片段：自动显示首帧，调整属性即可实时预览。
@@ -6351,9 +6446,9 @@ internal sealed class VideoEditorWindow : MyWindow
         clip.Rotation = _rotationSpin.DoubleValue;
         clip.Opacity = Math.Clamp(_opacitySpin.DoubleValue, 0, 1);
         // 音频属性对所有片段都写（无副作用）；真正参与混音的是音频片段与视频片段的原声。
-        clip.Volume = Math.Clamp(_volumeSpin.DoubleValue / 100.0, 0, 2);
-        clip.AudioFadeIn = Math.Max(0, _fadeInSpin.DoubleValue);
-        clip.AudioFadeOut = Math.Max(0, _fadeOutSpin.DoubleValue);
+        clip.Volume = Math.Clamp(_volumeSlider.Value / 100.0, 0, 2);
+        clip.AudioFadeIn = Math.Max(0, _fadeInSlider.Value);
+        clip.AudioFadeOut = Math.Max(0, _fadeOutSlider.Value);
         clip.Muted = _muteToggle.IsChecked == true;
         clip.CropLeft = Math.Clamp(_cropLSpin.DoubleValue, 0, 1);
         clip.CropTop = Math.Clamp(_cropTSpin.DoubleValue, 0, 1);
