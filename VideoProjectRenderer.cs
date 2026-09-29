@@ -135,7 +135,7 @@ internal sealed class VideoProjectRenderer
 
                     // 帧号消费：每输出帧消费 targetN-LastFrameIndex 帧（前面丢弃、最后一帧保留），
                     // 60fps 源在 24fps 输出下每帧消费 2~3 帧，速度与时间轴一致（旧版每输出帧只拉 1 帧 = 慢放）。
-                    var mediaTime = st.ActiveClip.InPoint + Math.Max(0, time - st.ActiveClip.StartTime);
+                    var mediaTime = st.ActiveClip.SourceTimeAt(time - st.ActiveClip.StartTime);
                     var fps = st.SourceFps > 0 ? st.SourceFps : 25.0;
                     var targetN = (long)(mediaTime * fps);
                     var behind = targetN - st.LastFrameIndex;

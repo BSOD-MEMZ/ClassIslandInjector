@@ -355,25 +355,30 @@ internal sealed class ProjectAudioMixer : IDisposable
                 }
 
                 source.SourceBase = Math.Max(0, entrySource);
-                source.ReadFrames = 0;
-                Log($"音频源进入：{Path.GetFileName(clip.SourcePath)}（素材位置 {source.SourceBase:0.###}s）");
+                source.Reader.Reset();
+                Log($"音频源进入：{Path.GetFileName(clip.SourcePath)}（素材位置 {source.SourceBase:0.###}s" +
+                    (Math.Abs(clip.EffectiveSpeed - 1) > 0.001
+                        ? $"，速度 {clip.EffectiveSpeed:0.##}×{(clip.PreservePitch ? " 保持音调" : " 变调")}"
+                        : "") + "）");
             }
 
             var localTime = t - clip.StartTime;
-            var expectedSource = clip.InPoint + localTime;
+            // 按播放速度换算素材位置：速度 2× 时同样一段输出时间要吃掉两倍的素材。
+            var expectedSource = clip.SourceTimeAt(localTime);
             var actualSource = source.SourceBase + source.ReadFrames / (double)SampleRate;
             if (Math.Abs(expectedSource - actualSource) > ResyncThreshold)
             {
                 var target = Math.Max(0, expectedSource);
                 source.Decoder.SeekTo(target);
                 source.SourceBase = target;
-                source.ReadFrames = 0;
+                source.Reader.Reset();
             }
 
             var bytes = frames * FFmpegAudioDecoder.OutBytesPerSample;
             source.EnsureCapacity(bytes);
-            var got = source.Decoder.ReadPcm(source.Buffer!, 0, bytes);
-            if (got <= 0)
+            // 变速读源：原速直接透传；变速按速度重采样（变调）或时间伸缩（保持音调）。
+            var mixFrames = source.Reader.ReadFrames(source.Buffer!, frames, clip.EffectiveSpeed, clip.PreservePitch);
+            if (mixFrames <= 0)
             {
                 // 素材先播完（片段比素材长，或静音轨）：本块该源无输出，其余源照常。
                 continue;
@@ -382,12 +387,10 @@ internal sealed class ProjectAudioMixer : IDisposable
             var trackGain = TrackGainOf(project, clip);
             if (trackGain <= 0.0001)
             {
-                source.ReadFrames += got / FFmpegAudioDecoder.OutBytesPerSample;
-                continue;
+                continue; // 轨静音：照常消耗（Reader 已记账），只是不混进去
             }
 
             var src = source.Buffer!;
-            var mixFrames = got / FFmpegAudioDecoder.OutBytesPerSample;
             for (var f = 0; f < mixFrames; f++)
             {
                 var gain = clip.AudioGainAt(localTime + f / (double)SampleRate) * trackGain;
@@ -403,8 +406,7 @@ internal sealed class ProjectAudioMixer : IDisposable
                 _accum[f * 2 + 1] += (int)(right * gain);
                 anySource = true;
             }
-
-            source.ReadFrames += mixFrames;
+            // 消费量由 AudioSpeedReader 记账（它才知道变速下实际吃掉多少素材帧）。
         }
 
         if (!anySource)
@@ -458,9 +460,13 @@ internal sealed class ProjectAudioMixer : IDisposable
         private AudioSource(FFmpegAudioDecoder decoder)
         {
             Decoder = decoder;
+            Reader = new AudioSpeedReader(decoder.ReadPcm);
         }
 
         public FFmpegAudioDecoder Decoder { get; }
+
+        /// <summary>变速读源：按片段的播放速度/是否保持音调取 PCM（原速时直接透传）。</summary>
+        public AudioSpeedReader Reader { get; }
 
         /// <summary>拉取缓冲（复用；按需扩容到一块的最大字节数）。</summary>
         public byte[]? Buffer { get; private set; }
@@ -468,8 +474,8 @@ internal sealed class ProjectAudioMixer : IDisposable
         /// <summary>解码器当前位置对应的素材时间基准（秒）。</summary>
         public double SourceBase { get; set; }
 
-        /// <summary>自 <see cref="SourceBase"/> 起已消费的采样帧数。</summary>
-        public long ReadFrames { get; set; }
+        /// <summary>自 <see cref="SourceBase"/> 起已消费的采样帧数（由 <see cref="Reader"/> 记账）。</summary>
+        public long ReadFrames => Reader.SourceFramesConsumed;
 
         /// <summary>
         /// 尝试为该片段建立音频源。素材缺失 / 不含音频轨 / 解码器不可用时返回 null（该片段静默）。

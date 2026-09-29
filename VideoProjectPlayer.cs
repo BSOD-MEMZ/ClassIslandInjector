@@ -329,7 +329,7 @@ internal sealed class VideoProjectPlayer : IDisposable
                     {
                         // 同片段跳转：复用已打开的解码器直接 seek（avformat_open_input +
                         // find_stream_info 对长视频要几百毫秒，重开是大跳卡顿的主因）。
-                        var mediaTime = targetClip.InPoint + Math.Max(0, time - targetClip.StartTime);
+                        var mediaTime = targetClip.SourceTimeAt(time - targetClip.StartTime);
                         state.Source.SeekTo(mediaTime);
                         var fps = state.SourceFps > 0 ? state.SourceFps : 25;
                         state.LastFrameIndex = (long)(mediaTime * fps);
@@ -386,7 +386,7 @@ internal sealed class VideoProjectPlayer : IDisposable
             if (clip != null && clip.Kind == "Video")
             {
                 // 打开素材时直接定位到当前时刻对应的媒体时间（拖播放头/中途切入的片段不再从入点重播）。
-                var seedMediaTime = clip.InPoint + Math.Max(0, time - clip.StartTime);
+                var seedMediaTime = clip.SourceTimeAt(time - clip.StartTime);
                 state.Source = OpenSource(clip, seedMediaTime);
                 state.SourceFps = state.Source?.SourceFps ?? 0;
                 state.LastFrameIndex = (long)(seedMediaTime * (state.SourceFps > 0 ? state.SourceFps : 25));
@@ -421,7 +421,7 @@ internal sealed class VideoProjectPlayer : IDisposable
                 return;
             }
 
-            var mediaTime = state.ActiveClip.InPoint + Math.Max(0, time - state.ActiveClip.StartTime);
+            var mediaTime = state.ActiveClip.SourceTimeAt(time - state.ActiveClip.StartTime);
             var fps = state.SourceFps > 0 ? state.SourceFps : 25.0;
             var targetN = (long)(mediaTime * fps);
             var behind = targetN - state.LastFrameIndex;

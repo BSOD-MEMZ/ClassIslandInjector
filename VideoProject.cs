@@ -259,8 +259,26 @@ public sealed class VideoClip
         return Math.Clamp(gain, 0, 2);
     }
 
-    /// <summary>片段时长（秒）。</summary>
-    public double Duration => Math.Max(0.1, OutPoint - InPoint);
+    /// <summary>
+    /// 播放速度倍率（0.1..8，1 = 原速）。影响片段在时间轴上的时长：
+    /// <see cref="Duration"/> = 素材区间长度 ÷ 速度，因此调速度不用改入出点。
+    /// </summary>
+    public double Speed { get; set; } = 1;
+
+    /// <summary>
+    /// 变速时是否保持音调：false（默认）= 变速同时变调（像磁带快放/慢放）；
+    /// true = 时间伸缩、音调不变（声音仍是原调，只是变快/变慢）。
+    /// </summary>
+    public bool PreservePitch { get; set; }
+
+    /// <summary>实际生效的速度（钳制到合理范围，避免 0 / 负数导致除零或倒放）。</summary>
+    public double EffectiveSpeed => Math.Clamp(Speed, 0.1, 8);
+
+    /// <summary>片段在时间轴上的时长（秒）= 素材区间 ÷ 播放速度。</summary>
+    public double Duration => Math.Max(0.1, (OutPoint - InPoint) / EffectiveSpeed);
+
+    /// <summary>把时间轴上的局部时间（相对片段起点，秒）换算成素材内位置（秒）。</summary>
+    public double SourceTimeAt(double localTime) => InPoint + Math.Max(0, localTime) * EffectiveSpeed;
 
     public VideoClip Clone() => (VideoClip)MemberwiseClone();
 }

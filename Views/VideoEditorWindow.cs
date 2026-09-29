@@ -248,6 +248,13 @@ internal sealed class VideoEditorWindow : MyWindow
     private readonly TextBlock _fadeInValue = new() { Width = 46, FontSize = 11, Opacity = 0.8, TextAlignment = TextAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock _fadeOutValue = new() { Width = 46, FontSize = 11, Opacity = 0.8, TextAlignment = TextAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
     private readonly ToggleSwitch _muteToggle = new();
+    /// <summary>播放速度（25%..400%）。片段时长按它缩放，入出点不动。</summary>
+    private readonly Slider _speedSlider = new() { Minimum = 25, Maximum = 400, Value = 100, TickFrequency = 5, IsSnapToTickEnabled = false };
+    private readonly TextBlock _speedValue = new() { Width = 46, FontSize = 11, Opacity = 0.8, TextAlignment = TextAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
+    /// <summary>速度说明（时长变化 + 是否变调），让「改速度后片段变短/变长」一眼可见。</summary>
+    private readonly TextBlock _speedHint = new() { FontSize = 11, Opacity = 0.65, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 2) };
+    /// <summary>变速时是否保持音调（关 = 快放变高音，开 = 时间伸缩不变调）。</summary>
+    private readonly ToggleSwitch _pitchToggle = new() { OnContent = "保持音调", OffContent = "变调" };
     /// <summary>分离音频：把视频片段自带原声拆成独立音频片段，原片段静音（仅视频片段可用）。</summary>
     private readonly Button _detachAudioButton = new()
     {
@@ -1760,8 +1767,8 @@ internal sealed class VideoEditorWindow : MyWindow
                 ApplyPropertyEdits();
             }
         };
-        // 音量 / 淡入 / 淡出滑条：拖动即时写回（读数同步刷新）。
-        foreach (var slider in new[] { _volumeSlider, _fadeInSlider, _fadeOutSlider })
+        // 音量 / 淡入 / 淡出 / 速度滑条：拖动即时写回（读数同步刷新）。
+        foreach (var slider in new[] { _volumeSlider, _fadeInSlider, _fadeOutSlider, _speedSlider })
         {
             slider.PropertyChanged += (_, e) =>
             {
@@ -1772,6 +1779,15 @@ internal sealed class VideoEditorWindow : MyWindow
                 }
             };
         }
+
+        // 保持音调开关：与静音一样不是 Spin，单独绑。
+        _pitchToggle.PropertyChanged += (_, e) =>
+        {
+            if (e.Property == ToggleSwitch.IsCheckedProperty)
+            {
+                ApplyPropertyEdits();
+            }
+        };
 
         UpdateSliderReadouts();
         ToolTip.SetTip(_detachAudioButton, "把该视频片段的原声拆成独立音频片段（放到音频轨），原视频片段随之静音。");
@@ -2119,18 +2135,43 @@ internal sealed class VideoEditorWindow : MyWindow
                 InspectorSliderRow("淡入（秒）", _fadeInSlider, _fadeInValue),
                 InspectorSliderRow("淡出（秒）", _fadeOutSlider, _fadeOutValue),
                 InspectorRow("静音", _muteToggle),
+                new TextBlock
+                {
+                    Text = "播放速度",
+                    FontWeight = FontWeight.SemiBold,
+                    Margin = new Thickness(0, 8, 0, 0)
+                },
+                InspectorSliderRow("速度", _speedSlider, _speedValue),
+                _speedHint,
+                InspectorRow("音频", _pitchToggle),
                 _audioHint,
                 InspectorRow("", _detachAudioButton)
             }
         };
     }
 
-    /// <summary>刷新滑条右侧的数值读数（拖动与回填都要调）。</summary>
+    /// <summary>刷新滑条右侧的数值读数与速度说明（拖动与回填都要调）。</summary>
     private void UpdateSliderReadouts()
     {
         _volumeValue.Text = $"{_volumeSlider.Value:0}%";
         _fadeInValue.Text = $"{_fadeInSlider.Value:0.#}s";
         _fadeOutValue.Text = $"{_fadeOutSlider.Value:0.#}s";
+        var speed = Math.Clamp(_speedSlider.Value / 100.0, 0.1, 8);
+        _speedValue.Text = $"{speed:0.##}×";
+        var clip = _selected;
+        if (clip == null)
+        {
+            _speedHint.Text = "";
+        }
+        else
+        {
+            var source = Math.Max(0, clip.OutPoint - clip.InPoint);
+            _speedHint.Text = $"{source:0.#}s 素材 → 时间轴 {clip.Duration:0.#}s" +
+                              (Math.Abs(speed - 1) < 0.001 ? "" : speed > 1 ? "（变快）" : "（变慢）");
+        }
+
+        // 原速时不存在变调问题，开关置灰。
+        _pitchToggle.IsEnabled = Math.Abs(speed - 1) > 0.001 && _speedSlider.IsEnabled;
     }
 
     /// <summary>
@@ -5479,7 +5520,8 @@ internal sealed class VideoEditorWindow : MyWindow
                 .Select(c => c.StartTime + c.Duration).DefaultIfEmpty(0).Max();
             var minIn = Math.Max(0, clip.InPoint + prevEnd - clip.StartTime);
             var newIn = Math.Clamp(clip.InPoint + deltaSeconds, minIn, clip.OutPoint - 0.1);
-            var applied = newIn - clip.InPoint;
+            // 时间轴位移要按速度折算：入点推进 Δ 秒素材，时间轴上只推进 Δ/速度（否则右缘会漂）。
+            var applied = (newIn - clip.InPoint) / clip.EffectiveSpeed;
             clip.InPoint = newIn;
             clip.StartTime = Math.Max(0, clip.StartTime + applied);
             Canvas.SetLeft(block, clip.StartTime * _pxPerSecond);
@@ -6135,6 +6177,9 @@ internal sealed class VideoEditorWindow : MyWindow
             _fadeInSlider.Value = Math.Clamp(clip?.AudioFadeIn ?? 0, 0, _fadeInSlider.Maximum);
             _fadeOutSlider.Value = Math.Clamp(clip?.AudioFadeOut ?? 0, 0, _fadeOutSlider.Maximum);
             _muteToggle.IsChecked = clip?.Muted ?? false;
+            _speedSlider.Value = Math.Clamp(Math.Round((clip?.Speed ?? 1) * 100), 25, 400);
+            _pitchToggle.IsChecked = clip?.PreservePitch ?? false;
+            _speedSlider.IsEnabled = has;
             _volumeSlider.IsEnabled = audioCapable;
             _fadeInSlider.IsEnabled = audioCapable;
             _fadeOutSlider.IsEnabled = audioCapable;
@@ -6450,6 +6495,9 @@ internal sealed class VideoEditorWindow : MyWindow
         clip.AudioFadeIn = Math.Max(0, _fadeInSlider.Value);
         clip.AudioFadeOut = Math.Max(0, _fadeOutSlider.Value);
         clip.Muted = _muteToggle.IsChecked == true;
+        // 速度只改时间轴时长（Duration = 素材区间 ÷ 速度），入出点与素材位置都不动。
+        clip.Speed = Math.Clamp(_speedSlider.Value / 100.0, 0.1, 8);
+        clip.PreservePitch = _pitchToggle.IsChecked == true;
         clip.CropLeft = Math.Clamp(_cropLSpin.DoubleValue, 0, 1);
         clip.CropTop = Math.Clamp(_cropTSpin.DoubleValue, 0, 1);
         clip.CropRight = Math.Clamp(_cropRSpin.DoubleValue, 0, 1);
@@ -6732,7 +6780,7 @@ internal sealed class VideoEditorWindow : MyWindow
                         continue;
                     }
 
-                    var mediaTime = clip.InPoint + (time - clip.StartTime);
+                    var mediaTime = clip.SourceTimeAt(time - clip.StartTime);
                     // 复用已打开的源；定位在 GetSeekSource 内部完成（微移=顺序读帧，大跳=seek）。
                     var source = GetSeekSource(t, clip, mediaTime);
                     if (source == null)
