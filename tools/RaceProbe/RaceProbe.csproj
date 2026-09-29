@@ -15,7 +15,19 @@
 
   <ItemGroup>
     <PackageReference Include="FFmpeg.AutoGen" Version="8.1.0" />
+    <!-- audio 模式：渲染带音频要跑真实的渲染器 + 离线混音（NAudio 只是 ProjectAudioMixer 的编译依赖）。 -->
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+    <PackageReference Include="System.Drawing.Common" Version="8.0.25" />
     <Compile Include="..\..\FFmpegVideoDecoder.cs" Link="FFmpegVideoDecoder.cs" />
+    <Compile Include="..\..\FFmpegVideoEncoder.cs" Link="FFmpegVideoEncoder.cs" />
+    <Compile Include="..\..\FFmpegAudioDecoder.cs" Link="FFmpegAudioDecoder.cs" />
+    <Compile Include="..\..\AudioSpeedReader.cs" Link="AudioSpeedReader.cs" />
+    <Compile Include="..\..\VideoFrameSource.cs" Link="VideoFrameSource.cs" />
+    <Compile Include="..\..\VideoProject.cs" Link="VideoProject.cs" />
+    <Compile Include="..\..\ProjectAudioMixer.cs" Link="ProjectAudioMixer.cs" />
+    <Compile Include="..\..\VideoProjectRenderer.cs" Link="VideoProjectRenderer.cs" />
+    <Compile Include="..\..\OverlayFrameGenerator.cs" Link="OverlayFrameGenerator.cs" />
+    <Compile Include="..\..\FilterUtils.cs" Link="FilterUtils.cs" />
   </ItemGroup>
 
 </Project>

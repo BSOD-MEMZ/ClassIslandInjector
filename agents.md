@@ -21,8 +21,8 @@
 | `SmtcWatcher.cs`                                                                                | 事件驱动的 SMTC 会话监听器（WinRT），推送取色结果/缩略图/播放状态                         |
 | `SmtcAlbumColorPicker.cs`                                                                       | 纯取色工具（MaterialColorUtilities），**不含 WinRT**；含诊断日志                    |
 | `VideoFrameSource.cs` / `FFmpegVideoDecoder.cs` / `FFmpegRuntime.cs`                         | 视频背景解码（**纯 FFmpeg，无 WMF**）：后台解码线程、FFmpeg 解码器、库检测 + 联机下载 |
-| `FFmpegAudioDecoder.cs` / `VideoAudioPlayer.cs`                                             | 单文件视频背景的**音频输出**（「播放声音」开关，默认关闭）：FFmpeg 解音频轨 + swr 统一重采样为 48kHz/立体声/s16 → NAudio `WasapiOut`（共享模式）。无音频轨 / 设备不可用一律静默降级为无声 |
-| `ProjectAudioMixer.cs` / `AudioWaveform.cs`                                                 | 工程（多片段）音频：按工程时间轴混音「音频轨片段 + 视频片段自带原声」，逐片段应用音量与淡入/淡出包络、int 累加后钳制防削波；波形峰值包络提取（20ms 细粒度 + 按文件缓存，供时间轴绘制） |
+| `FFmpegAudioDecoder.cs` / `VideoAudioPlayer.cs`                                             | 单文件视频背景的**音频输出**（「播放声音」开关，默认关闭）：FFmpeg 解音频轨 + swr 统一重采样为 48kHz/立体声/s16 → NAudio `WasapiOut`（共享模式）。无音频轨 / 设备不可用一律静默降级为无声。**循环同步**：`VideoFrameSource.OnLoopRestart` 在每次画面循环复位时把音频 `Seek(0)`（音频与视频各自独立循环，周期一旦不一致就会越滚越错位）；「播放声音」开启时底图按**源帧率**播放（否则视频循环周期 ≠ 音频时长，一个画面循环里音频会重复若干遍） |
+| `ProjectAudioMixer.cs` / `AudioWaveform.cs`                                                 | 工程（多片段）音频：按工程时间轴混音「音频轨片段 + 视频片段自带原声」，逐片段应用音量与淡入/淡出包络、int 累加后钳制防削波；波形峰值包络提取（20ms 细粒度 + 按文件缓存，供时间轴绘制）。**离线渲染走同一个 `MixChunk`**：`StartOffline(project)` + `ReadForRender(...)` 不建立音频输出、直接按样本号产出 PCM，所以「渲染出来的声音」与「预览听到的」口径完全一致（含变速/保持音调/轨静音） |
 | `VideoProject.cs` / `VideoProjectPlayer.cs` / `Views/VideoEditorWindow.cs`               | 视频工程（多片段拼接/变换）与 PR 风格视频编辑器（素材库/舞台/属性/时间轴）            || `PresetExchange.cs`                                                                              | 预设交换：把用户预设（含静态资源）导出为 .cizip / 从 .cizip 导入；包内 metadata.json / preview.png 商店展示字段 |
 | `PresetStoreService.cs`                                                                          | 预设商店联机服务：索引抓取（15min 磁盘缓存 + 离线回退）、预览图缓存、.cizip 下载（进度）、已安装记录（installed.json）、版本兼容检查 |
 | `Views/PresetStoreWindow.cs` + `Views/PresetStoreCard.cs`                                        | 预设商店窗口（1:1 仿新版微软商店）：自定义标题栏 + 左窄导航（首页/全部/热门/我的）+ Banner 轮播 + 横向卡行 + 网格浏览 + 详情页 || `Views/InjectorSettingsPage.cs`                                                                 | 设置页 UI（FluentAvalonia`SettingsExpander`/`InfoBar`/`ContentDialog`）             |
@@ -81,6 +81,7 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
   - `tools\RaceProbe`：`RaceProbe.exe [视频] [FFmpeg库目录]` = 「解码线程正在 `ReadFrame` 时另一线程 `Dispose`」的竞态回归（5 轮）。
     守护的是这个坑：**释放解码器必须先 `Join` 播放线程、且 `ReadFrame`/`SeekTo`/`Restart` 与 `Dispose` 共用 `FFmpegVideoDecoder._gate` 互斥**，
     否则 native 上下文被 free 后继续读 → `AccessViolationException`(0xc0000005) 静默击穿宿主进程（点「渲染并应用」第一步 `StopPreview` 就会踩到）。
+   另有 `RaceProbe.exe --audio [视频] [FFmpeg库目录] [输出目录]` = 「渲染带音频」端到端回归（探针自己合成 1kHz 正弦当音源，跑真实 `VideoProjectRenderer` 后从 mp4 里解回音频量化）：断言音频时长 == 工程时长、片段起点前静音、片段区间内有声、**变速下频率正确**（2× 保持音调仍 1kHz、2× 变调 2kHz），以及关掉「包含音频」时产物确实没有音轨。守护的是**复用器 `stream_index`** 这个坑（见约束 10）。
   - 探针跑通 **不等于** 宿主里不出问题——很多崩溃只在「解码帧进 Avalonia 渲染层」之后才发生（见约束 9 的 16 对齐）。
 
 ### 3. Avalonia 派生控件必须覆写 `StyleKeyOverride`
@@ -175,7 +176,18 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
   - **文本/形状覆盖层**：`VideoClip` 加 `Kind/Text/Color/Shape/Grayscale/FlipX/FlipY`；`OverlayFrameGenerator.cs`（System.Drawing 渲染）；播放器覆盖层返回静态帧、渲染器预乘合成+翻转/灰度、`WriteFrameToImage` 加灰度参数、`ApplyVideoClipTransform` 支持 FlipX/Y。
 - **版本号必须从 `ffmpeg.LibraryVersionMap` 动态读取，勿硬编码**：本仓库用的是 **8.1**（avcodec-62/avformat-62/avutil-60/swresample-6/swscale-9）；9.0 是 avcodec-63/avformat-63/avutil-61/swresample-7/swscale-10；7.1 是 avcodec-61/.../swscale-8。`FFmpegRuntime` 按主版本生成候选（`known = 9.0 / 8.1 / 8.0 / 7.1 / 7.0`，因为 avcodec 主版本 62 同时对应 8.0/8.1）逐个尝试。升级 FFmpeg.AutoGen 时 `FFmpegVideoDecoder` 的 `ffmpeg.SWS_BILINEAR` 已改为 `(int)SwsFlags.SWS_BILINEAR`。
 
+### 10. mp4 双流复用（渲染带音频）的两个坑
+
+渲染产物要带音轨时，`FFmpegVideoEncoder` 会在视频流之外再建一条 AAC 流（原生 `aac` 编码器 + `SwrContext` 做 s16 交错 → fltp 平面；`swresample` 本来就在必需库清单里，不需要多下发 dll）。实测过两件事：
+
+- **`pkt->stream_index` 必须自己写**：`avcodec_receive_packet` **不会**设置这个字段（默认 0）。单流（纯视频）时因为视频恰好就是 0 号流而看不出问题；一旦加音轨，音频包会被当成视频包塞进 0 号流 → 复用器刷 `Application provided invalid, non monotonically increasing dts to muxer in stream 0`，并把视频轨写坏：产物只剩 1~2 KB、`Could not find codec parameters for stream 0 ... unspecified pixel format`，再读它会在 libswscale 里断言崩掉（`Assertion desc failed at libswscale/swscale_internal.h`）。`DrainPackets(ctx, pkt, tb, streamIndex)` 里按所属流显式赋值，是唯一的修法。
+- **两路流各自的时间基要分开记**：视频 `_tbStream`（写头后被复用器改成 1/10240 之类）与音频 `_tbAudioStream`（1/48000）不是一回事，`av_packet_rescale_ts` 必须用对应的那个；`Finish()` 里两路编码器都要 flush（音频尾巴不足一帧要补静音凑满 AAC 的 1024）再 `av_write_trailer`。
+- **音频时间轴用「累计样本号」推进**（`endSample = round(t × 48000)`），不要按帧长做浮点累加——非整数帧率（29.97 等）下后者会积累漂移。AAC 有 ~1024 样本（21ms）前置延迟，mp4 复用器会自己写 edit list 补偿，不用手动处理。
+- 渲染选项里的「包含音频」（`InjectorSettings.RenderIncludeAudio`，默认开）会在产物带音频时**顺手打开底图的「播放声音」**（`VideoFillAudioEnabled`），否则用户会以为渲染没声音。
+
 ## 预设商店（PresetStore）
+
+
 
 - 数据源与格式沿用此前约定：索引 `https://xxtsoft.top/support/injector/presets/index.json`（schemaVersion 1，camelCase、大小写不敏感），条目字段 = `Defaults/preset-index.sample.json`（id/name/author/school/description/pluginVersion/minPluginVersion/createdAt/downloadUrl(.cizip)/previewUrl(.png)/sizeBytes，可选 downloads 供热门排序）。
 - 入口：设置页「用户预设 → 预设商店」；窗口单实例（`PresetStoreWindow.Current`）。窗口用 `MyWindow`（FA `AppWindow`）+ `TitleBar.ExtendsContentIntoTitleBar` + `TitleBarHitTestType.Complex`（宿主 SettingsWindowNew 同款）。

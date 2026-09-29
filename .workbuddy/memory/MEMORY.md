@@ -32,9 +32,17 @@
 - 目标框架锁定 `net8.0-windows10.0.19041.0`（必须与宿主的 WinRT SDK 对齐）
 - Avalonia 派生控件必须覆写 `StyleKeyOverride`
 - 判断 SMTC 焦点会话必须用 `SourceAppUserModelId` 字符串比较，不能用 `ReferenceEquals`
+- **不要抢控件的空格键**：编辑器快捷键挂窗口级 `KeyDown`（冒泡），焦点在按钮/开关/下拉上时由控件先吃掉空格（Button 触发 Click、ToggleSwitch 切换）——这是 Avalonia 默认行为，用户明确要求保留。曾改成隧道（Tunnel）阶段强制「空格永远只切预览播放」，被要求回退（7d8c90c）。
 - **FFmpeg native 上下文（AVCodecContext/SwsContext/AVFormatContext）的释放规则**：①先停线程并 `Join`；②释放要与「可能正在用它做 native 调用的入口」互斥。`FFmpegVideoDecoder` 用 `_gate` 把 `ReadFrame`/`SeekTo`/`Restart` 与 `Dispose` 串起来；持有者（`VideoProjectPlayer`）必须先 Join 再释放各轨 Source。违反任一条 → `sws_scale`/`ReadFrame` 读已释放内存 → `AccessViolationException`(0xc0000005) **静默击穿宿主进程**（无托管异常、无 crash.log，只有事件日志里 `coreclr.dll` + `Application Error`）。回归探针：`tools\RaceProbe`。
 - **排查「静默崩溃」用**：`wevtutil qe Application /c:15 /rd:true /f:text /q:"*[System[Provider[@Name='.NET Runtime']]]"`（给出异常类型 + 完整托管栈，比 Application Error 的单行有用得多）。
 - **FFmpeg 解码输出尺寸必须向上对齐到 16**（H.264 宏块；`FFmpegVideoDecoder.AlignUp16`）。非 16 倍数的尺寸（如 412×68）会让 `sws_scale` 越界写坏托管堆，随后以 `coreclr.dll` + `0xc0000005` **静默击穿进程**，无任何托管异常可抓。详见 `agents.md` 第 9 节。
+
+## FFmpeg mp4 封装（音频/双流）
+
+- **`pkt->stream_index` 必须自己写**：`avcodec_receive_packet` **不设置**这个字段（默认 0）。纯视频时视频恰好是 0 号流所以看不出问题，一旦加音轨（渲染带音频）音频包会被塞进 0 号流 → 复用器刷 `non monotonically increasing dts` 并把视频轨写坏（产物 1~2KB、`unspecified pixel format`、读它还会在 libswscale 里断言崩掉）。见 `agents.md` 约束 10。
+- 双流时**两路时间基分开记**（视频写头后是 1/10240 之类、音频 1/48000），`Finish()` 两路都要 flush 再 `av_write_trailer`；音频时间轴用**累计样本号** `round(t × 48000)` 推进，别按帧长浮点累加（非整数帧率会漂）。
+- 主界面底图音频链路：产物带音轨 → `VideoAudioPlayer`（「播放声音」开关）出声。**循环同步**靠 `VideoFrameSource.OnLoopRestart`（画面复位时音频 `Seek(0)`）；「播放声音」开启时底图按**源帧率**播放（否则视频循环周期 ≠ 音频时长，一个循环里音频会重复若干遍）。回归探针：`tools\RaceProbe --audio`。
+
 
 ## 调试与排查（沙箱环境）
 

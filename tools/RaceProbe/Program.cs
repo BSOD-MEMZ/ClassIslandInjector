@@ -39,6 +39,17 @@ internal static class Program
     private static int Main(string[] args)
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
+
+        // --audio：[视频] [FFmpeg库目录] [输出目录] → 「渲染带音频」端到端回归。
+        if (args.Length > 0 && args[0] == "--audio")
+        {
+            Console.WriteLine("=== 「渲染带音频」端到端回归探针 ===");
+            return AudioRenderCheck.Run(
+                args.Length > 1 ? args[1] : @"D:\Downloads\injector-video.mp4",
+                args.Length > 2 ? args[2] : @"D:\Dev\ClassIsland\data\Config\Plugins\classisland.injector\ffmpeg",
+                args.Length > 3 ? args[3] : Path.Combine(Path.GetTempPath(), "raceprobe-audio"));
+        }
+
         var video = args.Length > 0 ? args[0] : @"D:\Downloads\injector-video.mp4";
         var libDir = args.Length > 1
             ? args[1]
