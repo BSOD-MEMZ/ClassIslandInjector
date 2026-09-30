@@ -287,6 +287,40 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
 - `VideoAudioPlayer.SetSuspended` 的拦截点在 `DecoderWaveProvider.Read`（吐静音、**不推进解码器**，
   位置保留）：WASAPI 的拉取是它主动发起的，在调用方挡不住。
 
+### 15. 视频轨号重映射必须排除音频片段（`Track = -1`）
+
+- 凡「把某些轨号 +1 给新轨腾位」或「把轨号压缩成连续」的循环，**必须 `if (c.IsAudio) continue;`**。
+  音频片段的 `Track` 恒为 -1（占位约定，真实轨号在 `AudioTrack`），参与整数运算会把 -1 变成 0
+  ——一个**伪造的视频轨号**，随后 `TrackCount`（只统计非音频片段）凭空 +1，多出一条没有任何
+  视频片段的空泳道，且每做一次「拖到轨道边界新建轨道」就再涨一轨。
+- 实测症状：「添加/移动素材后莫名其妙出现一个新的空轨道」（2026-09-30 定位）。
+- 已在三处加固：`CompactTracks`、`HandleTimelineDrop` 的插入新轨分支、
+  `OnTimelinePointerReleased` 的组拖新建轨 / 落既有轨分支（后两者还额外跳过了音频片段的
+  `FitsOnTrack`/`FitToTrack`，音频占用判定走 `FitsOnAudioTrack`）。
+
+### 16. 时间轴交互状态必须能被「指针移出窗口」收敛
+
+- 片段拖拽**刻意不做指针捕获**（窗口级 `PointerMoved`/`PointerReleased` 驱动，规避重挂载导致的不跟手），
+  代价是：指针在**窗口外**松开时 `PointerReleased` 不会来 → `_moveGroup` / `_trimState` /
+  `_marqueeStart` 留在置位状态。块会一直浮在 `_timelineRoot` 上挡住泳道，泳道按下也反复重新捕获框选起点。
+- 用户看到的是「打开编辑器后轨道点不动、跟卡住一样」，而 **resize 一下就好了**（resize 触发
+  `RefreshTimeline` 从模型整体重建，把残留视觉状态一并冲掉）。
+- 兜底：窗口级 `PointerExited` / `Deactivated` → `CancelTimelineDrag()`（该函数现在同时清
+  `_marqueeStart`），泳道另挂 `PointerCaptureLost` 清框选。
+
+### 17. 素材残缺（截断的 DASH/fMP4）会表现为「底图一直循环开头几秒」
+
+- 现象：本地视频底图反复播开头一小段。**不是循环逻辑坏了**（`--loop` 探针实测复位正常、
+  复位后首帧与起始首帧像素差 ~1.2）。
+- 真因：容器声明时长完整，但可解码帧数远少于「时长 × 帧率」。典型是**未下载完的 fMP4/DASH
+  分片流**（`ftyp` 里带 `dash`、由 `moof`+`mdat` 序列组成，缺 `sidx`/`mfra` 索引或被截断）。
+  实测样本 `什么时候告白啊!!!!!.40930379625.mp4`：声明 217.666s @24fps（≈5224 帧），
+  **只解出 30 帧**（≈1.25s）→ 循环播放就是反复那 1.25s。
+- `VideoFrameSource.WarnIfFileTruncated()` 在首次 EOF 对账（低于声明帧数 30% 即告警，只报一次），
+  日志明确指向「素材本身残缺，请换完整文件」，避免用户误判成插件 bug。
+- 排查手法：`tools\AudioProbe --vdec <视频> <ffmpeg目录>` 看「完成：共解码 N 帧」与声明时长的比值；
+  `--loop` 看复位是否正常。两者一比即可区分「引擎问题」与「素材问题」。
+
 ## 预设商店（PresetStore）
 
 - 数据源与格式沿用此前约定：索引 `https://xxtsoft.top/support/injector/presets/index.json`（schemaVersion 1，camelCase、大小写不敏感），条目字段 = `Defaults/preset-index.sample.json`（id/name/author/school/description/pluginVersion/minPluginVersion/createdAt/downloadUrl(.cizip)/previewUrl(.png)/sizeBytes，可选 downloads 供热门排序）。

@@ -34,6 +34,10 @@ internal sealed class VideoFrameSource : IDisposable
     private Action<VideoFrame>? _frameCallback;
     private double _targetFps = 24;
     private bool _loop = true;
+    /// <summary>自解码开始累计的帧数（诊断用：与「声明时长 × 帧率」对比可识别残缺/索引缺失的文件）。</summary>
+    private long _decodedFrames;
+    /// <summary>是否已就「可解码帧数远少于声明时长」告警过（只报一次，避免刷日志）。</summary>
+    private bool _shortFileWarned;
 
     /// <summary>硬件解码器名（如 "h264_qsv"）；null = 软解。需在 Open 前设置，Open 失败自动回退软解。</summary>
     public string? HardwareDecoder { get; set; }
@@ -116,8 +120,14 @@ internal sealed class VideoFrameSource : IDisposable
             sw.Restart();
             if (!ReadNextFrame())
             {
+                // 首次到达 EOF 时对账：实际可解出的帧数 vs「声明时长 × 源帧率」。
+                // 残缺的 fMP4 / DASH 分片（moof+mdat 序列被截断、缺 sidx/mfra 索引）会在只解出
+                // 极少数帧时就 EOF，而容器声明的 Duration 仍是完整时长 —— 于是底图“一直循环开头那几秒”，
+                // 用户会以为是插件坏了。这里把结论写进日志，指明是素材本身的问题。
+                WarnIfFileTruncated();
                 if (_loop && TryRestart())
                 {
+                    _decodedFrames = 0; // 复位后重新计数（下一轮的告警判断才准）
                     // 循环回到开头：通知外部（音频侧跟着回零，否则两条独立循环会越滚越错位）。
                     try
                     {
@@ -134,6 +144,8 @@ internal sealed class VideoFrameSource : IDisposable
                 Log(_loop ? "播放结束（循环复位失败），停止" : "播放结束，停止");
                 break;
             }
+
+            _decodedFrames++;
 
             if (intervalMs > 0)
             {
@@ -190,6 +202,39 @@ internal sealed class VideoFrameSource : IDisposable
 
     /// <summary>循环播放复位：seek 回开头并刷新解码器缓冲。</summary>
     private bool TryRestart() => _ffmpeg?.Restart() ?? false;
+
+    /// <summary>
+    /// 首次 EOF 时对账：若「实际解出的帧数」远少于「声明时长 × 源帧率」，说明素材本身残缺
+    /// （典型：fMP4 / DASH 分片流被截断，moof+mdat 序列不完整、缺 sidx/mfra 索引）。
+    /// 这时循环播放只会反复播那几秒开头 —— 用户看到的是「底图一直循环开头」，
+    /// 但根因在素材而不是解码/循环逻辑（循环复位本身实测正常）。只告警一次，措辞明确指向素材。
+    /// </summary>
+    private void WarnIfFileTruncated()
+    {
+        if (_shortFileWarned || _ffmpeg == null)
+        {
+            return;
+        }
+
+        _shortFileWarned = true;
+        var declared = _ffmpeg.Duration;
+        var fps = _ffmpeg.SourceFps;
+        if (declared <= 0 || fps <= 0.5 || _decodedFrames <= 0)
+        {
+            return;
+        }
+
+        var expected = declared * fps;
+        // 低于声明帧数的 30% 才算异常（正常文件因首帧对齐 / 末尾不完整帧会有小幅出入）。
+        if (_decodedFrames >= expected * 0.3)
+        {
+            return;
+        }
+
+        Log($"⚠️ 素材疑似残缺：容器声明时长 {declared:0.##}s（约 {expected:0} 帧 @{fps:0.##}fps），" +
+            $"但实际只能解出 {_decodedFrames} 帧（约 {_decodedFrames / fps:0.##}s 画面）。" +
+            "循环播放会一直重复这一小段开头；请换用完整的视频文件（该文件多半是未下载完的 DASH/fMP4 分片流）。");
+    }
 
     /// <summary>跳到指定时间（秒），供片段入点裁剪（须在 Start 前调用）。</summary>
     public bool SeekTo(double seconds) => _ffmpeg?.SeekTo(seconds) ?? false;

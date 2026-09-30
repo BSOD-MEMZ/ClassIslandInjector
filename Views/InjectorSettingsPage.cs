@@ -1104,7 +1104,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
         }
         panel.Children.Add(Setting("\uEEB5", "保存当前为预设", "把插件当前全部设置项保存为一个命名预设（同名覆盖）", PresetSaveFooter()));
         panel.Children.Add(Setting("\uE104", "套用 / 删除预设", "套用会把全部设置项替换为该预设保存时的状态。", PresetManageFooter()));
-        panel.Children.Add(Setting("\uE0E4", "导出 / 导入预设", "把预设（含底图等静态资源与作者信息）导出为 .cizip 文件分享给别人，或从别人分享的 .cizip 导入预设。", PresetExchangeFooter()));
+        panel.Children.Add(Setting("\uE0E4", "导出 / 导入预设", "把预设导出为 .cizip 文件分享给别人，或从别人分享的 .cizip 导入预设。", PresetExchangeFooter()));
         panel.Children.Add(Setting("\uEAAF", "双击安装预设包", "注册 .cizip 文件关联：双击预设包即可启动 ClassIsland 并进入安装确认。", PresetAssociationFooter()));
         panel.Children.Add(Setting("\uE0BD", "恢复插件默认", "把全部设置恢复为插件默认（不会修改 Overrides.axaml）", Button("恢复默认", ResetToDefaults)));
 
@@ -1230,7 +1230,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("最大分辨率", "解码降采样上限（宽高中较大者，像素），降低资源占用。", _videoFillMaxDimension),
             Item("目标帧率", "解码播放帧率上限（fps），越低越省资源。", _videoFillFps),
             Item("循环播放", "播放到结尾后自动回到开头继续。", _videoFillLoop),
-            Item("播放声音", "视频背景同时输出音频（视频需含音频轨）。默认关闭，避免升级后突然出声。", _videoFillAudio),
+            Item("播放声音", "视频背景同时输出音频。", _videoFillAudio),
             Item("音量", "视频背景的音量。", _videoFillAudioVolume));
         _videoFillGroup.Name = "VideoFillGroup";
         _videoFillEnabled.Name = "VideoFillToggle";

@@ -5,6 +5,7 @@ using Avalonia.Animation;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
+using Avalonia.Input.GestureRecognizers;
 // Shapes 命名空间与 System.IO.Path 冲突，只取需要的类型。
 using Ellipse = Avalonia.Controls.Shapes.Ellipse;
 using Avalonia.Layout;
@@ -14,6 +15,7 @@ using Avalonia.Platform;
 using Avalonia.Platform.Storage;
 using Avalonia.Styling;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using ClassIsland.Core;
 using ClassIsland.Core.Abstractions.Services;
 using ClassIsland.Core.Controls;
@@ -971,6 +973,14 @@ internal sealed class VideoEditorWindow : MyWindow
                 OnTimelinePointerReleased(e);
             }
         };
+        // ⚠️ 拖拽「无捕获 + 窗口级驱动」的代价：指针在**窗口外**松开时 PointerReleased 不会来，
+        // `_moveGroup` / `_trimState` / `_marqueeStart` 会留在置位状态 —— 块一直浮在 _timelineRoot 上
+        // （挡住泳道，点上去只会重新进入拖拽分支）、泳道按下则反复重复捕获框选起点。
+        // 用户看到的就是「打开编辑器后轨道点不动、跟卡住一样」，而 **resize 一下就好了**
+        // （resize 触发 RefreshTimeline 从模型整体重建，把这些残留视觉状态一并冲掉）。
+        // 这里两处兜底：指针离开窗口、窗口失去激活 —— 都视为拖拽中断，直接收敛状态。
+        PointerExited += (_, _) => CancelTimelineDrag();
+        Deactivated += (_, _) => CancelTimelineDrag();
         // 拖拽诊断：记录时间轴内容区内谁收到了“按下”（未被子控件 Handled 的按下都会冒泡到窗口）。
         // 若一次拖动没有对应的「DRAG 按下」日志，看这里可知是哪个元素拦下了按下（叠层/滚动区等）。
         PointerPressed += (_, e) =>
@@ -1302,6 +1312,15 @@ internal sealed class VideoEditorWindow : MyWindow
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
             Content = _timelineRoot
         };
+        // ⚠️ 触摸设备上 ScrollViewer 默认把手势当滚动优先处理：手指在泳道上按下并拖动时，
+        // 内部的 ScrollGestureRecognizer 会抢走指针并判为「平移」，泳道收到的 PointerMoved
+        // 直接消失 —— 表现就是触摸屏上框选拉不出来、素材也拖不到轨道（鼠标无此问题：
+        // 鼠标拖动不触发 ScrollGestureRecognizer 的平移判定）。
+        //
+        // 识别器挂在模板内部的 PART_ContentPresenter 上（不在 ScrollViewer 自身），
+        // 因此要等模板展开后才找得到 —— 挂到 LayoutUpdated 里做一次性关闭，
+        // 首次 LayoutUpdated 时 presenter 必然已建好（Loaded 有时还早于模板应用）。
+        _lanesScroll.LayoutUpdated += DisableTouchPanOnce;
         // 面板底部横向滚动条：固定在时间轴面板底端（不随纵向滚动），驱动 _lanesScroll 横向滚动。
         _timelineHScroll = new ScrollBar
         {
@@ -1331,6 +1350,9 @@ internal sealed class VideoEditorWindow : MyWindow
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto
         };
+        // 外层同理：它的纵向平移识别器同样会抢走手指拖动（框选/拖拽时的指针移动）。
+        // 外层纵向滚动改用右侧滚动条 + 滚轮（滚轮到 _timelineRoot 里处理）。
+        _timelineScroll.LayoutUpdated += DisableTouchPanOnce;
         _lanesScroll.ScrollChanged += (_, _) =>
         {
             _rulerTranslate.X = -_lanesScroll.Offset.X;
@@ -2659,9 +2681,25 @@ internal sealed class VideoEditorWindow : MyWindow
     }
 
     /// <summary>删除空轨道并把轨道号压缩为连续 0..n-1（用户要求：无内容的轨道自动删除）。</summary>
+    /// <summary>
+    /// 删除空轨并把视频轨号压缩为连续（0..n-1），同时按新轨号重排 <c>TrackStates</c>。
+    /// <para>
+    /// ⚠️ **音频片段必须整体排除**。音频片段的 <c>Track</c> 恒为 -1（轨号在 <c>AudioTrack</c>），
+    /// 若把它一并纳入重映射：<c>used</c> 会包含 -1，于是 -1 被映射到 0、真正的视频轨 0 被映射到 1
+    /// —— 音频片段的 <c>Track</c> 被写成 0（一个**伪造的视频轨号**），视频片段则被顶高一轨，
+    /// <c>TrackCount</c>（只看非音频片段）随之 +1，凭空多出一条没有任何视频片段的空泳道，
+    /// 并且每做一次「拖到轨道边界新建轨道」就再涨一轨。
+    /// 实测症状：添加/移动素材后「莫名其妙出现一个新的空轨道」（2026-09-30 定位）。
+    /// </para>
+    /// </summary>
     private void CompactTracks()
     {
-        var used = _project.Clips.Select(c => c.Track).Distinct().OrderBy(t => t).ToList();
+        // 视频轨号只由非音频片段决定：音频片段不占视频轨，也不参与压缩。
+        var used = _project.Clips.Where(c => !c.IsAudio)
+            .Select(c => c.Track)
+            .Distinct()
+            .OrderBy(t => t)
+            .ToList();
         if (used.Count == 0)
         {
             _selectedTrack = 0;
@@ -2677,7 +2715,11 @@ internal sealed class VideoEditorWindow : MyWindow
 
         foreach (var clip in _project.Clips)
         {
-            clip.Track = map[clip.Track];
+            // 音频片段保持 Track = -1（约定值），不重映射。
+            if (!clip.IsAudio)
+            {
+                clip.Track = map[clip.Track];
+            }
         }
 
         // 轨道状态随轨道号压缩重排（缺失用默认，空轨状态丢弃）。
@@ -3281,6 +3323,48 @@ internal sealed class VideoEditorWindow : MyWindow
         _clipboard = _selected.Clone();
         UpdateClipboardUi();
         _statusText.Text = $"已复制「{ClipDisplayName(_selected)}」（Ctrl+V 可粘贴到播放头）。";
+    }
+
+    /// <summary>
+    /// 剪切选中片段（右键菜单 / 将来接 Ctrl+X）：先复制进内部剪贴板，再从时间轴移除。
+    /// 与「复制」的差别只在移除这一步；剪贴板里放的是 <see cref="VideoClip.Clone"/>，
+    /// 所以移除后粘贴回来仍是独立副本（撤销也能回退这次移除）。
+    /// </summary>
+    private void CutSelectedClip()
+    {
+        if (_selected == null)
+        {
+            _statusText.Text = "先选中一个片段再剪切。";
+            return;
+        }
+
+        var locked = _selectedClips.Count(c => _project.GetTrackState(c.Track) is { Locked: true });
+        var cuttable = _selectedClips.Where(c => _project.GetTrackState(c.Track) is not { Locked: true }).ToList();
+        if (cuttable.Count == 0)
+        {
+            _statusText.Text = "选中片段所在轨道已锁定，无法剪切。";
+            return;
+        }
+
+        // 多选时只把「主选中」放进剪贴板（与复制按钮一致的语义：剪贴板单条）。
+        _clipboard = _selected.Clone();
+        UpdateClipboardUi();
+        PushUndo();
+        foreach (var c in cuttable)
+        {
+            _project.Clips.Remove(c);
+        }
+
+        _selected = null;
+        _selectedClips.Clear();
+        CompactTracks();
+        RefreshTimeline();
+        ClearSelection();
+        ScheduleSave();
+        SyncPreviewWithProject();
+        _statusText.Text = locked > 0
+            ? $"已剪切 {cuttable.Count} 个片段（跳过 {locked} 个锁定轨片段）。"
+            : $"已剪切 {cuttable.Count} 个片段（Ctrl+V 粘贴到播放头）。";
     }
 
     /// <summary>判断片段能否放进指定轨道的指定位置（不与同轨其它片段重叠；exclude 用于移动时排除自身）。</summary>
@@ -4217,6 +4301,8 @@ internal sealed class VideoEditorWindow : MyWindow
             {
                 Height = LaneHeightOf(trackIndex),
                 CornerRadius = new CornerRadius(4),
+                // 裁剪：列窄于按钮总宽时把溢出的部分裁掉，不让按钮"漏"到泳道上。
+                ClipToBounds = true,
                 Background = trackIndex == _selectedTrack
                     ? new SolidColorBrush(TrackHeaderSelectedColor())
                     : new SolidColorBrush(state.Hidden ? TrackHeaderHiddenColor() : TrackHeaderIdleColor()),
@@ -4354,6 +4440,18 @@ internal sealed class VideoEditorWindow : MyWindow
                     UpdateAllBlockSelection();
                     FillPropertyPanel();
                     UpdateStageHandles();
+                }
+            };
+            // ⚠️ 框选状态兜底：lane 被捕获后若指针在窗口外松开、或捕获被系统抢走，
+            // PointerReleased 不会来 —— `_marqueeStart` 会一直留着，后续每次按泳道都重新捕获，
+            // 看起来像「轨道点不动」。这里在捕获丢失时清掉框选状态（拖拽状态另有 CancelTimelineDrag 兜）。
+            lane.PointerCaptureLost += (_, _) =>
+            {
+                if (_marqueeStart != null)
+                {
+                    _marqueeStart = null;
+                    _marqueeMoved = false;
+                    _marqueeRect.IsVisible = false;
                 }
             };
 
@@ -4587,6 +4685,55 @@ internal sealed class VideoEditorWindow : MyWindow
     }
 
     /// <summary>
+    /// <see cref="_lanesScroll"/> / <see cref="_timelineScroll"/> 的一次性触摸平移关闭 handler。
+    /// 必须在模板展开后执行（识别器挂在 PART_ContentPresenter 上），所以挂 <c>LayoutUpdated</c>
+    /// 而不是构造时直接调；执行成功后立即摘掉 handler，避免每帧白跑一次。
+    /// </summary>
+    private void DisableTouchPanOnce(object? sender, EventArgs e)
+    {
+        if (sender is not ScrollViewer viewer)
+        {
+            return;
+        }
+
+        viewer.LayoutUpdated -= DisableTouchPanOnce;
+        DisableTouchPanGesture(viewer);
+        EditorLog("已关闭时间轴滚动的触摸平移手势（触摸屏框选/拖拽素材用）。");
+    }
+
+    /// <summary>
+    /// 关掉滚动容器上「触摸平移」的手势识别器（仅触摸设备生效）。
+    /// <para>
+    /// 背景：Avalonia 的 Fluent 主题把 <c>ScrollGestureRecognizer</c> 挂在 ScrollViewer 模板内部的
+    /// <c>PART_ContentPresenter</c>（类型 <c>ScrollContentPresenter</c>）上，**不是**挂在 ScrollViewer 自己身上
+    /// —— 已用 headless 探针实测：<c>scrollViewer.GestureRecognizers.Count == 0</c>，而
+    /// <c>PART_ContentPresenter.GestureRecognizers.Count == 1</c>（那个就是 ScrollGestureRecognizer）。
+    /// 所以在 ScrollViewer 上找是找不到的，必须下探到模板里的 presenter。
+    /// </para>
+    /// <para>
+    /// 触摸设备上它在 PointerPressed 阶段就参与指针捕获，手指移动超过 <c>ScrollStartDistance</c>
+    /// 即被判为平移并把指针从泳道抢走 → 泳道收不到后续 PointerMoved，
+    /// 触摸屏上「框选多选」和「把素材拖进轨道」都做不出来（鼠标不触发该识别器，所以只在触摸端暴露）。
+    /// 把两个方向的 <c>Can*Scroll</c> 置 false 后它失去平移能力、不再抢指针，触摸事件正常下发到泳道。
+    /// 它**不影响**鼠标滚轮（<c>PointerWheelChanged</c> 与滚动条拖动走别的路径），时间轴横向滚动
+    /// 仍可用面板底部滚动条、外层纵向滚动条与滚轮。
+    /// </para>
+    /// </summary>
+    private static void DisableTouchPanGesture(ScrollViewer viewer)
+    {
+        foreach (var recognizer in viewer.GetVisualDescendants()
+                     .OfType<InputElement>()
+                     .SelectMany(e => e.GestureRecognizers))
+        {
+            if (recognizer is ScrollGestureRecognizer scroll)
+            {
+                scroll.CanHorizontallyScroll = false;
+                scroll.CanVerticallyScroll = false;
+            }
+        }
+    }
+
+    /// <summary>
     /// 定位播放头竖线（在 _playheadOverlay 覆盖层内，覆盖层已在泳道列，0 点与泳道/标尺对齐）。
     /// 2px 竖线在 18px 热区左缘，中心 = left + 1 = time*px - offsetX。
     /// </summary>
@@ -4801,8 +4948,10 @@ internal sealed class VideoEditorWindow : MyWindow
             Margin = new Thickness(0),
             MinWidth = 0,
             MinHeight = 0,
-            // 触摸友好命中尺寸（轨道头行高默认 60，足够容纳）；桌面鼠标同样更易点中。
-            Width = 34,
+            // 触摸友好命中尺寸。⚠️ 必须能塞进 **92px 的轨道头列**：三个按钮 + 2×1px 间距
+            // + 左右各 2px 边距 = 3×28 + 2 + 4 = 90px（曾用 34px → 110px，第三个删除按钮
+            // 整个被挤出列外，变成悬在泳道上的"漏出来"的三块）。
+            Width = 28,
             Height = 28,
             HorizontalContentAlignment = HorizontalAlignment.Center,
             VerticalContentAlignment = VerticalAlignment.Center
@@ -5588,7 +5737,105 @@ internal sealed class VideoEditorWindow : MyWindow
             _trimUndoPushed = false;
             e.Handled = true;
         };
+        // 右键 = 片段菜单（复制/剪切/粘贴/分割/分离音频/删除）。菜单项在 Opening 时按
+        // 该块的片段状态重建：右键也顺带把该片段纳入选中（多选内右键则保留多选，操作整组）。
+        block.ContextFlyout = BuildClipMenu(clip);
         return block;
+    }
+
+    /// <summary>
+    /// 片段右键菜单。菜单项在弹出时按当前选中状态构建（右键未选中的片段会先把它选上），
+    /// 这样「右键哪个就操作哪个」符合直觉，同时保留框选多选后整组删除的能力。
+    /// </summary>
+    private MenuFlyout BuildClipMenu(VideoClip clip)
+    {
+        var menu = new MenuFlyout();
+        menu.Opening += (_, _) =>
+        {
+            // 右键的片段不在当前选中集合里 → 单选它（在集合里 → 保留多选，操作整组）。
+            if (!_selectedClips.Contains(clip))
+            {
+                SelectClip(clip);
+                _selectedTrack = LaneOfClip(clip);
+                RefreshTimeline();
+                FillPropertyPanel();
+                UpdateStageHandles();
+            }
+
+            var trackLocked = clip.IsAudio
+                ? _project.GetAudioTrackState(clip.AudioTrack) is { Locked: true }
+                : _project.GetTrackState(clip.Track) is { Locked: true };
+            var count = Math.Max(1, _selectedClips.Count);
+            var many = count > 1;
+            var suffix = many ? $"（{count} 个）" : "";
+
+            menu.Items.Clear();
+            var copy = new MenuItem { Header = many ? $"复制{suffix}" : "复制", IsEnabled = !trackLocked };
+            copy.Click += (_, _) => CopySelectedClip();
+            var cut = new MenuItem { Header = many ? $"剪切{suffix}" : "剪切", IsEnabled = !trackLocked };
+            cut.Click += (_, _) => CutSelectedClip();
+            var paste = new MenuItem
+            {
+                Header = "粘贴到播放头",
+                IsEnabled = _clipboard != null,
+            };
+            paste.Click += (_, _) => PasteClip();
+            menu.Items.Add(copy);
+            menu.Items.Add(cut);
+            menu.Items.Add(paste);
+            menu.Items.Add(new Separator());
+
+            // 分割只在播放头落在片段内、且非多选时有意义（多选时播放头只切得到其中一个）。
+            var inside = _playheadTime > clip.StartTime + 0.001 &&
+                         _playheadTime < clip.StartTime + clip.Duration - 0.001;
+            var split = new MenuItem
+            {
+                Header = "在播放头分割",
+                IsEnabled = !trackLocked && !many && inside,
+            };
+            split.Click += (_, _) => CutAtPlayhead();
+            menu.Items.Add(split);
+
+            // 「分离音频」仅视频片段、且素材里有音频轨时可用（与工具栏按钮同条件）。
+            if (string.Equals(clip.Kind, "Video", StringComparison.OrdinalIgnoreCase))
+            {
+                var detach = new MenuItem
+                {
+                    Header = "分离音频",
+                    IsEnabled = !trackLocked && !many,
+                };
+                detach.Click += (_, _) => DetachAudioFromSelection();
+                menu.Items.Add(detach);
+            }
+
+            var mute = new MenuItem
+            {
+                Header = clip.Muted ? "取消静音" : "静音",
+                IsEnabled = !trackLocked && !many
+                    && (clip.IsAudio || string.Equals(clip.Kind, "Video", StringComparison.OrdinalIgnoreCase)),
+            };
+            mute.Click += (_, _) =>
+            {
+                var target = !clip.Muted;
+                PushUndo();
+                foreach (var c in _selectedClips)
+                {
+                    c.Muted = target;
+                }
+
+                RefreshTimeline();
+                FillPropertyPanel();
+                ScheduleSave();
+                _statusText.Text = target ? "已静音。" : "已取消静音。";
+            };
+            menu.Items.Add(mute);
+            menu.Items.Add(new Separator());
+
+            var del = new MenuItem { Header = many ? $"删除{suffix}" : "删除", IsEnabled = !trackLocked };
+            del.Click += (_, _) => DeleteSelectedClip();
+            menu.Items.Add(del);
+        };
+        return menu;
     }
 
     /// <summary>片段按下统一入口：选中（多选保持）→ 记录拖拽基准 → 捕获到稳定根画布。
@@ -5894,7 +6141,9 @@ internal sealed class VideoEditorWindow : MyWindow
                 var n = trackCount;
                 foreach (var c in _project.Clips)
                 {
-                    if (md.Tracks.ContainsKey(c) || c.Track <= n - 1 - insertPos)
+                    // ⚠️ 同 HandleTimelineDrop：音频片段（Track = -1）不占视频轨，排除掉；
+                    // 否则 -1 会被 +1 写成伪造的视频轨号（详见 CompactTracks 注释）。
+                    if (c.IsAudio || md.Tracks.ContainsKey(c) || c.Track <= n - 1 - insertPos)
                     {
                         continue;
                     }
@@ -5905,13 +6154,18 @@ internal sealed class VideoEditorWindow : MyWindow
                 var newTrack = n - insertPos;
                 foreach (var (c, _) in md.Tracks)
                 {
-                    c.Track = newTrack;
+                    // 音频片段在音频泳道里拖：它不占视频轨，保持 Track = -1。
+                    if (!c.IsAudio)
+                    {
+                        c.Track = newTrack;
+                    }
+
                     if (_snapEnabled)
                     {
                         c.StartTime = SnapTime(c.StartTime);
                     }
 
-                    if (!FitsOnTrack(c.Track, c.StartTime, c.Duration, c))
+                    if (!c.IsAudio && !FitsOnTrack(c.Track, c.StartTime, c.Duration, c))
                     {
                         c.StartTime = FitToTrack(c, c.StartTime, c.Track);
                     }
@@ -5925,13 +6179,18 @@ internal sealed class VideoEditorWindow : MyWindow
                 var trackDelta = Math.Clamp(targetTrack, 0, 32) - grabTrack;
                 foreach (var (c, origTrack) in md.Tracks)
                 {
-                    c.Track = Math.Clamp(origTrack + trackDelta, 0, 32);
+                    // 音频片段保持 Track = -1（它的泳道由 AudioTrack 决定）。
+                    if (!c.IsAudio)
+                    {
+                        c.Track = Math.Clamp(origTrack + trackDelta, 0, 32);
+                    }
+
                     if (_snapEnabled)
                     {
                         c.StartTime = SnapTime(c.StartTime);
                     }
 
-                    if (!FitsOnTrack(c.Track, c.StartTime, c.Duration, c))
+                    if (!c.IsAudio && !FitsOnTrack(c.Track, c.StartTime, c.Duration, c))
                     {
                         c.StartTime = FitToTrack(c, c.StartTime, c.Track);
                     }
@@ -5952,15 +6211,37 @@ internal sealed class VideoEditorWindow : MyWindow
         EnsureClipsVisible(md.Tracks.Keys.ToList());
     }
 
-    /// <summary>拖拽/裁剪意外中断（捕获丢失等）：清状态并重建时间轴把浮动块收回归位。</summary>
+    /// <summary>
+    /// 拖拽 / 裁剪 / 框选意外中断（指针移出窗口、窗口失去激活、捕获丢失等）：清掉全部交互状态，
+    /// 并重建时间轴把浮到根画布的块收回归位。
+    /// <para>
+    /// ⚠️ 必须把 <c>_marqueeStart</c> 一并清掉：框选靠 <c>lane.PointerCaptureLost</c> + <c>PointerReleased</c>
+    /// 结束，指针在窗口外松开时两者都不会来 —— 残留的框选起点会让后续泳道按下持续处于「框选中」，
+    /// 表现为「轨道点不动」（2026-09-30 定位；resize 触发重建能顺手治好，所以用户描述为「resize 一下就好了」）。
+    /// </para>
+    /// </summary>
     private void CancelTimelineDrag()
     {
-        if (_trimState == null && _moveGroup == null)
+        var hadDrag = _trimState != null || _moveGroup != null;
+        var hadMarquee = _marqueeStart != null;
+        if (!hadDrag && !hadMarquee)
         {
             return;
         }
 
-        EditorLog("DRAG 取消（PointerCaptureLost）");
+        if (hadDrag)
+        {
+            EditorLog("DRAG 取消（指针移出窗口 / 失去激活 / 捕获丢失）");
+        }
+
+        if (hadMarquee)
+        {
+            EditorLog("MARQUEE 取消（指针移出窗口 / 失去激活 / 捕获丢失）");
+            _marqueeStart = null;
+            _marqueeMoved = false;
+            _marqueeRect.IsVisible = false;
+        }
+
         _trimState = null;
         _moveGroup = null;
         _trimUndoPushed = false;
@@ -6339,7 +6620,14 @@ internal sealed class VideoEditorWindow : MyWindow
                 var insertAt = Math.Clamp(insertPos, 0, n);
                 foreach (var c in _project.Clips)
                 {
-                    if (!ReferenceEquals(c, clip) && c.Track > n - 1 - insertAt)
+                    // ⚠️ 音频片段（Track = -1）不占视频轨，**绝不能**参与这个搬移：
+                    // -1 被 +1 会变成 0，即一个伪造的视频轨号，之后 TrackCount 会凭空多一轨。
+                    if (ReferenceEquals(c, clip) || c.IsAudio)
+                    {
+                        continue;
+                    }
+
+                    if (c.Track > n - 1 - insertAt)
                     {
                         c.Track++;
                     }
@@ -7418,7 +7706,7 @@ internal sealed class VideoEditorWindow : MyWindow
                 _player.Seek(_playheadTime);
                 _player.Resume();
                 _playing = true;
-                _statusText.Text = "预览播放中…";
+                _statusText.Text = string.Empty; // 同上：播放状态看按钮图标即可。
             }
 
             UpdateTransportUi();
@@ -7478,7 +7766,8 @@ internal sealed class VideoEditorWindow : MyWindow
 
         _playing = true;
         UpdateTransportUi();
-        _statusText.Text = "预览播放中…";
+        // 不再写「预览播放中…」：播放/暂停状态已经由传输栏按钮的图标（播放⇄暂停）表达，
+        // 状态栏留白更干净（用户 2026-09-30 明确要求删掉这行 label）。
     }
 
     private void StopPreview()
@@ -7699,7 +7988,7 @@ internal sealed class VideoEditorWindow : MyWindow
             : "预览画质已恢复「高」。";
         if (_playing)
         {
-            StartPreview(); // 内部按播放头重新起播（会把状态栏改成「预览播放中」）
+            StartPreview(); // 内部按播放头重新起播
         }
 
         if (_previewNotifiedLevel != level)
@@ -9033,18 +9322,20 @@ internal sealed class VideoEditorWindow : MyWindow
     private async Task<(int outW, int outH, int crf, bool hw, int fps, bool audio)?> AskRenderOptionsAsync()
     {
         // 横向分辨率预设：主界面是超宽条（比例约 14:1），旧版按竖向分辨率（270p 等）
-        // 换算会把宽度爆到 2K+（270p → 3888×270）。按横向算，1280 对课表展示足够。
-        var resolutions = new[] { "640", "800", "1280", "1600", "1920", "原尺寸" };
+        // 换算会把宽度爆到 2K+（270p → 3888×270）。按横向算，800 对课表展示足够，
+        // 低配机 / 小屏想要更省算力可以降到 480 或 360。
+        var resolutions = new[] { "360", "480", "640", "800", "1280", "1600", "1920", "原尺寸" };
         var frameRates = new[] { "12", "15", "24", "30", "60" };
         var qualities = new[] { "高", "中", "低" };
-        var resCombo = new ComboBox { ItemsSource = resolutions, SelectedIndex = 2 };
+        // 默认 800（数组下标 3）。
+        var resCombo = new ComboBox { ItemsSource = resolutions, SelectedIndex = 3 };
         var fpsCombo = new ComboBox { ItemsSource = frameRates, SelectedIndex = 2 };
         var qualityCombo = new ComboBox { ItemsSource = qualities, SelectedIndex = 1 };
         var resHint = new TextBlock { FontSize = 11, Opacity = 0.65 };
         resCombo.SelectionChanged += (_, _) =>
         {
             var aspect = _project.OutputWidth / Math.Max(1.0, _project.OutputHeight);
-            var (w, h) = ComputeRenderSize(resCombo.SelectedItem?.ToString() ?? "1280", aspect);
+            var (w, h) = ComputeRenderSize(resCombo.SelectedItem?.ToString() ?? "800", aspect);
             resHint.Text = $"输出 {w}×{h}（主界面比例 {aspect:0.##}:1）";
         };
         var hwToggle = new ToggleSwitch
@@ -9089,7 +9380,7 @@ internal sealed class VideoEditorWindow : MyWindow
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Primary
         };
-        resCombo.SelectedIndex = 2; // 默认横向 1280（触发尺寸提示）
+        resCombo.SelectedIndex = 3; // 默认横向 800（触发尺寸提示）
 
         var result = await ShowDialogAsync(dialog);
         if (result != ContentDialogResult.Primary)
@@ -9109,7 +9400,7 @@ internal sealed class VideoEditorWindow : MyWindow
         }
 
         var aspect2 = _project.OutputWidth / Math.Max(1.0, _project.OutputHeight);
-        var (outW, outH) = ComputeRenderSize(resCombo.SelectedItem?.ToString() ?? "1280", aspect2);
+        var (outW, outH) = ComputeRenderSize(resCombo.SelectedItem?.ToString() ?? "800", aspect2);
         var fps = int.TryParse(fpsCombo.SelectedItem?.ToString(), out var parsedFps) ? Math.Clamp(parsedFps, 5, 120) : 24;
         var crf = (qualityCombo.SelectedItem?.ToString()) switch
         {

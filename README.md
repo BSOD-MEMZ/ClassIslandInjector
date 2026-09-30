@@ -1,6 +1,7 @@
 # ClassIsland 样式注入器
 ![截图](./Assets/Readme/title.jpg)
 让 ClassIsland 再次伟大！自定义 ClassIsland 的显示行为和动画效果！
+目前，样式注入器已进化为课表上最佳生产力工具！无论是P图，还是剪视频，ClassIslandInjector都能让你得心应手！
 访问神秘链接继续赤石：[xxtsoft.top](https://xxtsoft.top)
 [观看B站宣传片](https://www.bilibili.com/video/BV1re816rEkK/)
 ## 它能做什么
@@ -58,7 +59,7 @@
 ![截图](./Assets/Readme/photoshop.png)
 
 ### 视频编辑器
-- 素材库 + 多轨时间轴：多段视频按时间拼接、裁剪入出点，把片段拖到轨道边界即可新建轨道
+- 多段视频按时间拼接、裁剪入出点，把片段拖到轨道边界即可新建轨道
 - 渲染成 mp4 一键设为主界面动态背景
 ![截图](./Assets/Readme/PR.png)
 

@@ -55,6 +55,12 @@ internal static class Program
         {
             return RunVideoDecodeCheck(args);
         }
+
+        if (args.Contains("--loop"))
+        {
+            return RunLoopCheck(args);
+        }
+
         var libDir = args.Length > 1
             ? args[1]
             : @"D:\Dev\ClassIsland\data\Config\Plugins\classisland.injector\ffmpeg";
@@ -353,8 +359,128 @@ internal static class Program
         return 0;
     }
 
-    private static void WriteWav(string path, List<byte> pcm)
+    /// <summary>
+    /// 循环复位探针：验证「解到 EOF → Restart() → 继续解」真的回到了开头。
+    /// 用户报「主界面底图循环卡在开头不动」——先解 N 帧记下首帧指纹，再解到 EOF，
+    /// Restart 后解出的第一帧必须和首帧一致（同一个画面），否则就是没回到开头。
+    /// 用法：--loop &lt;视频&gt; &lt;FFmpeg库目录&gt;
+    /// </summary>
+    private static int RunLoopCheck(string[] args)
     {
+        var idx = Array.IndexOf(args, "--loop");
+        var video = args.Length > idx + 1 ? args[idx + 1] : @"D:\Downloads\injector-video.mp4";
+        var libDir = args.Length > idx + 2
+            ? args[idx + 2]
+            : @"D:\Dev\ClassIsland\data\Config\Plugins\classisland.injector\ffmpeg";
+
+        ffmpeg.RootPath = libDir;
+        Console.WriteLine("=== 循环复位探针 ===");
+        Console.WriteLine($"文件: {video}");
+
+        if (!File.Exists(video))
+        {
+            Console.WriteLine("× 视频文件不存在");
+            return 2;
+        }
+
+        using var decoder = new FFmpegVideoDecoder();
+        decoder.HardwareDecoder = "auto";
+        if (!decoder.Open(video, 1280))
+        {
+            Console.WriteLine("× 打开失败");
+            return 1;
+        }
+
+        Console.WriteLine($"源 {decoder.SourceWidth}x{decoder.SourceHeight} → {decoder.OutputWidth}x{decoder.OutputHeight}，" +
+                          $"帧率={decoder.SourceFps:0.##} 时长={decoder.Duration:0.###}s 硬解生效={decoder.HardwareActive}");
+
+        // 首帧指纹：解码头几帧，用第 3 帧（避开可能的 B 帧乱序）的内容做基准。
+        byte[]? reference = null;
+        var pre = 0;
+        while (pre < 3 && decoder.ReadFrame(out var p))
+        {
+            reference = (byte[])p.Clone();
+            pre++;
+        }
+
+        if (reference == null)
+        {
+            Console.WriteLine("× 连首帧都解不出来");
+            return 1;
+        }
+
+        Console.WriteLine($"首 3 帧已解，指纹长度 {reference.Length}");
+
+        // 解到 EOF。
+        long total = pre;
+        while (decoder.ReadFrame(out _))
+        {
+            total++;
+        }
+
+        Console.WriteLine($"解到 EOF，共 {total} 帧");
+
+        // 循环复位。
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var restarted = decoder.Restart();
+        sw.Stop();
+        Console.WriteLine($"Restart() = {restarted}（{sw.Elapsed.TotalMilliseconds:0.0}ms）");
+
+        if (!restarted)
+        {
+            Console.WriteLine("× 复位失败 —— 播放器会直接停止，画面卡在最后一帧");
+            return 1;
+        }
+
+        // 复位后连续解若干帧，看能不能解出（卡在开头 = 解不出帧）。
+        var after = new List<byte[]>();
+        for (var i = 0; i < 5; i++)
+        {
+            if (!decoder.ReadFrame(out var p))
+            {
+                Console.WriteLine($"× 复位后第 {i + 1} 帧解不出来（-1 帧无法解出）");
+                break;
+            }
+
+            after.Add((byte[])p.Clone());
+        }
+
+        Console.WriteLine($"复位后解出 {after.Count} 帧");
+        if (after.Count == 0)
+        {
+            Console.WriteLine("× 复位后一帧都解不出 —— 这就是「循环卡在开头」");
+            return 1;
+        }
+
+        // 指纹比对：复位后第一帧应当与首帧接近（同一画面；编码有损，比较均值差）。
+        var diff = MeanAbsDiff(reference, after[0]);
+        Console.WriteLine($"复位后首帧 vs 起始首帧的平均像素差 = {diff:0.0}（越小越像同一画面）");
+        var ok = diff < 24;
+        Console.WriteLine(ok ? "✓ 循环复位正常（回到了开头）" : "× 复位后画面与开头不是同一帧");
+        return ok ? 0 : 1;
+    }
+
+    /// <summary>两张 BGRA 帧的平均通道差（长度不一致直接判为差异极大）。</summary>
+    private static double MeanAbsDiff(byte[] a, byte[] b)
+    {
+        if (a.Length != b.Length)
+        {
+            return 255;
+        }
+
+        long sum = 0;
+        var n = 0;
+        // 抽样：每 37 字节取一个，够判画面是否相同。
+        for (var i = 0; i < a.Length; i += 37)
+        {
+            sum += Math.Abs(a[i] - b[i]);
+            n++;
+        }
+
+        return n == 0 ? 0 : (double)sum / n;
+    }
+
+    private static void WriteWav(string path, List<byte> pcm)    {
         var dir = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir))
         {

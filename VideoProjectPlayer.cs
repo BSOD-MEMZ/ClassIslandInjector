@@ -462,7 +462,12 @@ internal sealed class VideoProjectPlayer : IDisposable
             var mediaTime = targetClip.SourceTimeAt(time - targetClip.StartTime);
             state.Source.SeekTo(mediaTime);
             var fps = state.SourceFps > 0 ? state.SourceFps : 25;
-            state.LastFrameIndex = (long)(mediaTime * fps);
+            // ⚠️ 游标要停在 **targetN - 1** 而不是 targetN：`PumpTrack` 靠
+            // `behind = targetN - LastFrameIndex` 决定是否出帧，而 `behind <= 0` 直接 return。
+            // 复位瞬间 time=0 → targetN=0，若这里也写 0，则 behind 恒为 0 → **永远不出帧**
+            // ——表现就是「循环回开头后画面卡住不动」（2026-09-30 实测复现）。
+            // 停到 -1 等价于「本拍必发一帧」（seek 后解码器已 flush，正是该补一帧的时候）。
+            state.LastFrameIndex = (long)(mediaTime * fps) - 1;
             state.Eof = false;
             state.Consumed.Set();
             return;
@@ -634,7 +639,9 @@ internal sealed class VideoProjectPlayer : IDisposable
                 var seedMediaTime = clip.SourceTimeAt(time - clip.StartTime);
                 state.Source = OpenSource(clip, seedMediaTime);
                 state.SourceFps = state.Source?.SourceFps ?? 0;
-                state.LastFrameIndex = (long)(seedMediaTime * (state.SourceFps > 0 ? state.SourceFps : 25));
+                // 同 RestartTrack：游标停在 targetN - 1，「本拍必发一帧」。
+                // 写 targetN 的话 behind 恰好为 0，片段刚进画面那一拍不出帧（开头一顿）。
+                state.LastFrameIndex = (long)(seedMediaTime * (state.SourceFps > 0 ? state.SourceFps : 25)) - 1;
             }
 
             state.ActiveClip = clip;
