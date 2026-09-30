@@ -212,6 +212,9 @@ internal sealed class VideoEditorWindow : MyWindow
 
     // ---- 舞台 ----
     private readonly Border _stageBorder = new() { ClipToBounds = true, Background = Brushes.Black };
+    /// <summary>舞台外框（承载可用宽高的 Border，SizeChanged 驱动 <see cref="LayoutStage"/>）。
+    /// 画幅变更后要靠它取可用尺寸重排 —— 不能用 `_stageBorder.Parent`（那是内层 Grid）。</summary>
+    private Border? _stageHost;
     private readonly Grid _stageHostGrid = new();
     private readonly List<StageTrackLayer> _stageLayers = [];
     /// <summary>舞台八向手柄覆盖层（选中片段时显示，仿底图图层编辑器）。</summary>
@@ -1249,6 +1252,7 @@ internal sealed class VideoEditorWindow : MyWindow
             Child = stageInner
         };
         stageHost.SizeChanged += (_, e) => LayoutStage(e.NewSize.Width, e.NewSize.Height);
+        _stageHost = stageHost;
         // 整个容器（舞台 + 传输条）占中列；传输条在容器内底部。
         var stageColumn = stageHost;
 
@@ -4723,6 +4727,7 @@ internal sealed class VideoEditorWindow : MyWindow
         RefreshTimeline();
         ClearSelection();
         ScheduleSave();
+        SyncPreviewWithProject();
         _statusText.Text = removed > 0
             ? $"已删除{name}（{removed} 个片段）。"
             : $"{name} 已删除（无片段）。";
@@ -6396,6 +6401,8 @@ internal sealed class VideoEditorWindow : MyWindow
         RefreshTimeline();
         ClearSelection();
         ScheduleSave();
+        // 片段被删光 → 停止预览并回到 0s（否则播放头会在 0s 附近抽搐）。
+        SyncPreviewWithProject();
         _statusText.Text = locked > 0
             ? $"已删除 {deletable.Count} 个片段（跳过 {locked} 个锁定轨片段）。"
             : $"已删除 {deletable.Count} 个片段。";
@@ -8453,10 +8460,37 @@ internal sealed class VideoEditorWindow : MyWindow
         _project.OutputHeight = Math.Max(16, hSpin.DoubleValue);
         RefreshTimeline();
         ScheduleSave();
-        // 按新比例重排舞台（host 是 _stageBorder 的直接父级 Border）。
-        if (_stageBorder.Parent is Border host && host.Bounds.Width > 0 && host.Bounds.Height > 0)
+        // 按新比例重排舞台。
+        // ⚠️ 必须用 _stageHost（承载可用尺寸的那个 Border）而不是 `_stageBorder.Parent`：
+        // _stageBorder 的直接父级是 stageInner（Grid），`is Border` 恒为假 → 舞台永远不重排，
+        // 表现就是「改了导出画幅，舞台上没生效」。
+        if (_stageHost is { Bounds.Width: > 0, Bounds.Height: > 0 })
         {
-            LayoutStage(host.Bounds.Width, host.Bounds.Height);
+            LayoutStage(_stageHost.Bounds.Width, _stageHost.Bounds.Height);
+        }
+    }
+
+    /// <summary>
+    /// 预览状态跟随工程：时间轴被清空（总时长归零）时停止播放并把播放头回到 0s。
+    /// <para>
+    /// 不做这件事的后果：播放器在 `_duration == 0` 下每拍都判「播完了 → 循环复位」，
+    /// 播放头被反复拉回 0s，看起来就是「在 0s 附近抽搐」（日志里一片 t=0s 复位）。
+    /// </para>
+    /// 删片段 / 删轨 / 撤销重做等任何可能清空时间轴的操作之后都要调。
+    /// </summary>
+    private void SyncPreviewWithProject()
+    {
+        if (_project.Clips.Count > 0 && _project.Duration > 0)
+        {
+            _player?.RefreshClips();
+            return;
+        }
+
+        if (_player != null || _playing)
+        {
+            StopPreview(); // 内部会置 _playing=false 并刷新传输条
+            SetPlayhead(0);
+            _statusText.Text = "时间轴已清空，预览已停止。";
         }
     }
 

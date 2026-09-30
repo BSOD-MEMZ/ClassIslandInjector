@@ -91,11 +91,15 @@ internal sealed class VideoProjectPlayer : IDisposable
     private long _lastAudioResyncTimestamp;
 
     /// <summary>
-    /// 落后多少帧就改用 seek 跳过（不再顺序解码追赶）。
-    /// 8 帧@24fps ≈ 0.33s：再落后就说明「本拍解码量已经超过拍长」，顺序解码只会雪崩
-    /// （实测 3 轨 × 800px 时单拍解码可涨到 1.1s，投递率崩到 1fps = 画面卡死）。
+    /// 画面允许落后音频的最大时长（秒）。超过就 seek 追平，而不是继续顺序解码。
+    /// **这个值直接决定「画面和唱的对不对得上」**：0.15s 是歌词对拍的容忍边界；
+    /// 按源帧率换算成帧数（54fps 源 ≈ 8 帧），所以不同帧率的素材口径一致。
     /// </summary>
-    private const int CatchUpSeekFrames = 8;
+    private const double MaxPictureLagSeconds = 0.15;
+
+    /// <summary>落后多少帧就该 seek 追平（由 <see cref="MaxPictureLagSeconds"/> 按源帧率换算）。</summary>
+    private static int CatchUpFramesFor(double fps) =>
+        Math.Clamp((int)Math.Round(Math.Max(1, fps) * MaxPictureLagSeconds), 4, 32);
 
     /// <summary>
     /// 每拍单轨最多顺序解码丢弃多少帧（封顶值）。宁可让画面稍微落后于媒体时间，
@@ -326,84 +330,110 @@ internal sealed class VideoProjectPlayer : IDisposable
     /// <summary>主循环：墙钟驱动各轨道同步消费帧。</summary>
     private void Loop()
     {
-        var intervalMs = (long)(1000.0 / _targetFps);
+        var intervalMs = 1000.0 / _targetFps;
         var sw = new Stopwatch();
-        while (_running && !_disposed)
+        // ⚠️ 提高系统定时器精度：`Thread.Sleep` 默认粒度 15.6ms，而 24fps 的拍长只有 41.7ms
+        // —— 光是睡眠超时就吃掉三分之一预算（实测单轨投递率被压在 17fps、目标 24fps）。
+        // 媒体类应用都这么做，停止播放时恢复。
+        HighResolutionTimer.Enter();
+        try
         {
-            sw.Restart();
-            var restartTracks = false;
-            double time;
-            lock (_sync)
+            while (_running && !_disposed)
             {
-                if (_seekRequested)
+                sw.Restart();
+                var restartTracks = false;
+                double time;
+                lock (_sync)
                 {
-                    // 跳转：时钟基准移到目标时间，下一拍按新时间重新打开各轨解码器。
-                    _seekRequested = false;
-                    _clockBase = Math.Max(0, _seekTo);
-                    _clockStart = Stopwatch.GetTimestamp();
-                    _frozen = _clockBase;
-                    restartTracks = true;
-                }
-                else
-                {
-                    var now = _clockBase + (Stopwatch.GetTimestamp() - _clockStart) / (double)Stopwatch.Frequency;
-                    if (now >= _duration)
+                    if (_seekRequested)
                     {
-                        // 播完整个时间轴：复位时钟，下一拍重新打开。
-                        _clockBase = 0;
+                        // 跳转：时钟基准移到目标时间，下一拍按新时间重新打开各轨解码器。
+                        _seekRequested = false;
+                        _clockBase = Math.Max(0, _seekTo);
                         _clockStart = Stopwatch.GetTimestamp();
+                        _frozen = _clockBase;
                         restartTracks = true;
                     }
-                }
-
-                time = _clockBase + (Stopwatch.GetTimestamp() - _clockStart) / (double)Stopwatch.Frequency;
-            }
-
-            if (restartTracks)
-            {
-                // 音频混音与视频轨共用同一条时间轴：跳转 / 循环复位时同步音频位置。
-                _mixer.Seek(time);
-                foreach (var state in _tracks)
-                {
-                    var targetClip = FindActiveClip(state.Track, time);
-                    if (ReferenceEquals(targetClip, state.ActiveClip) &&
-                        targetClip is { Kind: "Video" } && state.Source != null)
+                    else if (_duration <= 0)
                     {
-                        // 同片段跳转：复用已打开的解码器直接 seek（avformat_open_input +
-                        // find_stream_info 对长视频要几百毫秒，重开是大跳卡顿的主因）。
-                        var mediaTime = targetClip.SourceTimeAt(time - targetClip.StartTime);
-                        state.Source.SeekTo(mediaTime);
-                        var fps = state.SourceFps > 0 ? state.SourceFps : 25;
-                        state.LastFrameIndex = (long)(mediaTime * fps);
-                        state.Eof = false;
-                        state.Consumed.Set();
-                        continue;
+                        // 片段被删光：时间轴长度为 0。旧逻辑会在这里判 `now >= _duration`
+                        // 每拍都「循环复位」→ 播放头在 0s 附近反复抽搐（日志里一片 t=0s 复位）。
+                        // 直接退出循环并把时间归零，播放状态由调用方（编辑器）切到停止。
+                        Log("时间轴已空（总时长为 0），播放线程退出");
+                        _clockBase = 0;
+                        _frozen = 0;
+                        _running = false;
+                        break;
+                    }
+                    else
+                    {
+                        var now = _clockBase + (Stopwatch.GetTimestamp() - _clockStart) / (double)Stopwatch.Frequency;
+                        if (now >= _duration)
+                        {
+                            // 播完整个时间轴：复位时钟，下一拍重新打开。
+                            _clockBase = 0;
+                            _clockStart = Stopwatch.GetTimestamp();
+                            restartTracks = true;
+                        }
                     }
 
-                    CloseTrack(state);
+                    time = _clockBase + (Stopwatch.GetTimestamp() - _clockStart) / (double)Stopwatch.Frequency;
                 }
-            }
 
-            foreach (var state in _tracks)
-            {
-                PumpTrack(state, time);
-            }
-
-            _tickSumMs += sw.Elapsed.TotalMilliseconds;
-            _tickMaxMs = Math.Max(_tickMaxMs, sw.Elapsed.TotalMilliseconds);
-            _tickCount++;
-            LogStats();
-            CheckAudioSync(time);
-
-            if (intervalMs > 0)
-            {
-                var wait = intervalMs - sw.ElapsedMilliseconds;
-                if (wait > 0)
+                if (restartTracks)
                 {
-                    Thread.Sleep((int)wait);
+                    // 音频混音与视频轨共用同一条时间轴：跳转 / 循环复位时同步音频位置。
+                    _mixer.Seek(time);
+                    foreach (var state in _tracks)
+                    {
+                        var targetClip = FindActiveClip(state.Track, time);
+                        if (ReferenceEquals(targetClip, state.ActiveClip) &&
+                            targetClip is { Kind: "Video" } && state.Source != null)
+                        {
+                            // 同片段跳转：复用已打开的解码器直接 seek（avformat_open_input +
+                            // find_stream_info 对长视频要几百毫秒，重开是大跳卡顿的主因）。
+                            var mediaTime = targetClip.SourceTimeAt(time - targetClip.StartTime);
+                            state.Source.SeekTo(mediaTime);
+                            var fps = state.SourceFps > 0 ? state.SourceFps : 25;
+                            state.LastFrameIndex = (long)(mediaTime * fps);
+                            state.Eof = false;
+                            state.Consumed.Set();
+                            continue;
+                        }
+
+                        CloseTrack(state);
+                    }
                 }
+
+                foreach (var state in _tracks)
+                {
+                    PumpTrack(state, time);
+                }
+
+                _tickSumMs += sw.Elapsed.TotalMilliseconds;
+                _tickMaxMs = Math.Max(_tickMaxMs, sw.Elapsed.TotalMilliseconds);
+                _tickCount++;
+                LogStats();
+                CheckAudioSync(time);
+
+                // 按「拍起点 + 拍长」的截止时间睡，避免超时误差逐拍累积；
+                // 最后 1ms 自旋补齐（高精度定时器下 Sleep 仍有 ~1ms 抖动，而这一拍只有 41ms）。
+                var remaining = intervalMs - sw.Elapsed.TotalMilliseconds;
+                if (remaining > 1.5)
+                {
+                    Thread.Sleep((int)(remaining - 1.0));
+                }
+
+                while (intervalMs - sw.Elapsed.TotalMilliseconds > 0.05 && _running && !_disposed)
+                {
+                    Thread.SpinWait(64);
+                }
+                // 拍超耗时（解码慢）不补偿到时钟：墙钟永远按真实时间走，画面靠丢帧追赶。
             }
-            // 拍超耗时（解码慢）不补偿到时钟：墙钟永远按真实时间走，画面靠丢帧追赶。
+        }
+        finally
+        {
+            HighResolutionTimer.Exit();
         }
 
         // 退出前收尾：若 Dispose 已经在等（或被超时放弃），解码器由**本线程**释放 ——
@@ -506,29 +536,53 @@ internal sealed class VideoProjectPlayer : IDisposable
             var fps = state.SourceFps > 0 ? state.SourceFps : 25.0;
             var targetN = (long)(mediaTime * fps);
             var behind = targetN - state.LastFrameIndex;
+
+            if (behind < -2)
+            {
+                // 目标帧号**大幅倒退**：时间映射被改过（改倍速 / 裁剪入点 / 拖动片段）。
+                // 此时帧游标停在高位、目标却在低位，不改的话要等目标追回旧游标才恢复画面
+                // ——0.5× 实测要 6 秒，表现就是「改完倍速画面停住」。
+                if (state.Source.SeekTo(mediaTime))
+                {
+                    state.SeekCount++;
+                    state.LastFrameIndex = (long)(mediaTime * fps);
+                    behind = 1;
+                }
+                else
+                {
+                    state.LastFrameIndex = targetN;
+                    return;
+                }
+            }
+
             if (behind <= 0)
             {
                 return; // 还没到下一帧时间（低帧率素材隔拍显示，防快放）。
             }
 
-            if (behind > CatchUpSeekFrames)
+            var catchUpFrames = CatchUpFramesFor(fps);
+            var seeked = false;
+            if (behind > catchUpFrames)
             {
-                // 落后约 0.33s 以上（大跳 / 源帧率远高于显示帧率）：一次 seek 跳过，
-                // 别顺序解码追赶 —— 实测顺序解一帧 11.6ms、seek+解一帧 76ms，
-                // 而硬解 32 帧要 370ms；「解码丢弃」把整拍吃光就是画面卡死的根因。
+                // 画面已经落后音频超过 MaxPictureLagSeconds（大跳 / 源帧率远高于显示帧率）：
+                // 一次 seek 追平，别顺序解码追赶 —— 实测顺序解一帧 9.7ms、seek+解一帧 57ms，
+                // 而硬解 32 帧要 370ms；「解码丢弃」把整拍吃光就是画面卡死 + 歌词对不上的根因。
                 if (state.Source.SeekTo(mediaTime))
                 {
-                    state.LastFrameIndex = targetN;
                     state.SeekCount++;
-                    return;
+                    seeked = true;
+                    behind = 1; // 跳转后本拍就把画面补上（否则每跳一次少投一帧，画面一顿一顿）
+                    state.LastFrameIndex = targetN - 1;
                 }
-
-                behind = MaxSkipPerTick + 1; // seek 失败退化为有限度的顺序快进。
+                else
+                {
+                    behind = MaxSkipPerTick + 1; // seek 失败退化为有限度的顺序快进。
+                }
             }
 
             // 顺序消费 behind 帧：前 behind-1 帧丢弃（每帧几毫秒），最后一帧发给 UI。
             // skip 封顶（见 MaxSkipPerTick）：单拍解码量可控，落后就靠下一拍的 seek 收敛。
-            var skip = (int)Math.Min(behind - 1, MaxSkipPerTick);
+            var skip = seeked ? 0 : (int)Math.Min(behind - 1, MaxSkipPerTick);
             for (var i = 0; i < skip; i++)
             {
                 state.SkippedFrames++;
@@ -596,6 +650,59 @@ internal sealed class VideoProjectPlayer : IDisposable
                 }
 
                 state.Consumed.Wait(5);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 播放期间把系统定时器精度提到 1ms（`timeBeginPeriod`），退出时恢复。
+    /// <para>
+    /// 必要性：默认粒度 15.6ms，而 24fps 的拍长 41.7ms —— 一次 `Thread.Sleep(13)` 实际睡 15.6ms+，
+    /// 拍长被拉到 ~57ms，投递率从 24fps 掉到 17fps（实测）。媒体类应用普遍这样做。
+    /// 引用计数保证多处进出不错配；非 Windows / 被拒绝时静默忽略（最坏退化为原来的颗粒度）。
+    /// </para>
+    /// </summary>
+    private static class HighResolutionTimer
+    {
+        private static int _refs;
+
+        [System.Runtime.InteropServices.DllImport("winmm.dll")]
+        private static extern uint timeBeginPeriod(uint periodMs);
+
+        [System.Runtime.InteropServices.DllImport("winmm.dll")]
+        private static extern uint timeEndPeriod(uint periodMs);
+
+        public static void Enter()
+        {
+            if (Interlocked.Increment(ref _refs) != 1)
+            {
+                return;
+            }
+
+            try
+            {
+                timeBeginPeriod(1);
+            }
+            catch
+            {
+                // 非 Windows / 调用被拒：忽略，只是睡眠粒度粗一些。
+            }
+        }
+
+        public static void Exit()
+        {
+            if (Interlocked.Decrement(ref _refs) != 0)
+            {
+                return;
+            }
+
+            try
+            {
+                timeEndPeriod(1);
+            }
+            catch
+            {
+                // 同上。
             }
         }
     }
