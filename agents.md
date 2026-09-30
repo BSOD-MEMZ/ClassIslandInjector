@@ -246,6 +246,24 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
   固定帧率素材把「引擎问题」与「素材问题」分开。
 - 实测结论（本机 4 核）：**代理素材（800px / 30fps CFR）下单轨、双轨、三轨全部 24fps**
   （间隔均值 42ms = 精确 1/24s）；用原始 54fps 素材则三轨只有 ~15fps。
+
+### 12. GDI+ 没有 WebP 解码器（覆盖层图片必须归一化，2026-09-30）
+
+- `OverlayFrameGenerator` / `VideoProjectRenderer` 走 **GDI+（System.Drawing）**画图，而 **GDI+
+  没有 WebP 解码器** —— Windows 那个「WebP 图像扩展」只注册 WIC 编解码器，GDI+ 不走 WIC。
+  实测 `new Bitmap(stream)` 对 WebP 抛 `ArgumentException: Parameter is not valid.`（png/jpg 正常）。
+- 症状（**没有异常、没有崩溃，只有静默的错**）：`GetCachedImage` catch 返回 null → `Render` 返回 null →
+  ①**预览在该片段上整段不动**（`video-player.log` 里状态恒为 `[覆盖层待发]`、「显N」帧号不增长）；
+  ②**渲染成片里图片静默消失**（`VideoProjectRenderer` 拿不到 buffer 就不合成）。
+- 迷惑点：素材缩略图（`VideoEditorWindow.LoadAssetThumbnail`）、素材信息、主界面底图
+  （`MainWindowStyleInjector.cs:3216`）都走 **Avalonia/Skia**，WebP 正常 → 表现为「有的地方能看有的地方坏」。
+- 修法：`VideoTranscoder.IsGdiDecodable()` 探针 + `VideoTranscoder.NormalizeImage()` 用
+  Avalonia/Skia 解码（`new Avalonia.Media.Imaging.Bitmap(stream)`，与缩略图同一套，可后台线程）另存 PNG 到
+  配置目录 `image-cache/`（文件名带源大小防同名冲突），**导入素材时**（`ImportAssetsAsync`）与
+  **打开工程时**（`VideoEditorWindow.NormalizeProjectImagesAsync`）改写引用。实测 2048×1261 无损 WebP：
+  Skia 解码 94ms + PNG 编码 868ms，一次性成本。
+- 不要为了省事把 WebP 从选择器里删掉：插件其它链路都支持它，只有这一条是 GDI+ 的限制；转一下就好。
+
 ## 预设商店（PresetStore）
 
 - 数据源与格式沿用此前约定：索引 `https://xxtsoft.top/support/injector/presets/index.json`（schemaVersion 1，camelCase、大小写不敏感），条目字段 = `Defaults/preset-index.sample.json`（id/name/author/school/description/pluginVersion/minPluginVersion/createdAt/downloadUrl(.cizip)/previewUrl(.png)/sizeBytes，可选 downloads 供热门排序）。

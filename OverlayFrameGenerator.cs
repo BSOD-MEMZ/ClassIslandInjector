@@ -6,10 +6,14 @@ using System.Runtime.InteropServices;
 namespace ClassIslandInjector;
 
 /// <summary>
-/// 文本/形状覆盖层帧生成器：把 Kind=Text/Shape 的片段渲染成 BGRA 帧（透明背景 + 预乘 alpha）。
+/// 文本/形状/图片覆盖层帧生成器：把 Kind=Text/Shape/Image 的片段渲染成 BGRA 帧（透明背景 + 预乘 alpha）。
 /// 供编辑器舞台预览、<see cref="VideoProjectPlayer"/> 与 <see cref="VideoProjectRenderer"/> 共用
 /// （System.Drawing，纯计算，可在后台线程调用）。输出为预乘 alpha：Avalonia 的 Bgra8888 Premul
 /// 位图直接写入即可；渲染器按预乘合成。
+/// <para>
+/// ⚠️ 解码走 GDI+，而 **GDI+ 没有 WebP 解码器**：WebP 图片在这里拿到的是 null（无画面）。
+/// 导入/打开工程时由 <see cref="VideoTranscoder.NormalizeImage"/> 转成 PNG 兜住，别在这里加格式分支。
+/// </para>
 /// </summary>
 internal static class OverlayFrameGenerator
 {
@@ -45,6 +49,13 @@ internal static class OverlayFrameGenerator
     private static readonly Dictionary<string, Bitmap> ImageCache = new();
     private static readonly object ImageCacheLock = new();
 
+    /// <summary>
+    /// 已经记过「无法解码」日志的路径（只在 <see cref="ImageCacheLock"/> 内访问）。
+    /// 失败结果**不缓存**（文件被换掉后应能自愈，投递端每拍重试即可），但日志只写一次
+    /// —— 否则播放中每拍一条，几百 KB 的日志里全是同一行。
+    /// </summary>
+    private static readonly HashSet<string> DecodeFailureLogged = new();
+
     /// <summary>取图片覆盖层的解码位图（缓存上限 12，超出清空重建——覆盖层图片数量有限）。</summary>
     private static Bitmap? GetCachedImage(string path)
     {
@@ -79,6 +90,16 @@ internal static class OverlayFrameGenerator
             }
             catch
             {
+                // GDI+（System.Drawing）**没有 WebP 解码器**（Windows 的 WebP 扩展只注册 WIC 编解码器，
+                // GDI+ 不走 WIC），对 WebP 一律抛 ArgumentException。导入/打开工程时
+                // VideoTranscoder.NormalizeImage 已把这类图片转成 PNG，能走到这里的是转换也没救回来的文件。
+                // 此处不做别的补救（渲染器/播放器按「无画面」处理），只留一条可排查的日志。
+                if (DecodeFailureLogged.Add(path))
+                {
+                    DiagnosticLog.Write(Path.Combine(InjectorRuntime.ConfigDirectory, "video-editor.log"),
+                        $"[overlay] 图片无法解码（GDI+ 不支持该格式），该片段不会显示画面：{path}");
+                }
+
                 return null;
             }
         }

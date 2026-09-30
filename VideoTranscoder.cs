@@ -139,6 +139,82 @@ internal static class VideoTranscoder
     public static bool IsImageFile(string path) => Path.GetExtension(path).ToLowerInvariant() is
         ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" or ".webp";
 
+    /// <summary>
+    /// GDI+（System.Drawing）能否解码该图片。<see cref="OverlayFrameGenerator"/> 与
+    /// <see cref="VideoProjectRenderer"/> 都走 GDI+ 画图，而 **GDI+ 没有 WebP 解码器**
+    /// —— Windows 那个「WebP 图像扩展」只注册 WIC 编解码器，而 GDI+ 不走 WIC，
+    /// 所以 <c>new Bitmap(stream)</c> 对 WebP 直接抛 ArgumentException（实测「Parameter is not valid.」）。
+    /// 后果：该图片片段在预览里从头到尾不动（播放器每拍重试渲染都拿不到帧）、
+    /// 渲染成片里图片**静默消失** —— 而素材缩略图 / 主界面底图走 Avalonia(Skia)，WebP 正常，
+    /// 于是表现为「有的地方能看有的地方坏」。探针成本极低（失败在解析头部就返回）。
+    /// </summary>
+    public static bool IsGdiDecodable(string path)
+    {
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return false;
+            }
+
+            using var stream = File.OpenRead(path);
+            using var probe = new System.Drawing.Bitmap(stream);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 图片格式归一化：把 GDI+ 解不了的图片（典型 WebP）用 Avalonia/Skia 解码后另存为 PNG，
+    /// 返回可用的路径。已经在解码器支持范围内、文件缺失或转换失败时**原样返回**（调用方按无法解码处理）。
+    /// <para>
+    /// 转换产物落在 <paramref name="cacheDirectory"/>，文件名带源大小（源文件换了就是新产物，
+    /// 与 <see cref="BuildOutputPath"/> 同一套防同名冲突口径），重复导入直接复用。
+    /// Skia 侧用的是与素材缩略图完全相同的 <c>new Avalonia.Media.Imaging.Bitmap(stream)</c>（原生支持 WebP），
+    /// 可在后台线程调用。
+    /// </para>
+    /// </summary>
+    public static string NormalizeImage(string path, string cacheDirectory)
+    {
+        try
+        {
+            if (!File.Exists(path) || IsGdiDecodable(path))
+            {
+                return path;
+            }
+
+            var name = Path.GetFileNameWithoutExtension(path);
+            var safeName = string.Join('_', name.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries));
+            if (safeName.Length > 48)
+            {
+                safeName = safeName[..48];
+            }
+
+            Directory.CreateDirectory(cacheDirectory);
+            var output = Path.Combine(cacheDirectory, $"{safeName}-{new FileInfo(path).Length}.png");
+            if (File.Exists(output))
+            {
+                return output;
+            }
+
+            using (var stream = File.OpenRead(path))
+            using (var bitmap = new Avalonia.Media.Imaging.Bitmap(stream))
+            using (var fs = File.Create(output))
+            {
+                bitmap.Save(fs);
+            }
+
+            return output;
+        }
+        catch
+        {
+            return path;
+        }
+    }
+
     /// <summary>是否为可导入的视频素材扩展名。</summary>
     public static bool IsVideoFile(string path) => Path.GetExtension(path).ToLowerInvariant() is
         ".mp4" or ".wmv" or ".avi" or ".mkv" or ".mov" or ".webm" or ".m4v";

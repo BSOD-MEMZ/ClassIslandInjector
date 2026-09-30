@@ -997,6 +997,8 @@ internal sealed class VideoEditorWindow : MyWindow
         // 初始化素材库内容状态（默认素材模式）。
         UpdateLibraryContent();
         Opened += (_, _) => Current = this;
+        // 老工程里可能存着 GDI+ 解不了的图片（WebP）：窗口出来后后台转成 PNG 并改写引用。
+        Opened += (_, _) => _ = NormalizeProjectImagesAsync();
         Closed += (_, _) =>
         {
             if (Current == this)
@@ -2521,6 +2523,108 @@ internal sealed class VideoEditorWindow : MyWindow
     private static void EditorLog(string message) =>
         DiagnosticLog.Write(Path.Combine(InjectorRuntime.ConfigDirectory, "video-editor.log"), $"[editor] {message}");
 
+    /// <summary>GDI+ 解不了的图片（WebP 等）转换后的 PNG 存放目录。</summary>
+    private static string ImageCacheDirectory => Path.Combine(InjectorRuntime.ConfigDirectory, "image-cache");
+
+    /// <summary>
+    /// 图片片段无法被 GDI+ 解码时给一条明确提示（格式栏 + 诊断日志），别让用户对着不动的画面猜。
+    /// 正常导入路径上的 WebP 已在导入时转成 PNG，走到这里的是转换也失败的畸形/未知格式文件。
+    /// </summary>
+    private void WarnIfImageUndecodable(VideoClip clip)
+    {
+        if (clip.Kind != "Image" || string.IsNullOrWhiteSpace(clip.SourcePath) ||
+            VideoTranscoder.IsGdiDecodable(clip.SourcePath))
+        {
+            return;
+        }
+
+        var name = Path.GetFileName(clip.SourcePath);
+        EditorLog($"IMG 无法解码 {name}（GDI+ 不支持该格式，画面会缺失）");
+        _statusText.Text = $"图片「{name}」无法解码（格式不受支持），该片段不会显示画面。";
+    }
+
+    /// <summary>
+    /// 把工程里所有图片引用归一化到 GDI+ 可解的格式（老工程里的 WebP 在这里被转成 PNG 并改写引用）。
+    /// 后台线程执行（2~3MB 的 WebP 解码是百毫秒级，别卡窗口构造），完成后刷新时间轴与素材库。
+    /// </summary>
+    private async Task NormalizeProjectImagesAsync()
+    {
+        var converted = 0;
+        var failed = new List<string>();
+        try
+        {
+            (converted, failed) = await Task.Run(() =>
+            {
+                var count = 0;
+                var bad = new List<string>();
+
+                string Convert(string path)
+                {
+                    var target = VideoTranscoder.NormalizeImage(path, ImageCacheDirectory);
+                    if (string.Equals(target, path, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!VideoTranscoder.IsGdiDecodable(path))
+                        {
+                            bad.Add(path); // 转换也没救回来：记下来给提示
+                        }
+
+                        return path;
+                    }
+
+                    count++;
+                    return target;
+                }
+
+                foreach (var clip in _project.Clips.Where(c => c.Kind == "Image" && !string.IsNullOrWhiteSpace(c.SourcePath)))
+                {
+                    clip.SourcePath = Convert(clip.SourcePath!);
+                }
+
+                foreach (var asset in _project.Assets.Where(a => a.Kind == "Image" && !string.IsNullOrWhiteSpace(a.Path)))
+                {
+                    asset.Path = Convert(asset.Path!);
+                    asset.Name = Path.GetFileName(asset.Path);
+                }
+
+                for (var i = 0; i < _assets.Count; i++)
+                {
+                    if (VideoTranscoder.IsImageFile(_assets[i]))
+                    {
+                        _assets[i] = Convert(_assets[i]);
+                    }
+                }
+
+                return (count, bad);
+            });
+        }
+        catch
+        {
+            return; // 转换失败不影响工程打开
+        }
+
+        if (converted == 0 && failed.Count == 0)
+        {
+            return;
+        }
+
+        if (converted > 0)
+        {
+            EditorLog($"IMG 打开工程时转换 {converted} 张图片（GDI+ 解不了的格式 → PNG）");
+            RefreshAssetList();
+            RefreshTimeline();
+            ScheduleSave();
+        }
+
+        if (failed.Count > 0)
+        {
+            _statusText.Text = $"工程里的图片「{Path.GetFileName(failed[0])}」无法解码（格式不受支持），该片段不会显示画面。";
+        }
+        else if (converted > 0)
+        {
+            _statusText.Text = $"已把 {converted} 张不受支持的图片转换为 PNG（原格式 GDI+ 无法解码）。";
+        }
+    }
+
     /// <summary>把编辑器素材库同步进工程对象（保存时调用），让素材库随工程持久化。</summary>
     private void SyncAssetsToProject()
     {
@@ -2881,6 +2985,11 @@ internal sealed class VideoEditorWindow : MyWindow
                 ? $"已添加音频到 A{clip.AudioTrack + 1}（{clip.Duration:0.#}s，可拖动/裁剪）。"
                 : $"已添加{(isImage ? "图片" : "视频")}片段（{clip.Duration:0.#}s，可拖动/裁剪）。";
         }
+
+        if (isImage)
+        {
+            WarnIfImageUndecodable(clip);
+        }
     }
 
     /// <summary>把新素材加入素材库：图片直接加入（Kind=Image 覆盖层）；视频逐个询问压缩后加入。</summary>
@@ -2889,7 +2998,19 @@ internal sealed class VideoEditorWindow : MyWindow
         foreach (var path in paths)
         {
             // 图片与音频都不需要转码询问：图片是覆盖层，音频直接进音频轨。
-            if (VideoTranscoder.IsImageFile(path) || VideoTranscoder.IsAudioFile(path))
+            if (VideoTranscoder.IsImageFile(path))
+            {
+                // 覆盖层渲染走 GDI+，它没有 WebP 解码器 —— 导入时就把这类图片转成 PNG，
+                // 否则该片段在预览里整段不动、渲染成片里静默丢图（见 VideoTranscoder.NormalizeImage）。
+                var normalized = await Task.Run(() => VideoTranscoder.NormalizeImage(path, ImageCacheDirectory));
+                if (!string.Equals(normalized, path, StringComparison.OrdinalIgnoreCase))
+                {
+                    EditorLog($"IMG 转换 {Path.GetFileName(path)} → {Path.GetFileName(normalized)}（GDI+ 解不了该格式）");
+                }
+
+                _assets.Add(normalized);
+            }
+            else if (VideoTranscoder.IsAudioFile(path))
             {
                 _assets.Add(path);
             }
@@ -6279,6 +6400,8 @@ internal sealed class VideoEditorWindow : MyWindow
         if (clip != null)
         {
             EnsureClipVisible(clip);
+            // 图片覆盖层走 GDI+，遇到它解不了的格式（如转换也失败的 WebP）给一条明确提示。
+            WarnIfImageUndecodable(clip);
         }
 
         e.Handled = true;
