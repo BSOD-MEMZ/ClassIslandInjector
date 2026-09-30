@@ -23,6 +23,7 @@
 | `VideoFrameSource.cs` / `FFmpegVideoDecoder.cs` / `FFmpegRuntime.cs`                         | 视频背景解码（**纯 FFmpeg，无 WMF**）：后台解码线程、FFmpeg 解码器、库检测 + 联机下载 |
 | `FFmpegAudioDecoder.cs` / `VideoAudioPlayer.cs`                                             | 单文件视频背景的**音频输出**（「播放声音」开关，默认关闭）：FFmpeg 解音频轨 + swr 统一重采样为 48kHz/立体声/s16 → NAudio `WasapiOut`（共享模式）。无音频轨 / 设备不可用一律静默降级为无声。**循环同步**：`VideoFrameSource.OnLoopRestart` 在每次画面循环复位时把音频 `Seek(0)`（音频与视频各自独立循环，周期一旦不一致就会越滚越错位）；「播放声音」开启时底图按**源帧率**播放（否则视频循环周期 ≠ 音频时长，一个画面循环里音频会重复若干遍） |
 | `ProjectAudioMixer.cs` / `AudioWaveform.cs`                                                 | 工程（多片段）音频：按工程时间轴混音「音频轨片段 + 视频片段自带原声」，逐片段应用音量与淡入/淡出包络、int 累加后钳制防削波；波形峰值包络提取（20ms 细粒度 + 按文件缓存，供时间轴绘制）。**离线渲染走同一个 `MixChunk`**：`StartOffline(project)` + `ReadForRender(...)` 不建立音频输出、直接按样本号产出 PCM，所以「渲染出来的声音」与「预览听到的」口径完全一致（含变速/保持音调/轨静音） |
+| `VideoTranscoder.cs`                                                                                | 素材导入时的转码压缩（720p/CRF27 → 配置目录 `video-cache/`）。**输出帧率上限 30fps**（`ProxyMaxFps`，按目标时间抽帧）：源帧率直接决定预览/底图的解码成本，而展示只要 24fps，照抄 54~60fps 的源帧率等于每次播放白解近两倍的帧；30fps 同时保证产物是 CFR |
 | `VideoProject.cs` / `VideoProjectPlayer.cs` / `Views/VideoEditorWindow.cs`               | 视频工程（多片段拼接/变换）与 PR 风格视频编辑器（素材库/舞台/属性/时间轴）            || `PresetExchange.cs`                                                                              | 预设交换：把用户预设（含静态资源）导出为 .cizip / 从 .cizip 导入；包内 metadata.json / preview.png 商店展示字段 |
 | `PresetStoreService.cs`                                                                          | 预设商店联机服务：索引抓取（15min 磁盘缓存 + 离线回退）、预览图缓存、.cizip 下载（进度）、已安装记录（installed.json）、版本兼容检查 |
 | `Views/PresetStoreWindow.cs` + `Views/PresetStoreCard.cs`                                        | 预设商店窗口（1:1 仿新版微软商店）：自定义标题栏 + 左窄导航（首页/全部/热门/我的）+ Banner 轮播 + 横向卡行 + 网格浏览 + 详情页 || `Views/InjectorSettingsPage.cs`                                                                 | 设置页 UI（FluentAvalonia`SettingsExpander`/`InfoBar`/`ContentDialog`）             |
@@ -81,6 +82,9 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
   - `tools\RaceProbe`：`RaceProbe.exe [视频] [FFmpeg库目录]` = 「解码线程正在 `ReadFrame` 时另一线程 `Dispose`」的竞态回归（5 轮）。
     守护的是这个坑：**释放解码器必须先 `Join` 播放线程、且 `ReadFrame`/`SeekTo`/`Restart` 与 `Dispose` 共用 `FFmpegVideoDecoder._gate` 互斥**，
     否则 native 上下文被 free 后继续读 → `AccessViolationException`(0xc0000005) 静默击穿宿主进程（点「渲染并应用」第一步 `StopPreview` 就会踩到）。
+   `--single [视频] [音频] [FFmpeg库目录] [解码尺寸] [秒数]` = 单轨长跑（真机排查：投递率/间隔 +
+   播放器每 2 秒的「拍 均/峰 + 每轨 源fps/显/跳/seek/拍峰[闲置原因]」）；
+   `--makecfr [输出] [fps] [秒] [宽]` = 合成固定帧率参考素材（区分引擎问题与素材问题）。
    还有 `RaceProbe.exe --stress [视频] [音频] [FFmpeg库目录]` = **预览播放压力测试**（种子）：
    用一个 3 视频轨 + 1 音频轨的工程跑矩阵（1/2/3 轨 × 解码 400/640/800px × 空闲/加载 CPU × UI 卡顿 0/60ms），
    量每轨投递帧率与最大间隔、seek 后到首帧延迟、改倍速后是否还在动；另有
@@ -226,12 +230,22 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
 - **时间轴清空（`_duration == 0`）必须停播**：否则每拍都判「播完了 → 循环复位」，
   播放头会在 0s 附近抽搐。播放器在 `_duration <= 0` 时退出线程并把时间归零，
   编辑器侧 `SyncPreviewWithProject()` 负责停播 + 回 0s。
-- 已知上限（本机 4 核实测）：**解码成本几乎只由源码流决定**（320px 11.4ms / 800px 12ms / 1280px 13.1ms
-  —— 降到 320px 也只省 2ms），所以「预览画质自适应」主要省的是 UI 上传/合成，不是解码。
-  单轨 @800px 现在能到 ~23fps，但 **3 轨 @800px 只有 ~15fps**：解码全在一条线程上串行，
-  而 54fps 源每轨每秒要解 54 帧（≈0.4 核/轨）—— 单线程物理上做不完。
-  要真正解决只有两条路：**按轨并行解码**（每轨一条线程，风险在解码器的开关/释放协调）
-  或**预览用代理文件**（导入时转码一份低帧率小尺寸素材给预览，渲染仍用原片）。
+- **解码成本 = 源帧率 × 分辨率，与「显示多大」无关**：同一台机器 320px 11.4ms / 800px 12ms /
+  1280px 13.1ms（降到 320px 只省 2ms），所以「预览画质自适应」主要省的是 UI 上传/合成，不是解码。
+  **真正的杠杆是素材帧率**：手机视频常见 54~60fps，而显示只要 24fps ——
+  实测同一段素材解一帧 7.4ms、每轨每秒要解 54 次（0.4 核/轨）；转成 30fps CFR 代理解一帧 1.87ms、
+  每轨每秒 30 次（0.045 核/轨），差 9 倍。
+- **按轨并行解码（2026-09-30 落地）**：`VideoProjectPlayer` 每轨一条 `TrackWorker` 线程，
+  主循环只负责打拍（异步派发，**不等收工**：同步等引入两次线程交接，实测单轨从 23fps 掉到 16.5fps）。
+  规则：**解码器的打开 / seek / 释放只在该轨线程上发生**，跨线程只通过 `Signal`/`Done`/
+  `RestartPending` 握手；`Dispose` 绝不代替它们释放（各轨线程退出前自释放），
+  否则回到「跨线程释放 native 上下文 → 静默崩溃」的老坑。跳转是粘性标记（RestartPending），
+  不会被随后的普通拍覆盖。
+- **CFR vs VFR**：帧号换算 `targetN = mediaTime × 源帧率` 只在**固定帧率**下严格成立；
+  VFR 手机视频会让「落后多少帧」的判断失真（进而频繁 seek）。测试时用 `--makecfr` 合成
+  固定帧率素材把「引擎问题」与「素材问题」分开。
+- 实测结论（本机 4 核）：**代理素材（800px / 30fps CFR）下单轨、双轨、三轨全部 24fps**
+  （间隔均值 42ms = 精确 1/24s）；用原始 54fps 素材则三轨只有 ~15fps。
 ## 预设商店（PresetStore）
 
 - 数据源与格式沿用此前约定：索引 `https://xxtsoft.top/support/injector/presets/index.json`（schemaVersion 1，camelCase、大小写不敏感），条目字段 = `Defaults/preset-index.sample.json`（id/name/author/school/description/pluginVersion/minPluginVersion/createdAt/downloadUrl(.cizip)/previewUrl(.png)/sizeBytes，可选 downloads 供热门排序）。

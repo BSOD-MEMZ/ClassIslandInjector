@@ -40,6 +40,27 @@ internal static class Program
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
 
+        // makecfr：[输出] [fps] [秒] [宽] [FFmpeg库目录] → 合成固定帧率参考素材
+        // （把「引擎问题」与「素材是 VFR/高帧率」分开：帧号换算只在 CFR 下严格成立）。
+        if (args.Length > 0 && args[0] == "--makecfr")
+        {
+            return Stress.MakeCfr(args.Length > 1 ? args[1] : Path.Combine(Path.GetTempPath(), "cfr30.mp4"),
+                args.Length > 2 ? int.Parse(args[2]) : 30,
+                args.Length > 3 ? int.Parse(args[3]) : 20,
+                args.Length > 4 ? int.Parse(args[4]) : 1280,
+                args.Length > 5 ? args[5] : @"D:\Dev\ClassIsland\data\Config\Plugins\classisland.injectorfmpeg");
+        }
+
+        // single：[视频] [音频] [FFmpeg库目录] [解码尺寸] [秒数] → 单轨长跑（真机排查用）
+        if (args.Length > 0 && args[0] == "--single")
+        {
+            return Stress.Single(args.Length > 1 ? args[1] : @"D:\Downloads\injector-video.mp4",
+                args.Length > 2 ? args[2] : @"D:\Downloadsgm.mp3",
+                args.Length > 3 ? args[3] : @"D:\Dev\ClassIsland\data\Config\Plugins\classisland.injectorfmpeg",
+                args.Length > 4 ? int.Parse(args[4]) : 800,
+                args.Length > 5 ? int.Parse(args[5]) : 20);
+        }
+
         // stress：[视频] [音频] [FFmpeg库目录] → 预览播放压力测试（把卡顿/音画不同步量成数字）。
         if (args.Length > 0 && args[0] == "--stress")
         {

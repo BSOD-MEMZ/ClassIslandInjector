@@ -53,7 +53,11 @@
 3. **`Consumed.Wait` 只等 5ms**：pump 逐轨串行，等久了 3 轨会把一拍拖到 450ms。
 4. **`AudibleTime` 不能拿声卡累计位置当绝对时间**：`WasapiOut.GetPosition()` 自流启动起算，而 `Seek` 只改 `_baseTime` → 每次 seek 后凭空多出「已播时长」（实测 +3.01s）→ 漂移校正反复重定位（声音断续 + 锁阻塞视频线程）。按锚点算，起播/Seek/Resume 重锚；容差 0.30s + 10s 冷却。
 
-诊断入口：`video-player.log` 每 2 秒一行（单拍耗时 + 每轨闲置原因）。本机上限：单轨 ~17fps、3 轨 @800px ~12fps。
+5. **解码成本 = 源帧率 × 分辨率，与显示尺寸无关**（320px 与 1280px 只差 2ms）。真正的杠杆是**素材帧率**：手机视频 54~60fps 而显示只要 24fps，白解近两倍。`VideoTranscoder` 输出**上限 30fps**（按时间抽帧，产物为 CFR）；实测用户那段 54fps 素材转成 800×368/30fps 后，解一帧 7.4ms → **1.87ms**，单/双/三轨全部 **24fps**。
+6. **每轨一条解码线程**（`TrackWorker`，主循环只打拍、**异步派发不等收工**——同步等会把单轨从 23fps 拖到 16.5fps）。解码器的开关/seek/释放**只在本轨线程**，跨线程只用 Signal/Done/RestartPending 握手；`Dispose` 不代释放（各轨线程自释放），否则回到「跨线程释放 native → 静默崩溃」的老坑。
+7. **CFR vs VFR**：`targetN = mediaTime × 源帧率` 只在固定帧率下成立；VFR 素材会让「落后多少帧」失真 → 频繁 seek。测试用 `--makecfr` 合成 CFR 素材区分「引擎问题」与「素材问题」。
+
+诊断入口：`video-player.log` 每 2 秒一行（拍 均/峰 + 每轨 源fps/显/跳/seek/拍峰[闲置原因]）。注意「跳」是源帧率高于显示帧率时的**正常**跳帧，不是故障。
 ## 调试与排查（沙箱环境）
 
 - **判宿主存活不能看进程**：`ClassIsland.exe` 只是启动器，真身是它拉起的 `ClassIsland.Desktop.exe`。可靠判据是宿主日志里 `MemoryWatchDogService` 的 **60 秒心跳条数**。

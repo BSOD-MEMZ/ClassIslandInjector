@@ -24,6 +24,7 @@
     <Compile Include="..\..\AudioSpeedReader.cs" Link="AudioSpeedReader.cs" />
     <Compile Include="..\..\VideoFrameSource.cs" Link="VideoFrameSource.cs" />
     <Compile Include="..\..\VideoProject.cs" Link="VideoProject.cs" />
+    <Compile Include="..\..\VideoTranscoder.cs" Link="VideoTranscoder.cs" />
     <Compile Include="..\..\ProjectAudioMixer.cs" Link="ProjectAudioMixer.cs" />
     <Compile Include="..\..\VideoProjectPlayer.cs" Link="VideoProjectPlayer.cs" />
     <Compile Include="..\..\VideoProjectRenderer.cs" Link="VideoProjectRenderer.cs" />
