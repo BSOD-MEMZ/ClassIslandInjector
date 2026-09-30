@@ -40,6 +40,27 @@ internal static class Program
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
 
+        // info：[视频] [FFmpeg库目录] → 打印源分辨率/帧率/时长（判断素材要不要转码压帧率）
+        if (args.Length > 0 && args[0] == "--info")
+        {
+            FFmpeg.AutoGen.ffmpeg.RootPath = args.Length > 2
+                ? args[2]
+                : @"D:\Dev\ClassIsland\data\Config\Plugins\classisland.injectorfmpeg";
+            _ = FFmpeg.AutoGen.ffmpeg.avcodec_version();
+            var dec = new FFmpegVideoDecoder();
+            if (!dec.Open(args.Length > 1 ? args[1] : "", 800))
+            {
+                Console.WriteLine("打不开：" + (args.Length > 1 ? args[1] : "(未给路径)"));
+                return 1;
+            }
+
+            Console.WriteLine($"{Path.GetFileName(args[1])}：源 {dec.SourceWidth}x{dec.SourceHeight}  "
+                              + $"帧率 {dec.SourceFps:0.###}fps  时长 {dec.Duration:0.###}s  "
+                              + $"解码 {dec.OutputWidth}x{dec.OutputHeight}");
+            dec.Dispose();
+            return 0;
+        }
+
         // makecfr：[输出] [fps] [秒] [宽] [FFmpeg库目录] → 合成固定帧率参考素材
         // （把「引擎问题」与「素材是 VFR/高帧率」分开：帧号换算只在 CFR 下严格成立）。
         if (args.Length > 0 && args[0] == "--makecfr")

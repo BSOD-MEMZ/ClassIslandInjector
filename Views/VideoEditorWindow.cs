@@ -68,6 +68,11 @@ internal sealed class VideoEditorWindow : MyWindow
     /// <summary>已经提示过的档位（避免状态栏被反复刷）。</summary>
     private int _previewNotifiedLevel = -1;
 
+    // ---- UI 侧单帧耗时统计（只在 UI 线程读写）----
+    private double _previewUiSumMs;
+    private double _previewUiMaxMs;
+    private int _previewUiCount;
+
     private readonly VideoProject _project = VideoProjectStore.Load(VideoProjectStore.DefaultPath);
     private readonly List<string> _assets = [];
     private VideoClip? _selected;
@@ -7468,6 +7473,7 @@ internal sealed class VideoEditorWindow : MyWindow
     {
         Dispatcher.UIThread.Post(() =>
         {
+            var uiSw = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 UpdateStageLayer(track, ApplyActiveFilter(frame, clip, _player?.CurrentTime ?? _playheadTime), clip);
@@ -7479,6 +7485,12 @@ internal sealed class VideoEditorWindow : MyWindow
             }
             finally
             {
+                // UI 侧单帧耗时（写位图 + 变换 + 覆盖层）—— 瓶颈在解码还是在 UI，看这个数：
+                // 若 24fps 下每帧 UI 耗时 > 20ms，UI 线程必然来不及消费，播放器就会跳帧。
+                uiSw.Stop();
+                _previewUiSumMs += uiSw.Elapsed.TotalMilliseconds;
+                _previewUiMaxMs = Math.Max(_previewUiMaxMs, uiSw.Elapsed.TotalMilliseconds);
+                _previewUiCount++;
                 // 通知播放器本轨道帧已消费，允许覆写缓冲。
                 _player?.MarkTrackConsumed(track);
             }
@@ -7555,6 +7567,15 @@ internal sealed class VideoEditorWindow : MyWindow
         _previewWindowStart = now;
         Array.Clear(_previewIntervalCount);
         Array.Clear(_previewIntervalSum);
+        if (_previewUiCount > 0)
+        {
+            EditorLog($"预览 UI 侧：{_previewUiCount} 帧/窗口，单帧 均 {_previewUiSumMs / _previewUiCount:0.#}ms / 峰 {_previewUiMaxMs:0.#}ms"
+                      + $"（>20ms 时 UI 线程就会成为瓶颈 → 播放器跳帧）");
+        }
+
+        _previewUiSumMs = 0;
+        _previewUiMaxMs = 0;
+        _previewUiCount = 0;
         if (!any)
         {
             return;
@@ -7649,7 +7670,36 @@ internal sealed class VideoEditorWindow : MyWindow
         layer.Image.IsVisible = true;
         // 全屏预览窗口镜像同帧（同一次 UI 回调内双写，帧像素在 MarkTrackConsumed 前有效）。
         _stageFullscreen?.UpdateLayer(track, frame, clip);
-        UpdateStageHandles();
+        // 播放中每帧都会走到这里，但手柄几何此刻不会变：跳过刷新。
+        // （`UpdateStageHandles` 要改十几个属性、还会触发覆盖层重排 —— 弱机上这是 UI 线程
+        // 跟不上、进而 Consumed 回不来、画面被跳帧的主要开销之一。）
+        if (!HandlesUpToDateFor(clip))
+        {
+            UpdateStageHandles();
+        }
+    }
+
+    /// <summary>上一次刷新手柄时的几何签名（用于跳过播放中的重复刷新）。</summary>
+    private (double X, double Y, double W, double H, double Rotation) _stageHandleSig;
+    private bool _stageHandleSigSet;
+
+    /// <summary>
+    /// 手柄覆盖层是否已经对得上当前选中片段（对得上就跳过本帧的刷新）。
+    /// 只影响「播放中每帧的重复刷新」：选中变化 / 尺寸变化 / 覆盖层刚被隐藏过 都会照常刷新。
+    /// </summary>
+    private bool HandlesUpToDateFor(VideoClip clip)
+    {
+        if (!ReferenceEquals(_selected, clip) || !_stageHandleOverlay.IsVisible)
+        {
+            return false;
+        }
+
+        var rect = GetSelectedDisplayRect(clip);
+        var sig = (rect.X, rect.Y, rect.Width, rect.Height, clip.Rotation);
+        var same = _stageHandleSigSet && sig == _stageHandleSig;
+        _stageHandleSig = sig;
+        _stageHandleSigSet = true;
+        return same;
     }
 
     /// <summary>片段在时间轴/属性面板的显示名（视频/图片 = 文件名，文本 = 内容，形状 = 类型）。</summary>
