@@ -82,6 +82,11 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
   - `tools\RaceProbe`：`RaceProbe.exe [视频] [FFmpeg库目录]` = 「解码线程正在 `ReadFrame` 时另一线程 `Dispose`」的竞态回归（5 轮）。
     守护的是这个坑：**释放解码器必须先 `Join` 播放线程、且 `ReadFrame`/`SeekTo`/`Restart` 与 `Dispose` 共用 `FFmpegVideoDecoder._gate` 互斥**，
     否则 native 上下文被 free 后继续读 → `AccessViolationException`(0xc0000005) 静默击穿宿主进程（点「渲染并应用」第一步 `StopPreview` 就会踩到）。
+    **⚠️ 它是靠 `<Compile Include>` 链接主项目源码编译的，所以主项目新增/修改「被链接的文件」后要顺手
+    `dotnet build tools\RaceProbe\RaceProbe.csproj` 验一下** —— 2026-09-30 就发现它自 `32f97ef`（修 WebP，
+    给 `VideoTranscoder.cs` 引入 `Avalonia.Bitmap`、给 `OverlayFrameGenerator.cs` 引入 `InjectorRuntime.ConfigDirectory`）
+    起一直编译不过，**烂了整整一轮无人察觉**（主项目编译不受影响，因为 csproj 用 `DefaultItemExcludes` 排除了 `tools\**`）。
+    当时的两处补偿：csproj 加 `Avalonia` 包引用 + `Program.cs` 里加 `InjectorRuntime` 桩。
    `--single [视频] [音频] [FFmpeg库目录] [解码尺寸] [秒数]` = 单轨长跑（真机排查：投递率/间隔 +
    播放器每 2 秒的「拍 均/峰 + 每轨 源fps/显/跳/seek/拍峰[闲置原因]」）；
    `--makecfr [输出] [fps] [秒] [宽]` = 合成固定帧率参考素材（区分引擎问题与素材问题）。

@@ -20,6 +20,25 @@ internal static class FFmpegRuntime
 }
 
 /// <summary>
+/// 插件运行时桩：探针不加载插件，只提供**被链接源码引用到的成员**。
+/// <para>
+/// 目前链接进来的 <c>OverlayFrameGenerator.cs</c> 只用到一个 <c>ConfigDirectory</c>
+/// （拼诊断日志路径用），这里给个临时目录即可，绝不碰宿主的真实配置目录。
+/// </para>
+/// <para>
+/// 这个桩是 2026-09-30 补的：提交 <c>32f97ef</c>（修 WebP）往 <c>OverlayFrameGenerator.cs</c>
+/// 引入 <c>InjectorRuntime.ConfigDirectory</c>、往 <c>VideoTranscoder.cs</c> 引入
+/// <c>Avalonia.Media.Imaging.Bitmap</c>，本探针随即编译不过（详见 csproj 里的说明）。
+/// </para>
+/// </summary>
+internal static class InjectorRuntime
+{
+    /// <summary>诊断日志目录（探针用临时目录）。</summary>
+    public static string ConfigDirectory { get; } =
+        Path.Combine(Path.GetTempPath(), "raceprobe-config");
+}
+
+/// <summary>
 /// 「解码中释放解码器」竞态回归探针（tools/ 下独立项目，不参与插件主项目编译）。
 /// <para>
 /// 复现的真实事故：点编辑器「渲染并应用」→ 第一步 StopPreview → VideoProjectPlayer.Dispose

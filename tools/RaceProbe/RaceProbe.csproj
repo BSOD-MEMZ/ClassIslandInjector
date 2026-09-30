@@ -18,6 +18,19 @@
     <!-- audio 模式：渲染带音频要跑真实的渲染器 + 离线混音（NAudio 只是 ProjectAudioMixer 的编译依赖）。 -->
     <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
     <PackageReference Include="System.Drawing.Common" Version="8.0.25" />
+    <!--
+      Avalonia：**只是为了让 VideoTranscoder.cs 编译过**（它用 Avalonia.Media.Imaging.Bitmap
+      做 WebP→PNG 归一化）。探针的运行路径不碰那段代码（那是素材导入时才走的），所以只需程序集在，
+      不需要注册渲染平台。
+      为什么需要它：2026-09-30 提交 32f97ef（修 WebP 静默丢图）让 VideoTranscoder.cs 与
+      OverlayFrameGenerator.cs 分别引入了 Avalonia.Bitmap 和 InjectorRuntime.ConfigDirectory，
+      而这两个文件是被本探针 <Compile Include> 链接进来的 —— 主项目编译不受影响（csproj 用
+      DefaultItemExcludes 排除了 tools\**），于是这个探针**悄悄烂了一个月没人发现**，
+      直到 2026-09-30 改解码器后想跑它验证才发现。
+      InjectorRuntime 那半边走 Program.cs 里的桩（见该文件）。
+      教训：加了 / 改了被 tools 链接的源码后，顺手 `dotnet build tools\RaceProbe\RaceProbe.csproj` 一下。
+    -->
+    <PackageReference Include="Avalonia" Version="11.3.6" />
     <Compile Include="..\..\FFmpegVideoDecoder.cs" Link="FFmpegVideoDecoder.cs" />
     <Compile Include="..\..\FFmpegVideoEncoder.cs" Link="FFmpegVideoEncoder.cs" />
     <Compile Include="..\..\FFmpegAudioDecoder.cs" Link="FFmpegAudioDecoder.cs" />
