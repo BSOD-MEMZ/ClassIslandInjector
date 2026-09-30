@@ -61,6 +61,11 @@ internal static class Program
             return RunLoopCheck(args);
         }
 
+        if (args.Contains("--demux"))
+        {
+            return RunDemuxCheck(args);
+        }
+
         var libDir = args.Length > 1
             ? args[1]
             : @"D:\Dev\ClassIsland\data\Config\Plugins\classisland.injector\ffmpeg";
@@ -356,6 +361,185 @@ internal static class Program
         }
 
         Console.WriteLine($"完成：共解码 {frames} 帧，全程无异常。");
+        return 0;
+    }
+
+    /// <summary>
+    /// demux 层探针：把「读不到包」与「解不出帧」分开。
+    /// <para>
+    /// 背景：用户报「底图一直循环开头几秒」，插件解码器只解出 30 帧，但 PotPlayer 播放完全正常
+    /// —— 说明素材没坏，问题在我们的读取/解码链路。本探针用裸 avformat API 统计：
+    /// ① 容器有多少条流、各是什么编码；② 逐包读完全文件，每条流各读到多少个包，
+    /// ③ 读完后 av_read_frame 的返回码（EOF 还是真错误）；④ 事后 seek 到中段能否正常继续解码。
+    /// 用法：--demux &lt;视频&gt; &lt;FFmpeg库目录&gt;
+    /// </para>
+    /// </summary>
+    private static unsafe int RunDemuxCheck(string[] args)
+    {
+        var idx = Array.IndexOf(args, "--demux");
+        var video = args.Length > idx + 1 ? args[idx + 1] : @"D:\Downloads\injector-video.mp4";
+        var libDir = args.Length > idx + 2
+            ? args[idx + 2]
+            : @"D:\Dev\ClassIsland\data\Config\Plugins\classisland.injector\ffmpeg";
+
+        ffmpeg.RootPath = libDir;
+        Console.WriteLine("=== demux 层探针（裸 avformat API） ===");
+        Console.WriteLine($"文件: {video}");
+        Console.WriteLine($"FFmpeg: {ffmpeg.av_version_info()}");
+
+        AVFormatContext* fmt = null;
+        var ret = ffmpeg.avformat_open_input(&fmt, video, null, null);
+        if (ret < 0)
+        {
+            Console.WriteLine($"× avformat_open_input 失败 {ret}");
+            return 1;
+        }
+
+        ret = ffmpeg.avformat_find_stream_info(fmt, null);
+        Console.WriteLine($"avformat_find_stream_info ret={ret}");
+        Console.WriteLine($"nb_streams={fmt->nb_streams}  duration={fmt->duration / (double)ffmpeg.AV_TIME_BASE:0.###}s  " +
+                          $"start_time={fmt->start_time}");
+        Console.WriteLine($"iformat={(fmt->iformat->long_name != null ? System.Runtime.InteropServices.Marshal.PtrToStringAnsi((IntPtr)fmt->iformat->long_name) : "?")}");
+
+        for (var i = 0; i < fmt->nb_streams; i++)
+        {
+            var st = fmt->streams[i];
+            var par = st->codecpar;
+            var name = ffmpeg.avcodec_get_name(par->codec_id);
+            var tb = st->time_base;
+            Console.WriteLine($"  stream[{i}] {name} type={par->codec_type} " +
+                              $"{par->width}x{par->height} time_base={tb.num}/{tb.den} " +
+                              $"nb_frames={st->nb_frames} duration={st->duration} " +
+                              $"avg_fps={ffmpeg.av_q2d(st->avg_frame_rate):0.##} " +
+                              $"extradata={par->extradata_size}B " +
+                              $"pix_fmt={(AVPixelFormat)par->format} profile={par->profile}");
+        }
+
+        // ---- 逐包读完全文件 ----
+        var pkt = ffmpeg.av_packet_alloc();
+        var counts = new long[fmt->nb_streams];
+        long totalPackets = 0;
+        long bytes = 0;
+        var firstPts = new long[fmt->nb_streams];
+        var lastPts = new long[fmt->nb_streams];
+        for (var i = 0; i < fmt->nb_streams; i++)
+        {
+            firstPts[i] = long.MinValue;
+            lastPts[i] = long.MinValue;
+        }
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        int lastErr;
+        while (true)
+        {
+            lastErr = ffmpeg.av_read_frame(fmt, pkt);
+            if (lastErr < 0)
+            {
+                break;
+            }
+
+            var si = pkt->stream_index;
+            counts[si]++;
+            totalPackets++;
+            bytes += pkt->size;
+            if (firstPts[si] == long.MinValue)
+            {
+                firstPts[si] = pkt->pts;
+            }
+
+            if (pkt->pts != ffmpeg.AV_NOPTS_VALUE)
+            {
+                lastPts[si] = pkt->pts;
+            }
+
+            ffmpeg.av_packet_unref(pkt);
+        }
+
+        Console.WriteLine($"\n逐包读完：共 {totalPackets} 个包，{bytes / 1024.0 / 1024.0:0.##}MB，耗时 {sw.ElapsedMilliseconds}ms");
+        for (var i = 0; i < fmt->nb_streams; i++)
+        {
+            Console.WriteLine($"  stream[{i}] 包数={counts[i]} firstPts={firstPts[i]} lastPts={lastPts[i]}");
+        }
+
+        var errBuf = stackalloc byte[256];
+        ffmpeg.av_strerror(lastErr, errBuf, 256);
+        var errText = System.Runtime.InteropServices.Marshal.PtrToStringAnsi((IntPtr)errBuf) ?? "?";
+        Console.WriteLine($"结束返回码 {lastErr} = {errText}" +
+                          (lastErr == ffmpeg.AVERROR_EOF ? "（正常 EOF）" : "（★ 非 EOF，读取真出错）"));
+
+        // ---- 事后 seek 到中段，看能否继续解码 ----
+        ffmpeg.av_packet_free(&pkt);
+        Console.WriteLine("\n--- seek 到 100s 后重新解码 5 帧（验证中段数据是否可解）---");
+        var target = 100L * ffmpeg.AV_TIME_BASE;
+        var seekRet = ffmpeg.av_seek_frame(fmt, -1, target, ffmpeg.AVSEEK_FLAG_BACKWARD);
+        Console.WriteLine($"av_seek_frame(100s) ret={seekRet}");
+        if (seekRet >= 0)
+        {
+            // 找到视频流对应的解码器
+            var vIdx = -1;
+            for (var i = 0; i < fmt->nb_streams; i++)
+            {
+                if (fmt->streams[i]->codecpar->codec_type == AVMediaType.AVMEDIA_TYPE_VIDEO)
+                {
+                    vIdx = i;
+                    break;
+                }
+            }
+
+            if (vIdx >= 0)
+            {
+                var codec = ffmpeg.avcodec_find_decoder(fmt->streams[vIdx]->codecpar->codec_id);
+                var ctx = ffmpeg.avcodec_alloc_context3(codec);
+                ffmpeg.avcodec_parameters_to_context(ctx, fmt->streams[vIdx]->codecpar);
+                var openRet = ffmpeg.avcodec_open2(ctx, codec, null);
+                Console.WriteLine($"avcodec_open2 ret={openRet}（{ffmpeg.avcodec_get_name(codec->id)}）");
+                if (openRet >= 0)
+                {
+                    var p2 = ffmpeg.av_packet_alloc();
+                    var f2 = ffmpeg.av_frame_alloc();
+                    var got = 0;
+                    var guard = 0;
+                    while (got < 5 && guard++ < 5000)
+                    {
+                        if (ffmpeg.av_read_frame(fmt, p2) < 0)
+                        {
+                            Console.WriteLine("  读到 EOF 仍未凑够 5 帧");
+                            break;
+                        }
+
+                        if (p2->stream_index == vIdx)
+                        {
+                            var sr = ffmpeg.avcodec_send_packet(ctx, p2);
+                            if (sr < 0)
+                            {
+                                Console.WriteLine($"  ★ avcodec_send_packet 失败 ret={sr}（第 {got} 帧后）");
+                                ffmpeg.av_packet_unref(p2);
+                                break;
+                            }
+
+                            while (ffmpeg.avcodec_receive_frame(ctx, f2) >= 0)
+                            {
+                                got++;
+                                if (got >= 5)
+                                {
+                                    break;
+                                }
+                            }
+                        }
+
+                        ffmpeg.av_packet_unref(p2);
+                    }
+
+                    Console.WriteLine($"  seek 后解出 {got} 帧" + (got >= 5 ? "（✓ 中段数据可解，问题在顺序读取被提前截断）" : ""));
+                    ffmpeg.av_frame_free(&f2);
+                    ffmpeg.av_packet_free(&p2);
+                }
+
+                ffmpeg.avcodec_free_context(&ctx);
+            }
+        }
+
+        ffmpeg.avformat_close_input(&fmt);
         return 0;
     }
 

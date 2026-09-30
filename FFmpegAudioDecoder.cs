@@ -246,6 +246,10 @@ internal sealed unsafe class FFmpegAudioDecoder : IDisposable
             ffmpeg.av_packet_unref(_pkt);
             if (sr < 0)
             {
+                // 这里的 sr<0 实际不可达 EAGAIN：上面每次都把 receive 循环取到 EAGAIN 为止，
+                // 所以回到这里时解码器输出队列必然是空的，send 不会再要「先取帧」。
+                // （视频侧曾经因为没排空 + 把 EAGAIN 当致命错误，导致只解出开头几十帧，见
+                //  FFmpegVideoDecoder.ReadFrame 的说明；音频侧结构本来就是对的，不改动以免引入回归。）
                 continue;
             }
 

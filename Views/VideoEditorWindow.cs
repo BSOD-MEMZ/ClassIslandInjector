@@ -443,7 +443,36 @@ internal sealed class VideoEditorWindow : MyWindow
     private int _resizeLane = -1;
     private double _resizeLaneStartY;
     private double _resizeLaneStartH;
-    private readonly TextBlock _statusText = new() { TextWrapping = TextWrapping.NoWrap, TextTrimming = TextTrimming.CharacterEllipsis, Opacity = 0.8, FontSize = 12, MaxWidth = 380, VerticalAlignment = VerticalAlignment.Center };
+
+    /// <summary>
+    /// 状态提示的落点。**界面上不再有 label** —— 时间轴工具条那一行曾经挂着一个
+    /// <c>TextBlock</c> 显示「选择工具。/ 预览播放中…/ 已删除 N 个片段」之类，用户明确要求
+    /// 「那个位置不要有任何 label」。这里把它换成一个只写日志的接收器：界面干净了，
+    /// 而 <c>.Text = "…"</c> 的调用形式不变（全文件 70 处调用点无需改动），
+    /// 提示内容进 <c>video-editor.log</c> 保留排查线索；
+    /// <c>.Text</c> 仍可读，「不要覆盖上一条自动放到最近空位的提示」那类判断照常工作。
+    /// </summary>
+    private readonly StatusSink _statusText = new();
+
+    /// <summary>状态提示接收器（见 <see cref="_statusText"/> 的说明）：写日志 + 记住最后一条。</summary>
+    private sealed class StatusSink
+    {
+        private string _text = string.Empty;
+
+        public string Text
+        {
+            get => _text;
+            set
+            {
+                _text = value ?? string.Empty;
+                if (_text.Length > 0)
+                {
+                    EditorLog($"[status] {_text}");
+                }
+            }
+        }
+    }
+
     /// <summary>工程自动保存防抖计时器（编辑后延迟写盘，重开不丢）。</summary>
     private readonly DispatcherTimer _saveTimer = new() { Interval = TimeSpan.FromMilliseconds(600) };
 
@@ -1548,7 +1577,9 @@ internal sealed class VideoEditorWindow : MyWindow
             Orientation = Orientation.Horizontal,
             Spacing = 4,
             VerticalAlignment = VerticalAlignment.Center,
-            Children = { _timelineToolCombo, _cutButton, _deleteButton, _canvasButton, _freezeButton, _statusText }
+            // 这一行**不放任何 label**：状态提示改走 _statusText 接收器（只写日志），
+            // 用户明确要求此处不留文字（曾有个 TextBlock 显示工具说明/预览状态等）。
+            Children = { _timelineToolCombo, _cutButton, _deleteButton, _canvasButton, _freezeButton }
         };
         var zoomControls = new StackPanel
         {

@@ -204,10 +204,16 @@ internal sealed class VideoFrameSource : IDisposable
     private bool TryRestart() => _ffmpeg?.Restart() ?? false;
 
     /// <summary>
-    /// 首次 EOF 时对账：若「实际解出的帧数」远少于「声明时长 × 源帧率」，说明素材本身残缺
+    /// 首次 EOF 时对账：若「实际解出的帧数」远少于「声明时长 × 源帧率」，说明素材确实读不完整
     /// （典型：fMP4 / DASH 分片流被截断，moof+mdat 序列不完整、缺 sidx/mfra 索引）。
-    /// 这时循环播放只会反复播那几秒开头 —— 用户看到的是「底图一直循环开头」，
-    /// 但根因在素材而不是解码/循环逻辑（循环复位本身实测正常）。只告警一次，措辞明确指向素材。
+    /// 这时循环播放只会反复播开头一小段 —— 用户看到的是「底图一直循环开头」。
+    /// <para>
+    /// ⚠️ 别把它当第一诊断手段：2026-09-30 曾据此误判「素材坏了」，实际是
+    /// <see cref="FFmpegVideoDecoder"/> 把 <c>avcodec_send_packet</c> 的 <c>EAGAIN</c>
+    /// 当成致命 EOF，导致 HEVC 素材只解出 30 帧 —— 修好解码循环后同一文件解出了全部 5220 帧。
+    /// 所以**先确认解码循环正确**（<c>AudioProbe --vdec</c> 的帧数应与 <c>--demux</c> 的包数一致），
+    /// 再回来怀疑素材。只告警一次，措辞只陈述对账结果，不臆断原因。
+    /// </para>
     /// </summary>
     private void WarnIfFileTruncated()
     {
@@ -225,15 +231,15 @@ internal sealed class VideoFrameSource : IDisposable
         }
 
         var expected = declared * fps;
-        // 低于声明帧数的 30% 才算异常（正常文件因首帧对齐 / 末尾不完整帧会有小幅出入）。
-        if (_decodedFrames >= expected * 0.3)
+        // 低于声明帧数的 25% 才算异常（正常文件因首帧对齐 / 末尾不完整帧会有小幅出入）。
+        if (_decodedFrames >= expected * 0.25)
         {
             return;
         }
 
-        Log($"⚠️ 素材疑似残缺：容器声明时长 {declared:0.##}s（约 {expected:0} 帧 @{fps:0.##}fps），" +
-            $"但实际只能解出 {_decodedFrames} 帧（约 {_decodedFrames / fps:0.##}s 画面）。" +
-            "循环播放会一直重复这一小段开头；请换用完整的视频文件（该文件多半是未下载完的 DASH/fMP4 分片流）。");
+        Log($"⚠️ 解码帧数远少于容器声明：声明时长 {declared:0.##}s（约 {expected:0} 帧 @{fps:0.##}fps），" +
+            $"实际解出 {_decodedFrames} 帧（约 {_decodedFrames / fps:0.##}s 画面）。" +
+            "循环播放会只重复这一小段；请用 `AudioProbe --demux` 对比包数确认是素材截断还是解码链路问题。");
     }
 
     /// <summary>跳到指定时间（秒），供片段入点裁剪（须在 Start 前调用）。</summary>

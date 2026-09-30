@@ -77,7 +77,7 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
 - 仓库里 `tools\SmtcProbe` 是独立工具项目，**不得**被主项目编译。
 - 若删掉 csproj 中的 `<DefaultItemExcludes>$(DefaultItemExcludes);tools\**</DefaultItemExcludes>`，会出现 CS0579（重复特性，来自 tools 的 obj 生成 AssemblyInfo）。
 - 现有回归探针（都是独立项目，用 `dotnet run -c Release` 直接跑，**不需要宿主 GUI**）：
-  - `tools\AudioProbe`：无参=解音频轨并写 wav（`--play` 顺带测设备输出）；`--project`=工程 v2 格式往返与迁移校验（22 项）；`--vdec <视频> <ffmpeg库目录>`=用插件自己的 `FFmpegVideoDecoder` 完整解一遍视频，用于定位「解码侧」问题（区分「文件/解码坏了」与「渲染侧崩了」）。
+  - `tools\AudioProbe`：无参=解音频轨并写 wav（`--play` 顺带测设备输出）；`--project`=工程 v2 格式往返与迁移校验（22 项）；`--vdec <视频> <ffmpeg库目录>`=用插件自己的 `FFmpegVideoDecoder` 完整解一遍视频，用于定位「解码侧」问题（区分「文件/解码坏了」与「渲染侧崩了」）；`--loop`=验证「解到 EOF → Restart → 回到开头」；**`--demux <视频> <ffmpeg目录>`=裸 avformat 逐包读完全文件**（每条流包数 + 结束返回码 + seek 到中段能否解码）。**`--vdec` 的帧数应当等于 `--demux` 视频流包数** —— 不等就是解码链路的问题，别去怀疑素材（见约束 17）。
   - `tools\FFmpegProbe`：`--enc` 生成对照 mp4（尺寸写在 `EncodeTest` 里的 `const int w/h`，排查尺寸相关崩溃时临时改），无参=解若干帧。
   - `tools\RaceProbe`：`RaceProbe.exe [视频] [FFmpeg库目录]` = 「解码线程正在 `ReadFrame` 时另一线程 `Dispose`」的竞态回归（5 轮）。
     守护的是这个坑：**释放解码器必须先 `Join` 播放线程、且 `ReadFrame`/`SeekTo`/`Restart` 与 `Dispose` 共用 `FFmpegVideoDecoder._gate` 互斥**，
@@ -308,18 +308,46 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
 - 兜底：窗口级 `PointerExited` / `Deactivated` → `CancelTimelineDrag()`（该函数现在同时清
   `_marqueeStart`），泳道另挂 `PointerCaptureLost` 清框选。
 
-### 17. 素材残缺（截断的 DASH/fMP4）会表现为「底图一直循环开头几秒」
+### 17. 解码循环必须遵守 FFmpeg send/receive 协议（否则 HEVC 只解出开头几十帧）
 
-- 现象：本地视频底图反复播开头一小段。**不是循环逻辑坏了**（`--loop` 探针实测复位正常、
-  复位后首帧与起始首帧像素差 ~1.2）。
-- 真因：容器声明时长完整，但可解码帧数远少于「时长 × 帧率」。典型是**未下载完的 fMP4/DASH
-  分片流**（`ftyp` 里带 `dash`、由 `moof`+`mdat` 序列组成，缺 `sidx`/`mfra` 索引或被截断）。
-  实测样本 `什么时候告白啊!!!!!.40930379625.mp4`：声明 217.666s @24fps（≈5224 帧），
-  **只解出 30 帧**（≈1.25s）→ 循环播放就是反复那 1.25s。
-- `VideoFrameSource.WarnIfFileTruncated()` 在首次 EOF 对账（低于声明帧数 30% 即告警，只报一次），
-  日志明确指向「素材本身残缺，请换完整文件」，避免用户误判成插件 bug。
-- 排查手法：`tools\AudioProbe --vdec <视频> <ffmpeg目录>` 看「完成：共解码 N 帧」与声明时长的比值；
-  `--loop` 看复位是否正常。两者一比即可区分「引擎问题」与「素材问题」。
+- **现象**：本地视频底图/预览反复只播开头一小段（用户报「一直循环播放开头那几秒」）。
+- **真因**（2026-09-30 定位，此前一度误判成「素材残缺」，是错的）：`FFmpegVideoDecoder.ReadFrameLocked`
+  把 `avcodec_send_packet` 返回的 **`AVERROR(EAGAIN)` 当成致命错误直接 `return false`**。
+  EAGAIN 的真实含义是「解码器输入队列满了，先把已就绪的帧取走再回来喂」。
+  旧代码的形态还有一个连带毛病：每个包只 `receive_frame` 一帧就 `return true`，
+  **从不排空**，加上多线程解码的重排缓冲，HEVC 素材会很快撞上 EAGAIN → 被误判成 EOF。
+- **实测影响面**（A/B 对照，`tools\AudioProbe --vdec`）：**HEVC 素材塌得很惨，H.264 正常**。
+  同一个文件修复前 `30` 帧 → 修复后 `5220` 帧；三个 H.264 对照素材修复前后分别是
+  `4379→4382` / `1282→1282` / `4349→4350`（只多出 1~3 帧，那是 flush 排空延迟帧带来的正确性提升）。
+  所以症状看起来像「某些视频坏了」，实际是**编码相关的触发条件**。
+- **正确写法**（现在的实现）：一个 while 循环里
+  ① 先 `receive_frame` 取帧（取到就返回）；
+  ② 取不到且已 flush 过 → 才是真 EOF；
+  ③ 否则 `av_read_frame` 取下一个包，非目标流要 `av_packet_unref` 后继续（旧代码漏 unref 会泄漏）；
+  ④ 读到文件尾先 `avcodec_send_packet(ctx, null)` **flush 一次**排空重排缓冲里的延迟帧，
+     置 `<c>_draining = true</c>`，然后继续取帧；
+  ⑤ `send_packet` 返回 `< 0` 时**只有非 EAGAIN 才算错误**。
+  `_draining` 必须在 `RestartLocked` / `SeekToLocked` 里复位。
+- 附带好处：以前**每个片段的最后几帧会被丢掉**（延迟帧从未取出），现在补齐了。
+- **排查手法（先分清层次，别急着赖素材）**：
+  `tools\AudioProbe --demux <视频> <ffmpeg目录>` 逐包读完全文件，给出「每条流各多少个包 + 结束返回码 +
+  seek 到中段能否解码」。`--vdec` 的解码帧数**应当等于** `--demux` 里视频流的包数；
+  两者不一致就是**解码链路**的问题，不要发散去怀疑编码太新或文件损坏。
+  （验证过：`--demux` 读到 5220 个视频包、正常 EOF、seek 到 100s 解得动 → 文件完好。）
+- `VideoFrameSource.WarnIfFileTruncated()` 仍保留在首次 EOF 对账「解出帧数 vs 声明时长×帧率」，
+  但它**不是第一诊断手段**：只有解码循环确认无误后再拿它怀疑素材。阈值 25%，只告警一次。
+
+### 18. 时间轴工具条那一行**不放任何 label**（状态提示走 `_statusText` 接收器）
+
+- 用户明确要求：「那个位置不要有任何 label，什么『选择工具。』之类的」（2026-09-30，说过两次）。
+  时间轴工具条的左半行**只有控件**（工具下拉 / 刀片 / 删除 / 画幅 / 定格），不要加文字说明。
+- 原来的 `TextBlock _statusText`（显示「选择工具。」「预览播放中…」「已删除 N 个片段」等）**已从界面移除**，
+  替换为同名同 API 的 `StatusSink` 接收器：`.Text = "…"` 仍是合法写法（全文件 70 处调用点不用改），
+  只是改为写 `video-editor.log`（`[status] …`），`.Text` 仍可读
+  （「不要覆盖上一条自动放到最近空位的提示」那处判断依赖它）。
+- 改这块时的注意事项：**不要因为「删掉了 label」就去删那 70 处赋值** —— 它们是提示语的生产者，
+  留着进日志是有价值的排查线索；真要恢复界面提示，应该换成一个**瞬时**呈现（toast/浮层），
+  而不是把常驻 label 加回去。
 
 ## 预设商店（PresetStore）
 

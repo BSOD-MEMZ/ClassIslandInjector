@@ -55,6 +55,17 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
     /// <summary>已释放（Dispose 幂等 + ReadFrame 早退，避免踩已 free 的指针）。</summary>
     private bool _disposed;
 
+    /// <summary>
+    /// 已送过 NULL 包（flush）让解码器吐出 B 帧重排缓冲里的延迟帧。
+    /// <para>
+    /// HEVC/H.264 默认开帧级多线程解码，解码器会**延迟若干帧**才吐第一个输出帧
+    /// （重排缓冲）。所以读到文件尾之后不能立刻判 EOF —— 必须先
+    /// <c>avcodec_send_packet(ctx, NULL)</c> 把缓冲里剩下的帧排空。
+    /// 少了这一步就会「文件明明有 5220 帧，却只解出开头几十帧」。
+    /// </para>
+    /// </summary>
+    private bool _draining;
+
     /// <summary>输出帧宽（BGRA）。</summary>
     public int OutputWidth => _outW;
 
@@ -252,7 +263,19 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
 
     /// <summary>
     /// 读取一帧解码结果。返回 true 时 <paramref name="pixels"/> 为复用的 BGRA 缓冲
-    /// （宽 = OutputWidth，高 = OutputHeight，stride = 宽 × 4）。EOF / 错误返回 false。
+    /// （宽 = OutputWidth，高 = OutputHeight，stride = 宽 × 4）。真正的 EOF 返回 false。
+    /// <para>
+    /// ⚠️ **必须严格按 FFmpeg 的 send/receive 协议写，不能「喂一个包就取一帧、取不到就判 EOF」**。
+    /// 这条链路上踩过一个很隐蔽的坑（2026-09-30，用户素材 5220 帧只解出 30 帧、表现成「底图反复播开头」）：
+    /// </para>
+    /// <list type="number">
+    /// <item><c>avcodec_send_packet</c> 返回 <c>AVERROR(EAGAIN)</c> 的含义是「解码器输入队列满了，
+    /// 先把已就绪的帧取走再回来喂」，**不是**致命错误。旧代码把它当致命错误直接 <c>return false</c>，
+    /// 于是解码在开头几十帧处被误判成 EOF。</item>
+    /// <item>多线程解码有重排缓冲：读到文件尾时解码器里还压着若干帧，必须送 NULL 包
+    /// （<c>avcodec_send_packet(ctx, NULL)</c>）flush 一次才能取完。</item>
+    /// <item>取帧要循环取到 <c>AVERROR(EAGAIN)</c> 为止 —— 一个包可能产出多帧。</item>
+    /// </list>
     /// </summary>
     public bool ReadFrame(out byte[] pixels)
     {
@@ -276,60 +299,94 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
 
         while (true)
         {
+            // ① 先看解码器里有没有已就绪的帧（上一包多产出的、或 flush 排空出来的）。
+            if (TryReceiveFrame(out pixels))
+            {
+                return true;
+            }
+
+            // ② 已 flush 过还取不到帧 → 这才是真正的结尾（所有延迟帧都吐完了）。
+            if (_draining)
+            {
+                return false;
+            }
+
+            // ③ 需要更多数据：读下一个包。
             var r = ffmpeg.av_read_frame(_fmtCtx, _pkt);
             if (r < 0)
             {
-                return false; // EOF 或读取错误
+                // EOF / 读取错误：送 NULL 包 flush，把重排缓冲里的延迟帧排空（见方法注释第 2 条）。
+                _draining = true;
+                ffmpeg.avcodec_send_packet(_codecCtx, null);
+                continue;
             }
 
-            if (_pkt->stream_index == _streamIndex)
+            if (_pkt->stream_index != _streamIndex)
             {
-                var sr = ffmpeg.avcodec_send_packet(_codecCtx, _pkt);
-                if (sr < 0)
-                {
-                    ffmpeg.av_packet_unref(_pkt);
-                    return false;
-                }
-
-                while (ffmpeg.avcodec_receive_frame(_codecCtx, _frame) >= 0)
-                {
-                    AVFrame* src;
-                    if (_hwActive)
-                    {
-                        // GPU 帧回读到系统内存（NV12），后续 sws 与软解同一管线。
-                        if (_hwFrame == null)
-                        {
-                            _hwFrame = ffmpeg.av_frame_alloc();
-                        }
-
-                        if (ffmpeg.av_hwframe_transfer_data(_hwFrame, _frame, 0) < 0)
-                        {
-                            // 单帧回读失败（GPU 瞬时故障）跳过该帧，不中断整条播放。
-                            Log("av_hwframe_transfer_data 失败，跳过该帧");
-                            continue;
-                        }
-
-                        src = _hwFrame;
-                    }
-                    else
-                    {
-                        src = _frame;
-                    }
-
-                    fixed (byte* dst = _bgra)
-                    {
-                        var dstData = new byte*[] { dst };
-                        var dstLinesize = new int[] { _outW * 4 };
-                        ffmpeg.sws_scale(_sws, src->data, src->linesize, 0, src->height, dstData, dstLinesize);
-                    }
-
-                    ffmpeg.av_packet_unref(_pkt);
-                    return true;
-                }
+                // 非目标流（音频等）：丢弃继续读。**必须 unref**，否则引用计数泄漏。
+                ffmpeg.av_packet_unref(_pkt);
+                continue;
             }
 
-            ffmpeg.av_packet_unref(_pkt);
+            var sr = ffmpeg.avcodec_send_packet(_codecCtx, _pkt);
+            ffmpeg.av_packet_unref(_pkt); // send 已持有自己的引用，这里可安全释放。
+            if (sr < 0 && sr != Eagain)
+            {
+                // 真错误（EAGAIN 除外：它只表示「先取帧」，下一轮循环会先 receive）。
+                Log($"avcodec_send_packet 失败 {sr}");
+                return false;
+            }
+
+            // 回到循环顶部取帧。
         }
+    }
+
+    /// <summary><c>AVERROR(EAGAIN)</c>：解码器「再试一次」信号，不是错误。</summary>
+    private static int Eagain => ffmpeg.AVERROR(ffmpeg.EAGAIN);
+
+    /// <summary>
+    /// 从解码器取一个输出帧并 sws_scale 到 <see cref="_bgra"/>。
+    /// 无就绪帧（EAGAIN/EOF）返回 false；硬件帧回读失败会跳过该帧继续取。
+    /// </summary>
+    private unsafe bool TryReceiveFrame(out byte[] pixels)
+    {
+        pixels = _bgra!;
+        while (ffmpeg.avcodec_receive_frame(_codecCtx, _frame) >= 0)
+        {
+            AVFrame* src;
+            if (_hwActive)
+            {
+                // GPU 帧回读到系统内存（NV12），后续 sws 与软解同一管线。
+                if (_hwFrame == null)
+                {
+                    _hwFrame = ffmpeg.av_frame_alloc();
+                }
+
+                if (ffmpeg.av_hwframe_transfer_data(_hwFrame, _frame, 0) < 0)
+                {
+                    // 单帧回读失败（GPU 瞬时故障）跳过该帧，不中断整条播放。
+                    Log("av_hwframe_transfer_data 失败，跳过该帧");
+                    continue;
+                }
+
+                src = _hwFrame;
+            }
+            else
+            {
+                src = _frame;
+            }
+
+            fixed (byte* dst = _bgra)
+            {
+                var dstData = new byte*[] { dst };
+                var dstLinesize = new int[] { _outW * 4 };
+                ffmpeg.sws_scale(_sws, src->data, src->linesize, 0, src->height, dstData, dstLinesize);
+            }
+
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>在互斥门下执行（与 Dispose 互斥；native 调用期间绝不允许释放上下文）。</summary>
@@ -372,6 +429,7 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
             }
 
             ffmpeg.avcodec_flush_buffers(_codecCtx);
+            _draining = false; // 复位后重新开始喂包，解除 flush 状态。
             return true;
         }
         catch (Exception ex)
@@ -415,6 +473,7 @@ internal sealed unsafe class FFmpegVideoDecoder : IDisposable
             }
 
             ffmpeg.avcodec_flush_buffers(_codecCtx);
+            _draining = false; // seek 后重新喂包，解除 flush 状态。
             return true;
         }
         catch (Exception ex)
