@@ -2718,12 +2718,17 @@ internal sealed class MainWindowStyleInjector : IDisposable
     /// 编辑器打开时挂起：低配机器上「编辑器预览 + 主界面底图」同时全尺寸解码 + 各自贴图，
     /// 会把本就不多的核心抢满 —— 表现就是预览卡顿、声音断续。编辑器关闭后恢复。
     /// </para>
+    /// <para>
+    /// ⚠️ **画面与音频是两条独立的解码/输出链，必须各挂一次**：<c>_videoSource</c> 管画面，
+    /// <c>_videoAudio</c> 管「播放声音」的输出。只挂画面的话编辑器一打开就是「画面停了、声音还在放」。
+    /// </para>
     /// </summary>
     public void SuspendBackgroundPlayback(bool suspend)
     {
         try
         {
             _videoSource?.SetSuspended(suspend);
+            _videoAudio?.SetSuspended(suspend);
             if (suspend)
             {
                 _videoProjectPlayer?.Pause();

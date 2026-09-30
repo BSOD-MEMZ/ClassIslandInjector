@@ -113,6 +113,19 @@ public sealed class VideoProject
                 t += clip.Duration;
             }
         }
+
+        // 音频片段一律 Track = -1（音频轨号在 AudioTrack）：**任何按 Track 索引画面的地方都靠这个约定**，
+        // 而历史数据里的 -1 很容易被误用成视频轨号 —— 实测 `DetachAudioFromSelection` 构造时落了
+        // `Track = -1`，分离音频后 `FillPropertyPanel → ShowSelectedClipFrame` 判
+        // `clip.Track < _stageLayers.Count` 成立（-1 < 0 且 < _stageLayers.Count）→ 直接崩 index -1。
+        // 在**读盘这一处**兜住（写盘那边也各自写对），比在每个索引点补判断可靠。
+        foreach (var clip in project.Clips.Where(c => c.IsAudio))
+        {
+            if (clip.Track != -1)
+            {
+                clip.Track = -1;
+            }
+        }
     }
 }
 

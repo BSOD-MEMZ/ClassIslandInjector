@@ -34,11 +34,34 @@ internal sealed class VideoAudioPlayer : IDisposable
     private volatile float _volume = 1f;
     private volatile bool _loop = true;
 
+    /// <summary>
+    /// 挂起标记：编辑器打开时置位（<see cref="SetSuspended"/>）。挂起期间拉模型直接吐静音，
+    /// 解码器与播放位置都保留，恢复后从原处继续 —— 所以挂起要去**两处**：
+    /// 画面（<c>VideoFrameSource.SetSuspended</c>）和音频（这里）。
+    /// 曾经只挂了画面，于是编辑器开着时「画面停了、声音还在放」。
+    /// </summary>
+    private volatile bool _suspended;
+
     /// <summary>音频输出当前是否在播。</summary>
     public bool IsRunning => _output != null;
 
     /// <summary>当前音量（0-1）。</summary>
     public double Volume => _volume;
+
+    /// <summary>
+    /// 挂起 / 恢复音频输出（不释放设备、不动播放位置）。
+    /// 挂起期间 <see cref="DecoderWaveProvider.Read"/> 返回静音，符合「编辑器打开时主界面不出声」的预期。
+    /// </summary>
+    public void SetSuspended(bool suspended)
+    {
+        if (_suspended == suspended)
+        {
+            return;
+        }
+
+        _suspended = suspended;
+        Log(suspended ? "音频输出已挂起（编辑器打开）" : "音频输出已恢复");
+    }
 
     /// <summary>
     /// 启动音频输出。返回 false 表示该文件没有可用音频轨或设备不可用（调用方无需特别处理，画面照常）。
@@ -166,6 +189,14 @@ internal sealed class VideoAudioPlayer : IDisposable
 
         public int Read(byte[] buffer, int offset, int count)
         {
+            // 挂起：吐静音但**不推进解码器**（位置保留，恢复后从原处继续）。
+            // 必须在这里拦，不能只靠上层不调用 —— WASAPI 的拉取是它主动发起的。
+            if (_owner._suspended)
+            {
+                Array.Clear(buffer, offset, count);
+                return count;
+            }
+
             if (_owner._disposed)
             {
                 Array.Clear(buffer, offset, count);

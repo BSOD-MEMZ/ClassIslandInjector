@@ -302,15 +302,6 @@ internal sealed class VideoEditorWindow : MyWindow
         Padding = new Thickness(10, 3),
         FontSize = 12
     };
-    /// <summary>音频状态提示（如「音量 0% 不出声」），随选中片段显示/隐藏。</summary>
-    private readonly TextBlock _audioHint = new()
-    {
-        FontSize = 11,
-        TextWrapping = TextWrapping.Wrap,
-        Opacity = 0.75,
-        IsVisible = false,
-        Margin = new Thickness(0, 2, 0, 0)
-    };
     private Control[] _propertyControls = [];
     /// <summary>「变换」页里的画面相关行（选中音频片段时整组隐藏）。</summary>
     private readonly List<Control> _pictureRows = [];
@@ -351,6 +342,23 @@ internal sealed class VideoEditorWindow : MyWindow
 
     /// <summary>片段所在泳道的高度（音频块要按音频泳道高度算，否则调高泳道后块不跟随）。</summary>
     private double LaneHeightOfClip(VideoClip clip) => LaneHeightOf(LaneOfClip(clip));
+
+    /// <summary>
+    /// 取片段对应的舞台预览图层（不存在返回 null）。**画面片段一律用它取，不要裸写
+    /// `clip.Track &lt; _stageLayers.Count &amp;&amp; _stageLayers[clip.Track]`** —— 音频片段的
+    /// <c>Track</c> 是 -1 且 -1 &lt; Count 恒成立，裸索引会直接抛
+    /// <see cref="ArgumentOutOfRangeException"/>(index -1)（实测：分离音频后
+    /// <c>FillPropertyPanel → ShowSelectedClipFrame</c> 崩的就是这个）。
+    /// </summary>
+    private StageTrackLayer? StageLayerOf(VideoClip? clip)
+    {
+        if (clip == null || clip.Track < 0 || clip.Track >= _stageLayers.Count)
+        {
+            return null;
+        }
+
+        return _stageLayers[clip.Track];
+    }
 
     // ---- 泳道 ↔ 轨道映射（PR 布局：视频轨在上、音频轨在下）----
     // 时间轴泳道号沿用现有 _selectedTrack / _headerByTrack / _blockByClip 的语义：
@@ -1822,9 +1830,9 @@ internal sealed class VideoEditorWindow : MyWindow
         ScheduleSave();
         _statusText.Text = "效果已应用。";
         // 舞台实时更新：覆盖层重新生成；视频重新显示首帧（带灰度）。
-        if (clip.Track < _stageLayers.Count && _stageLayers[clip.Track].Image.IsVisible)
+        if (StageLayerOf(clip) is { Image.IsVisible: true } effectLayer)
         {
-            _stageLayers[clip.Track].Image.IsVisible = false;
+            effectLayer.Image.IsVisible = false;
             ShowSelectedClipFrame(clip);
         }
     }
@@ -2165,12 +2173,12 @@ internal sealed class VideoEditorWindow : MyWindow
         RefreshTimeline();
         ScheduleSave();
         // 舞台实时刷新覆盖层帧。
-        if (clip.Track < _stageLayers.Count && _stageLayers[clip.Track].Image.IsVisible)
+        if (StageLayerOf(clip) is { Image.IsVisible: true } overlayLayer)
         {
             var frame = GenerateOverlayFrame(clip);
             if (frame != null)
             {
-                UpdateStageLayer(clip.Track, frame, clip);
+                UpdateStageLayer(overlayLayer.Track, frame, clip);
             }
         }
     }
@@ -2222,7 +2230,6 @@ internal sealed class VideoEditorWindow : MyWindow
                 InspectorSliderRow("速度", _speedSlider, _speedValue),
                 _speedHint,
                 InspectorRow("音频", _pitchToggle),
-                _audioHint,
                 InspectorRow("", _detachAudioButton)
             }
         };
@@ -4337,9 +4344,7 @@ internal sealed class VideoEditorWindow : MyWindow
                     RefreshTimeline(); // 重建块，按 isSelected 高亮（框选视觉反馈）。
                     FillPropertyPanel();
                     UpdateStageHandles();
-                    _statusText.Text = _selectedClips.Count == 0
-                        ? "未选中片段。"
-                        : $"已框选 {_selectedClips.Count} 个片段（可拖动移动 / Delete 删除）。";
+                    // 不再往状态栏写「已框选 N 个片段」：块本身已经高亮，这行字只是噪音。
                 }
                 else
                 {
@@ -6025,9 +6030,9 @@ internal sealed class VideoEditorWindow : MyWindow
 
         block.Width = Math.Max(30, clip.Duration * _pxPerSecond);
         durationText.Text = $"{clip.StartTime:0.#}s · {clip.Duration:0.#}s";
-        if (_playing && _player != null && clip.Track < _stageLayers.Count)
+        if (_playing && _player != null && StageLayerOf(clip) is { } playLayer)
         {
-            ApplyTransform(_stageLayers[clip.Track], clip);
+            ApplyTransform(playLayer, clip);
         }
     }
 
@@ -6690,7 +6695,6 @@ internal sealed class VideoEditorWindow : MyWindow
             // 定格只对视频片段有意义（要有可解码的帧）。
             _freezeButton.IsEnabled = clip is { Kind: "Video" } &&
                                       !string.IsNullOrWhiteSpace(clip.SourcePath);
-            UpdateAudioHint(clip, audioCapable);
             // 音频分段页：只有「有声音的片段」（音频片段 / 视频片段原声）才显示该 Tab。
             _segmentButtons["audio"].IsVisible = audioCapable;
             // 音频片段隐藏「变换」页里的画面行（X/Y/缩放/旋转/裁剪对声音无意义）。
@@ -6831,53 +6835,6 @@ internal sealed class VideoEditorWindow : MyWindow
     }
 
     /// <summary>
-    /// 音频区块的状态提示：把「这个片段其实听不见」的几种原因直说出来。
-    /// 音量为 0% / 静音 / 所在音频轨被静音时片段不出声，但界面上完全看不出来——
-    /// 曾经让人以为「剪视频没声音 = 声卡坏了」（诊断日志里也只有混音器开了几条流）。
-    /// </summary>
-    private void UpdateAudioHint(VideoClip? clip, bool audioCapable)
-    {
-        if (clip == null || !audioCapable)
-        {
-            _audioHint.IsVisible = false;
-            return;
-        }
-
-        var reasons = new List<string>();
-        if (clip.Muted)
-        {
-            reasons.Add(clip.IsAudio ? "该音频片段已静音" : "该片段的原声已静音（分离音频/静音开关造成）");
-        }
-
-        if (clip.Volume <= 0.0001)
-        {
-            reasons.Add("音量为 0%");
-        }
-
-        if (clip.IsAudio)
-        {
-            var state = _project.GetAudioTrackState(clip.AudioTrack);
-            if (state is { Muted: true })
-            {
-                reasons.Add($"所在音频轨 A{clip.AudioTrack + 1} 已被静音");
-            }
-            else if (state is { Volume: <= 0.0001 })
-            {
-                reasons.Add($"所在音频轨 A{clip.AudioTrack + 1} 轨音量是 0");
-            }
-        }
-
-        if (reasons.Count == 0)
-        {
-            _audioHint.IsVisible = false;
-            return;
-        }
-
-        _audioHint.Text = "⚠ " + string.Join("、", reasons) + " → 播放时听不到声音。";
-        _audioHint.IsVisible = true;
-    }
-
-    /// <summary>
     /// 分离音频（PR 的「取消链接」同类）：把视频片段自带原声拆成一条独立音频片段放到音频轨，
     /// 原视频片段置为静音（声音只在分离出的那条音频片段上）。
     /// 音频轨优先用「同时刻能放下」的已有轨，都放不下就新开一条。
@@ -7009,9 +6966,9 @@ internal sealed class VideoEditorWindow : MyWindow
         ScheduleSave();
         // 舞台实时预览：只要该轨道已有画面（含暂停/未播放），立即应用变换并刷新八向手柄。
         // （之前用 _playing && _player 条件，暂停时调整缩放/偏移完全不更新舞台。）
-        if (clip.Track < _stageLayers.Count && _stageLayers[clip.Track].Image.IsVisible)
+        if (StageLayerOf(clip) is { Image.IsVisible: true } transformLayer)
         {
-            ApplyTransform(_stageLayers[clip.Track], clip);
+            ApplyTransform(transformLayer, clip);
             UpdateStageHandles();
         }
     }
@@ -7043,8 +7000,7 @@ internal sealed class VideoEditorWindow : MyWindow
     /// <summary>取选中视频片段当前舞台图层的真实画面比例（尚未解码时返回 null）。</summary>
     private double? SourceLayerAspect(VideoClip clip)
     {
-        if (clip.Track >= 0 && clip.Track < _stageLayers.Count &&
-            _stageLayers[clip.Track].Bitmap is { } bm &&
+        if (StageLayerOf(clip)?.Bitmap is { } bm &&
             bm.PixelSize.Width > 0 && bm.PixelSize.Height > 0)
         {
             return bm.PixelSize.Width / (double)bm.PixelSize.Height;
@@ -7078,7 +7034,7 @@ internal sealed class VideoEditorWindow : MyWindow
         }
 
         // 该轨道已有可见画面（预览过）则跳过，避免重复解码。
-        if (clip.Track < _stageLayers.Count && _stageLayers[clip.Track].Image.IsVisible)
+        if (StageLayerOf(clip) is { Image.IsVisible: true })
         {
             return;
         }
@@ -8136,7 +8092,7 @@ internal sealed class VideoEditorWindow : MyWindow
         }
 
         var clip = _selected;
-        if (clip == null || clip.Track >= _stageLayers.Count || !_stageLayers[clip.Track].Image.IsVisible)
+        if (clip == null || StageLayerOf(clip) is not { Image.IsVisible: true })
         {
             _stageHandleOverlay.IsVisible = false;
             HideRotateHandle();
@@ -8221,7 +8177,7 @@ internal sealed class VideoEditorWindow : MyWindow
     /// <summary>旋转手柄按下：记录起始指针 / 基准矩形（中心为旋转中心）/ 起始角度。</summary>
     private void RotateHandleOnPointerPressed(object? sender, PointerPressedEventArgs e)
     {
-        if (_selected is not { } clip || clip.Track >= _stageLayers.Count || !_stageLayers[clip.Track].Image.IsVisible)
+        if (_selected is not { } clip || StageLayerOf(clip) is not { Image.IsVisible: true })
         {
             return;
         }
@@ -8282,9 +8238,9 @@ internal sealed class VideoEditorWindow : MyWindow
         }
 
         clip.Rotation = angle;
-        if (clip.Track < _stageLayers.Count)
+        if (StageLayerOf(clip) is { } rotateLayer)
         {
-            ApplyTransform(_stageLayers[clip.Track], clip);
+            ApplyTransform(rotateLayer, clip);
         }
 
         UpdateStageHandles();
@@ -8336,7 +8292,7 @@ internal sealed class VideoEditorWindow : MyWindow
             return default;
         }
 
-        var layer = clip.Track < _stageLayers.Count ? _stageLayers[clip.Track] : null;
+        var layer = StageLayerOf(clip);
         var bw = layer?.Bitmap?.PixelSize.Width ?? 16;
         var bh = layer?.Bitmap?.PixelSize.Height ?? 9;
         var aspect = bw / (double)Math.Max(1, bh);
@@ -8435,9 +8391,9 @@ internal sealed class VideoEditorWindow : MyWindow
             }
         }
 
-        if (clip.Track < _stageLayers.Count)
+        if (StageLayerOf(clip) is { } dragLayer)
         {
-            ApplyTransform(_stageLayers[clip.Track], clip);
+            ApplyTransform(dragLayer, clip);
         }
 
         // 磁吸：在变换已计算后把被拖点/中心吸附到参考点（吸附距离 ≤6px，对边视觉偏移可忽略）。
@@ -9103,22 +9059,6 @@ internal sealed class VideoEditorWindow : MyWindow
             OnContent = "包含音频",
             OffContent = "仅画面"
         };
-        var audioHint = new TextBlock
-        {
-            FontSize = 11,
-            Opacity = 0.65,
-            TextWrapping = TextWrapping.Wrap
-        };
-        void UpdateAudioHint()
-        {
-            var audible = _project.Clips.Count(c => c.ContributesAudio);
-            audioHint.Text = audible == 0
-                ? "当前工程没有会出声的片段（都被静音或音量 0），勾选也不会产生音轨。"
-                : $"混入 {audible} 个片段的声音（音量/淡入淡出/变速/轨道静音与预览一致）；"
-                  + "主界面播放声音由设置里的「播放声音」开关决定。";
-        }
-        audioToggle.IsCheckedChanged += (_, _) => UpdateAudioHint();
-        UpdateAudioHint();
         var dialog = new ContentDialog
         {
             Title = "渲染设置",
@@ -9142,8 +9082,7 @@ internal sealed class VideoEditorWindow : MyWindow
                         Opacity = 0.65,
                         TextWrapping = TextWrapping.Wrap
                     },
-                    audioToggle,
-                    audioHint
+                    audioToggle
                 }
             },
             PrimaryButtonText = "开始渲染",

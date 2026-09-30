@@ -264,6 +264,29 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
   Skia 解码 94ms + PNG 编码 868ms，一次性成本。
 - 不要为了省事把 WebP 从选择器里删掉：插件其它链路都支持它，只有这一条是 GDI+ 的限制；转一下就好。
 
+### 13. `clip.Track` 的负值陷阱（音频片段恒为 -1，别裸索引，2026-09-30）
+
+- **音频片段的 `Track` 恒为 -1**（音频轨号在 `AudioTrack`，见「工程文件格式」）。历史数据里还可能有
+  被拖拽写成视频轨号的脏值。
+- 因此 **`clip.Track < _stageLayers.Count` 这种守卫是错的**：`-1 < Count` 恒成立，
+  接着 `_stageLayers[-1]` 直接抛 `ArgumentOutOfRangeException`(index -1)。
+  实测踩点：点「分离音频」→ `DetachAudioFromSelection`（构造时落了 `Track = -1`）→
+  `FillPropertyPanel → ShowSelectedClipFrame` → 崩。
+- 规矩：
+  1. 取片段所在泳道用 `LaneOfClip(clip)`；
+  2. 取片段对应的舞台图层用 `StageLayerOf(clip)`（判 `Track < 0 || >= Count` → null），
+     **不要再手写 `< _stageLayers.Count`**；
+  3. `VideoProject.Normalize`（读盘必经）会把音频片段的 `Track` 强制写回 -1，兜住历史脏数据。
+
+### 14. 挂起背景播放：画面与音频必须各挂一次
+
+- `MainWindowStyleInjector.SuspendBackgroundPlayback` 管的是**两条独立链**：
+  `_videoSource`（画面）+ `_videoAudio`（「播放声音」的音频输出），
+  以及 `_videoProjectPlayer`（工程背景，自带 Pause/Resume）。**三者都要处理**。
+- 曾经只挂了画面 → 编辑器一打开就「画面停了、声音还在放」。
+- `VideoAudioPlayer.SetSuspended` 的拦截点在 `DecoderWaveProvider.Read`（吐静音、**不推进解码器**，
+  位置保留）：WASAPI 的拉取是它主动发起的，在调用方挡不住。
+
 ## 预设商店（PresetStore）
 
 - 数据源与格式沿用此前约定：索引 `https://xxtsoft.top/support/injector/presets/index.json`（schemaVersion 1，camelCase、大小写不敏感），条目字段 = `Defaults/preset-index.sample.json`（id/name/author/school/description/pluginVersion/minPluginVersion/createdAt/downloadUrl(.cizip)/previewUrl(.png)/sizeBytes，可选 downloads 供热门排序）。
