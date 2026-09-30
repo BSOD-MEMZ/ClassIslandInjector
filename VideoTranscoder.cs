@@ -12,6 +12,13 @@ namespace ClassIslandInjector;
 internal static class VideoTranscoder
 {
     /// <summary>
+    /// 转码产物的帧率上限。预览/底图的解码成本与源帧率成正比，而展示只要 24fps，
+    /// 手机视频（54~60fps）照抄源帧率会白解近两倍的帧（3 轨同屏 15fps → 24fps 的差别）。
+    /// 30fps 也保证产物是固定帧率，播放器的帧号换算严格成立。
+    /// </summary>
+    private const int ProxyMaxFps = 30;
+
+    /// <summary>
     /// 压缩转码。<paramref name="maxDimension"/> 限制输出最长边（如 720）；
     /// <paramref name="crf"/> 越大文件越小（建议 26~30）；进度回调传 0..1。
     /// 取消（cancellationToken）时删除半成品并返回 false。
@@ -33,16 +40,36 @@ internal static class VideoTranscoder
                 return false;
             }
 
-            // 输出帧率 = 源帧率（取整），保证转码后时长与素材一致（±1 帧内）。
-            var fps = Math.Clamp((int)Math.Round(decoder.SourceFps), 1, 60);
+            // 输出帧率：**上限 30fps**（不再照抄源帧率）。
+            // 播放/预览的解码成本几乎只由「源帧率 × 分辨率」决定：手机视频常见 54~60fps，
+            // 而显示只要 24fps —— 照抄意味着每轨每秒白解 1.8~2.5 倍的帧
+            // （实测同一台机器：54fps 源 7.4ms/帧、30fps CFR 源 5.2ms/帧，3 轨同屏 15fps vs 24fps）。
+            // 压到 30fps 还有第二个好处：产物是**固定帧率**，播放器的帧号换算严格成立
+            // （VFR 素材会让「落后多少帧」的判断失真，进而频繁 seek）。
+            // 30fps > 渲染输出常用的 24fps，画质不受影响。
+            var sourceFps = decoder.SourceFps > 0.5 ? decoder.SourceFps : ProxyMaxFps;
+            var fps = Math.Clamp((int)Math.Round(Math.Min(sourceFps, ProxyMaxFps)), 5, ProxyMaxFps);
             using var encoder = new FFmpegVideoEncoder(outputPath, decoder.OutputWidth, decoder.OutputHeight, crf, fps);
-            // 估算总帧数（时长 × 帧率）供进度显示；未知时长时按 30s 兜底。
+            // 估算总帧数（时长 × 输出帧率）供进度显示；未知时长时按 30s 兜底。
             var totalFrames = Math.Max(1, (int)((decoder.Duration > 0.1 ? decoder.Duration : 30) * fps));
             var sw = Stopwatch.StartNew();
             var frames = 0;
+            // 抽帧：源帧率高于输出帧率时按目标时间挑帧。顺序解码无法「不读」，但不编码即可 ——
+            // 转码是一次性成本，换来的是每次播放都少解一半的帧。
+            var ratio = sourceFps / fps > 1 ? sourceFps / fps : 1.0;
+            long srcIndex = -1;
+            long nextSrc = 0;
+            long outIndex = 0;
             while (decoder.ReadFrame(out var pixels))
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                srcIndex++;
+                if (srcIndex < nextSrc)
+                {
+                    continue;
+                }
+
+                nextSrc = (long)Math.Round(++outIndex * ratio);
                 encoder.EncodeFrame(pixels);
                 frames++;
                 if (sw.ElapsedMilliseconds >= 150)

@@ -128,6 +128,26 @@ internal sealed class VideoProjectPlayer : IDisposable
         public long ShownFrames;
         public long SkippedFrames;
         public long SeekCount;
+
+        // ---- 每轨解码线程（按轨并行）----
+        // 解码成本几乎全在「解源码流」上（1080p 源逐帧解码 7~12ms，缩到 320px 也只省 2ms），
+        // 而高帧率源（手机视频常见 54fps）在 24fps 显示下每轨每秒要解 54 帧 ≈ 0.4 核/轨。
+        // 全部串在一条线程上时 3 轨物理上做不完（实测 3 轨 @800px 只有 15fps、单轨 22fps），
+        // 因此每轨一条解码线程，各自用自己的解码器（只有本线程碰它，跨线程只握手不解码）。
+        /// <summary>本轨的解码线程（懒启动）。</summary>
+        public Thread? Worker;
+        /// <summary>派发信号（主循环 Release；无上界，积压的信号被合并成一拍）。</summary>
+        public readonly SemaphoreSlim Signal = new(0);
+        /// <summary>本拍完成的确认（解码线程 Set，主循环按截止时间等）。</summary>
+        public readonly ManualResetEventSlim Done = new(true);
+        /// <summary>本拍时间（与信号量的 Release/Acquire 配对传递）。</summary>
+        public double TickTime;
+        /// <summary>挂起的「跳转 / 循环复位」请求（粘性：不能被随后的普通拍覆盖）。</summary>
+        public volatile bool RestartPending;
+        /// <summary>请求本轨线程退出（退出前自释放解码器）。</summary>
+        public volatile bool ExitRequested;
+        /// <summary>诊断：本轨在解码线程上的单拍耗时峰值（毫秒）。</summary>
+        public double WorkMaxMs;
     }
 
     public VideoProjectPlayer(VideoProject project, int maxDimension, int targetFps,
@@ -199,6 +219,7 @@ internal sealed class VideoProjectPlayer : IDisposable
         for (var i = _tracks.Length; i < trackCount; i++)
         {
             grown[i] = new TrackState { Track = i };
+            EnsureWorker(grown[i]);
         }
 
         _tracks = grown;
@@ -218,11 +239,14 @@ internal sealed class VideoProjectPlayer : IDisposable
             return;
         }
 
+        StopTrackWorkers();
+
         var trackCount = _clips.Count == 0 ? 1 : _clips.Max(c => c.Track) + 1;
         _tracks = new TrackState[trackCount];
         for (var i = 0; i < trackCount; i++)
         {
             _tracks[i] = new TrackState { Track = i };
+            EnsureWorker(_tracks[i]); // 每轨一条解码线程
         }
 
         lock (_sync)
@@ -327,6 +351,126 @@ internal sealed class VideoProjectPlayer : IDisposable
         }
     }
 
+    /// <summary>派发给某轨解码线程的命令。</summary>
+    private enum TrackCommand
+    {
+        Pump,
+        Restart,
+        Exit
+    }
+
+    /// <summary>
+    /// 单轨解码线程：等派发 → （有挂起的跳转就先对齐）→ 泵一帧 → 回报完成。
+    /// 解码器的打开 / seek / 释放**只发生在本轨线程**上，跨线程仅通过信号量握手。
+    /// 退出时由本线程释放自己的解码器（跨线程释放 native 上下文是静默崩溃的经典来源）。
+    /// </summary>
+    private void TrackWorker(TrackState state)
+    {
+        while (true)
+        {
+            state.Signal.Wait();
+            while (state.Signal.Wait(0))
+            {
+                // 合并积压的拍：只按最新 TickTime 泵一次（PumpTrack 按时间天然幂等）。
+            }
+
+            if (_disposed || state.ExitRequested)
+            {
+                break;
+            }
+
+            var sw = Stopwatch.StartNew();
+            try
+            {
+                if (state.RestartPending)
+                {
+                    state.RestartPending = false;
+                    RestartTrack(state, state.TickTime);
+                }
+
+                PumpTrack(state, state.TickTime);
+            }
+            catch (Exception ex)
+            {
+                Log($"轨{state.Track} 解码线程异常：{ex.Message}");
+            }
+
+            state.WorkMaxMs = Math.Max(state.WorkMaxMs, sw.Elapsed.TotalMilliseconds);
+            state.Done.Set();
+        }
+
+        state.Source?.Dispose();
+        state.Source = null;
+        state.Done.Set();
+    }
+
+    /// <summary>确保该轨有解码线程（懒启动）。</summary>
+    private void EnsureWorker(TrackState state)
+    {
+        if (state.Worker is { IsAlive: true })
+        {
+            return;
+        }
+
+        state.ExitRequested = false;
+        state.Worker = new Thread(() => TrackWorker(state))
+        {
+            IsBackground = true,
+            Name = $"VideoTrack{state.Track}"
+        };
+        state.Worker.Start();
+    }
+
+    /// <summary>派发一拍的活给指定轨（Restart 是粘性的，不会被随后的普通拍覆盖）。</summary>
+    private static void Dispatch(TrackState state, TrackCommand command, double time)
+    {
+        state.TickTime = time;
+        if (command == TrackCommand.Restart)
+        {
+            state.RestartPending = true;
+        }
+
+        state.Done.Reset();
+        state.Signal.Release();
+    }
+
+    /// <summary>等所有轨完成本拍：共用同一个截止时间，慢轨不会把别的轨一起拖住。</summary>
+    private void WaitAllTracks(double budgetMs)
+    {
+        var deadline = Stopwatch.GetTimestamp() + (long)(budgetMs / 1000.0 * Stopwatch.Frequency);
+        foreach (var state in _tracks)
+        {
+            var leftMs = (deadline - Stopwatch.GetTimestamp()) / (double)Stopwatch.Frequency * 1000.0;
+            if (leftMs <= 0)
+            {
+                return; // 拍时间到：没回来的轨这一拍就不出帧（它仍在自己的线程上跑）
+            }
+
+            state.Done.Wait((int)Math.Ceiling(leftMs));
+        }
+    }
+
+    /// <summary>跳转 / 循环复位：把本轨解码器对齐到指定时间（**只能在本轨线程调用**）。</summary>
+    private void RestartTrack(TrackState state, double time)
+    {
+        var targetClip = FindActiveClip(state.Track, time);
+        if (ReferenceEquals(targetClip, state.ActiveClip) &&
+            targetClip is { Kind: "Video" } && state.Source != null)
+        {
+            // 同片段跳转：复用已打开的解码器直接 seek（avformat_open_input +
+            // find_stream_info 对长视频要几百毫秒，重开是大跳卡顿的主因）。
+            var mediaTime = targetClip.SourceTimeAt(time - targetClip.StartTime);
+            state.Source.SeekTo(mediaTime);
+            var fps = state.SourceFps > 0 ? state.SourceFps : 25;
+            state.LastFrameIndex = (long)(mediaTime * fps);
+            state.Eof = false;
+            state.Consumed.Set();
+            return;
+        }
+
+        CloseTrack(state);
+    }
+
     /// <summary>主循环：墙钟驱动各轨道同步消费帧。</summary>
     private void Loop()
     {
@@ -386,28 +530,22 @@ internal sealed class VideoProjectPlayer : IDisposable
                     _mixer.Seek(time);
                     foreach (var state in _tracks)
                     {
-                        var targetClip = FindActiveClip(state.Track, time);
-                        if (ReferenceEquals(targetClip, state.ActiveClip) &&
-                            targetClip is { Kind: "Video" } && state.Source != null)
-                        {
-                            // 同片段跳转：复用已打开的解码器直接 seek（avformat_open_input +
-                            // find_stream_info 对长视频要几百毫秒，重开是大跳卡顿的主因）。
-                            var mediaTime = targetClip.SourceTimeAt(time - targetClip.StartTime);
-                            state.Source.SeekTo(mediaTime);
-                            var fps = state.SourceFps > 0 ? state.SourceFps : 25;
-                            state.LastFrameIndex = (long)(mediaTime * fps);
-                            state.Eof = false;
-                            state.Consumed.Set();
-                            continue;
-                        }
-
-                        CloseTrack(state);
+                        Dispatch(state, TrackCommand.Restart, time);
                     }
-                }
 
-                foreach (var state in _tracks)
+                    // 跳转是用户主动操作，等它落地（否则画面会先按旧位置出一两帧）。
+                    WaitAllTracks(intervalMs * 2);
+                }
+                else
                 {
-                    PumpTrack(state, time);
+                    // 各轨**异步**派发：不在这里等收工。
+                    // 同步等会引入两次线程交接（Release + Wait 唤醒）的延迟，实测单轨从 23fps
+                    // 掉到 16.5fps；异步派发后主循环只负责「按 24fps 打拍」，各轨线程能跑多快跑多快，
+                    // 落后时由 `behind <= 0` / 消费门自然限流。
+                    foreach (var state in _tracks)
+                    {
+                        Dispatch(state, TrackCommand.Pump, time);
+                    }
                 }
 
                 _tickSumMs += sw.Elapsed.TotalMilliseconds;
@@ -439,15 +577,11 @@ internal sealed class VideoProjectPlayer : IDisposable
         // 退出前收尾：若 Dispose 已经在等（或被超时放弃），解码器由**本线程**释放 ——
         // 只有在这里释放才能保证「释放时不会有人正在读它」。Dispose 侧的 3s Join 超时后
         // 就是靠这条路径兜底（否则要么泄漏，要么释放竞态击穿进程）。
+        // 解码器不再在这里释放：每轨解码线程会在退出前释放自己的解码器（见 TrackWorker 收尾）。
+        // 主循环只负责退出。
         if (_disposed)
         {
-            foreach (var state in _tracks)
-            {
-                state.Source?.Dispose();
-                state.Source = null;
-            }
-
-            Log("播放线程退出：已释放各轨解码器");
+            Log("播放调度线程退出（各轨解码器由各自的解码线程释放）");
         }
     }
 
@@ -736,8 +870,11 @@ internal sealed class VideoProjectPlayer : IDisposable
         _tickMaxMs = 0;
         _tickCount = 0;
         var parts = _tracks.Select(t =>
-            $"轨{t.Track}={t.ActiveClip?.Kind ?? "-"} 显{t.ShownFrames} 丢{t.SkippedFrames} seek{t.SeekCount}" +
-            $"[{IdleReason(t)}]");
+            // 「跳」= 主动跳过源帧（源帧率高于显示帧率的正常行为，如 54fps 源以 24fps 显示时
+            // 约六成帧会被跳过），把源帧率一起打出来，免得把正常的跳帧误读成丢帧故障。
+            $"轨{t.Track}={t.ActiveClip?.Kind ?? "-"} 源{t.SourceFps:0.#}fps "
+            + $"显{t.ShownFrames} 跳{t.SkippedFrames} seek{t.SeekCount} 拍峰{t.WorkMaxMs:0}ms"
+            + $"[{IdleReason(t)}]");
         Log($"t={CurrentTime:0.##}s | {tick}{string.Join(" | ", parts)}");
     }
 
@@ -833,6 +970,7 @@ internal sealed class VideoProjectPlayer : IDisposable
             state.Consumed.Set();
         }
 
+
         // ⚠️ **必须先等线程退出，再释放解码器**。旧实现先 `state.Source.Dispose()` 再 Join：
         // 线程可能正卡在 FFmpegVideoDecoder.ReadFrame 里读那一路解码器，native 上下文被 free 掉
         // 之后继续读 → `System.AccessViolationException`（0xc0000005，coreclr.dll）
@@ -841,21 +979,37 @@ internal sealed class VideoProjectPlayer : IDisposable
         _worker?.Join(3000);
         if (_worker is { IsAlive: true })
         {
-            // 线程还卡在解码 / seek 里（大文件慢解、机械盘）：此时**绝不能**释放解码器，
-            // 交给线程自己在退出前收尾（见 Loop 退出路径），本轮只放掉与它无关的音频输出。
-            Log("播放线程未在 3s 内退出：解码器交给线程自行释放（避免释放竞态击穿进程）");
-            _worker = null;
-            _mixer.Dispose();
-            return;
+            Log("播放调度线程未在 3s 内退出（不影响）：各轨解码器仍由各自线程释放");
         }
 
         _worker = null;
-        foreach (var state in _tracks)
+        StopTrackWorkers();
+        _mixer.Dispose();
+    }
+
+    /// <summary>
+    /// 停止各轨解码线程并等它们退出。**绝不在这里释放解码器** ——
+    /// 每个 <see cref="TrackState"/> 的解码器只由它自己的线程释放（跨线程释放 native 上下文
+    /// 是 `AccessViolationException` 静默击穿进程的经典来源，见 agents.md）。
+    /// </summary>
+    private void StopTrackWorkers()
+    {
+        var workers = _tracks.Where(t => t.Worker != null).ToList();
+        foreach (var state in workers)
         {
-            state.Source?.Dispose();
-            state.Source = null;
+            state.ExitRequested = true;
+            state.Consumed.Set(); // 可能在等 UI 消费
+            state.Signal.Release();
         }
 
-        _mixer.Dispose();
+        foreach (var state in workers)
+        {
+            if (state.Worker is { IsAlive: true } w && !w.Join(3000))
+            {
+                Log($"轨{state.Track} 解码线程未在 3s 内退出：解码器交给它自行释放");
+            }
+
+            state.Worker = null;
+        }
     }
 }
