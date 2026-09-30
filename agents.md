@@ -215,9 +215,23 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
   并加 10s 冷却（一次重定位 = 一次可听的断点）。
 - **诊断入口**：`video-player.log` 每 2 秒一行，现在带**单拍耗时**（`拍 均28ms/峰67ms`）与
   **每轨闲置原因**（`此刻无片段 / 无解码器 / 源已播完 / 等UI消化 / 正常`）—— 卡顿时先看这行。
-- 已知上限（本机 4 核实测，解码 800px 约 10ms/帧）：单轨 ~17fps、3 轨 @800px ~12fps，
-  低于 24fps 目标；再往上要么按轨并行解码、要么提高定时精度（`Thread.Sleep` 15.6ms 粒度拖着拍长），
-  暂时靠编辑器的**预览画质自适应**降分辨率换取帧率。
+- **节拍精度**：`Thread.Sleep` 默认粒度 15.6ms，而 24fps 的拍长只有 41.7ms —— 播放期间必须
+  `timeBeginPeriod(1)`（停止时恢复，引用计数），否则拍长被拉到 ~57ms、单轨投递率卡在 17fps。
+  修后单轨 800px = 23.1fps（间隔 43ms）。**这是「画面比音频慢半拍」的主要来源之一。**
+- **追赶阈值按时间算不按帧算**：`MaxPictureLagSeconds = 0.15`（歌词对拍的容忍边界），
+  按源帧率换算成帧数。写死 8 帧对 54fps 源等于允许落后 0.33s，字幕就会对不上。
+  seek 追平后要**本拍就把画面补上**（seek 后直接 return 会让画面一顿一顿）。
+- **时间映射被改（倍速 / 裁剪）后帧游标会失效**：目标帧号可能大幅**倒退**，
+  此时 `behind <= 0` 恒成立、画面会停住（0.5× 实测停 6 秒）→ `behind < -2` 时重新 seek 对齐游标。
+- **时间轴清空（`_duration == 0`）必须停播**：否则每拍都判「播完了 → 循环复位」，
+  播放头会在 0s 附近抽搐。播放器在 `_duration <= 0` 时退出线程并把时间归零，
+  编辑器侧 `SyncPreviewWithProject()` 负责停播 + 回 0s。
+- 已知上限（本机 4 核实测）：**解码成本几乎只由源码流决定**（320px 11.4ms / 800px 12ms / 1280px 13.1ms
+  —— 降到 320px 也只省 2ms），所以「预览画质自适应」主要省的是 UI 上传/合成，不是解码。
+  单轨 @800px 现在能到 ~23fps，但 **3 轨 @800px 只有 ~15fps**：解码全在一条线程上串行，
+  而 54fps 源每轨每秒要解 54 帧（≈0.4 核/轨）—— 单线程物理上做不完。
+  要真正解决只有两条路：**按轨并行解码**（每轨一条线程，风险在解码器的开关/释放协调）
+  或**预览用代理文件**（导入时转码一份低帧率小尺寸素材给预览，渲染仍用原片）。
 ## 预设商店（PresetStore）
 
 - 数据源与格式沿用此前约定：索引 `https://xxtsoft.top/support/injector/presets/index.json`（schemaVersion 1，camelCase、大小写不敏感），条目字段 = `Defaults/preset-index.sample.json`（id/name/author/school/description/pluginVersion/minPluginVersion/createdAt/downloadUrl(.cizip)/previewUrl(.png)/sizeBytes，可选 downloads 供热门排序）。

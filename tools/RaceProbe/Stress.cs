@@ -46,6 +46,7 @@ internal static class Stress
         ok &= PhaseB(videoPath, audioPath, tracks: 3, dim: 800, jankMs: 0, loaded: false);
         ok &= PhaseB(videoPath, audioPath, tracks: 3, dim: 400, jankMs: 0, loaded: false);
         ok &= PhaseB(videoPath, audioPath, tracks: 3, dim: 800, jankMs: 60, loaded: true);
+        ok &= PhaseF(videoPath, audioPath);
         ok &= PhaseE(videoPath, audioPath);
         ok &= PhaseC(videoPath, audioPath, loaded: true);
         ok &= PhaseD(videoPath, audioPath, loaded: true);
@@ -100,6 +101,36 @@ internal static class Stress
         dec.Dispose();
         decode.Sort();
         seek.Sort();
+
+        // 硬解对照：预览目前从不设 HardwareDecoder（全软解），而底图/渲染都用硬解。
+        foreach (var hw in new[] { "auto", "d3d11va", "h264_qsv" })
+        {
+            var hd = new FFmpegVideoDecoder { HardwareDecoder = hw };
+            if (!hd.Open(videoPath, 800))
+            {
+                Console.WriteLine($"  硬解[{hw}]：打不开");
+                continue;
+            }
+
+            var hwTimes = new List<double>();
+            for (var i = 0; i < 40; i++)
+            {
+                var sw2 = Stopwatch.StartNew();
+                var okFrame = hd.ReadFrame(out _);
+                sw2.Stop();
+                if (!okFrame)
+                {
+                    break;
+                }
+
+                hwTimes.Add(sw2.Elapsed.TotalMilliseconds);
+            }
+
+            Console.WriteLine($"  硬解[{hw}]：均值 {(hwTimes.Count > 0 ? hwTimes.Average() : 0):0.##}ms/帧"
+                              + $"（软解 {decode.Average():0.##}ms）  解码器={hd.SourceFps:0.#}fps");
+            hd.Dispose();
+        }
+
         var dpf = decode.Count > 0 ? decode.Average() : 0;
         Console.WriteLine($"  顺序解一帧：均值 {dpf:0.##}ms（中位 {decode[decode.Count / 2]:0.##}ms）"
                           + $"  → 单轨 24fps 需 {dpf * 24:0}ms/s/轨");
@@ -316,7 +347,7 @@ internal static class Stress
         var ok = true;
         foreach (var (speed, frames) in marks)
         {
-            var blocked = frames == 0; // 这一项刻意在重负载下跑，只判「有没有完全停」
+            var blocked = frames < 10; // 1.5s 内少于 10 帧 = 画面基本停了
             ok &= !blocked;
             Console.WriteLine($"  {speed:0.##}×（片段时长 {clip.Duration:0.##}s）：1.5s 内轨0 投递 {frames} 帧"
                               + (blocked ? "   ⚠ 改速度后画面停了" : ""));
@@ -406,6 +437,59 @@ internal static class Stress
                 // 忙等：既是延迟也是 CPU 占用（像被浏览器挤爆的 UI 线程）。
             }
         }
+    }
+
+    // ---------------- F. 播放中清空片段（应停止并回 0s，而不是在 0s 抽搐） ----------------
+    private static bool PhaseF(string videoPath, string audioPath)
+    {
+        Console.WriteLine("--- F. 播放中删光片段（期望：停止播放、时间归零、不再反复复位）---");
+        var project = BuildProject(videoPath, audioPath, tracks: 1);
+        var ui = new UiSimulator(0);
+        var clock = new Stopwatch();
+        var framesAfterClear = 0;
+        var cleared = false;
+
+        VideoProjectPlayer? player = null;
+        player = new VideoProjectPlayer(project, 400, 24, (frame, _, track) =>
+        {
+            if (Volatile.Read(ref cleared))
+            {
+                Interlocked.Increment(ref framesAfterClear);
+            }
+
+            ui.Post(track, () => player?.MarkTrackConsumed(track));
+        });
+
+        clock.Start();
+        player.Start();
+        Thread.Sleep(2500);
+        var timeBefore = player.CurrentTime;
+
+        // 清空时间轴（等价于编辑器里删光所有片段 + RefreshClips）：
+        // 编辑器还会调 SyncPreviewWithProject() 显式停播，这里只验证播放器自身不再抽搐。
+        project.Clips.Clear();
+        Volatile.Write(ref cleared, true);
+        player.RefreshClips();
+
+        var samples = new List<double>();
+        for (var i = 0; i < 12; i++)
+        {
+            Thread.Sleep(120);
+            samples.Add(player.CurrentTime);
+        }
+
+        var after = player.CurrentTime;
+        player.Stop();
+        player.Dispose();
+        ui.Stop();
+
+        // 判据：清空后不再投递帧；时间不再前进（也不再被反复复位成 0 → 波动应极小）。
+        var spread = samples.Max() - samples.Min();
+        var ok = framesAfterClear == 0 && spread < 0.35 && after < 0.35;
+        Console.WriteLine($"  清空前 {timeBefore:0.##}s → 清空后 12 次采样：最大波动 {spread:0.###}s、末值 {after:0.###}s、"
+                          + $"清空后仍投递 {framesAfterClear} 帧" + (ok ? "" : "   ⚠ 仍在 0s 附近抽搐"));
+        Console.WriteLine();
+        return ok;
     }
 
     // ---------------- E. 声卡位置 vs 墙钟（音画漂移校正的依据） ----------------
