@@ -1,0 +1,80 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    EditorPlay —— 「假人剪视频」headless 驱动探针。
+
+    它把**插件全部源码编译进来**（同一程序集 → 能访问 internal 的 VideoEditorWindow），
+    引用**宿主真实的 ClassIsland.Core / Avalonia 11.3.17**，在 Avalonia headless 平台上
+    构造真正的 VideoEditorWindow，然后用 Avalonia.Headless 的输入模拟 API
+    （MouseDown/MouseMove/MouseUp/MouseWheel/KeyPress/DragDrop）像真人一样操作它，
+    并用 CaptureRenderedFrame() 把界面渲染成 PNG 以便肉眼检查。
+
+    为什么这事能成立：
+    - 宿主 ClassIsland.Core 只是 Avalonia 控件库，不需要真的跑 ClassIsland 应用；
+      InjectorRuntime.Initialize 也只吃路径，不依赖宿主服务。
+    - 宿主用的是 Avalonia **11.3.17**（插件编译期是 11.3.6），所以这里必须引用 11.3.17，
+      否则与宿主程序集强名称版本冲突（CS1705）。
+    - 宿主程序集不在 NuGet 里，用 HintPath 指向宿主 app 目录，并在 Build 后把该目录
+      所有 DLL 拷到输出（没有 deps.json 条目，运行期靠 ALC.Resolving 回退到程序目录解析）。
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>EditorPlay</AssemblyName>
+    <RootNamespace>ClassIslandInjector</RootNamespace>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <!-- 宿主程序集与插件引用的 Avalonia 版本不同，会有大量 MSB3277 统一警告，忽略。 -->
+    <NoWarn>$(NoWarn);MSB3277;CS0618</NoWarn>
+    <HostDir>D:\Dev\ClassIsland\app-2.1.0.1-0\</HostDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 探针自己的入口 -->
+    <Compile Include="Program.cs" />
+    <!--
+      插件全部源码（排除 tools 下的其它工具项目，避免重复 Main / 重复类型）。
+      注意不能排除 Plugin.cs —— MainWindowStyleInjector / InjectorSettingsPage / PresetStoreService
+      都直接引用了 `Plugin` 类型，所以把它连同 Automation\ 一起编译进来（它们是宿主集成代码，
+      我们只是需要它编译通过，不会去实例化）。
+    -->
+    <Compile Include="..\..\**\*.cs"
+             Exclude="..\..\tools\**\*.cs;..\..\bin\**\*.cs;..\..\obj\**\*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.17" />
+    <PackageReference Include="Avalonia.Headless" Version="11.3.17" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.17" />
+    <PackageReference Include="Avalonia.Skia" Version="11.3.17" />
+    <PackageReference Include="FluentAvaloniaUI" Version="2.4.1" />
+    <PackageReference Include="Clipper2" Version="2.0.0" />
+    <PackageReference Include="FFmpeg.AutoGen" Version="8.1.0" />
+    <PackageReference Include="MaterialColorUtilities" Version="0.3.0" />
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+    <PackageReference Include="System.Drawing.Common" Version="8.0.25" />
+    <!--
+      插件源码里 Plugin.cs / InjectorRuntime / MainWindowStyleInjector / Views 用到宿主 DI 与托管抽象
+      （HostBuilderContext、IServiceCollection、IHost、IHostedService），编译它们必须有这两个。
+      只是编译期需要，运行期这条路径不会走到（我们不启动 ClassIsland 应用）。
+    -->
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.1" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.2" />
+    <Reference Include="ClassIsland.Core"><HintPath>$(HostDir)ClassIsland.Core.dll</HintPath></Reference>
+    <Reference Include="ClassIsland.Shared"><HintPath>$(HostDir)ClassIsland.Shared.dll</HintPath></Reference>
+    <Reference Include="ClassIsland.Shared.IPC"><HintPath>$(HostDir)ClassIsland.Shared.IPC.dll</HintPath></Reference>
+    <Reference Include="ClassIsland.Platforms.Abstractions"><HintPath>$(HostDir)ClassIsland.Platforms.Abstractions.dll</HintPath></Reference>
+  </ItemGroup>
+
+  <!-- 宿主程序集不在 NuGet 里：把宿主目录全部 DLL 拷到输出，供运行期解析。 -->
+  <Target Name="CopyHostDlls" AfterTargets="Build">
+    <ItemGroup>
+      <_HostDlls Include="$(HostDir)*.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_HostDlls)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

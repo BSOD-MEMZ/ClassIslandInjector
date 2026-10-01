@@ -5,6 +5,7 @@ using Avalonia.Animation;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Input.GestureRecognizers;
 // Shapes 命名空间与 System.IO.Path 冲突，只取需要的类型。
 using Ellipse = Avalonia.Controls.Shapes.Ellipse;
@@ -990,10 +991,21 @@ internal sealed class VideoEditorWindow : MyWindow
         // 拖拽都实时跟手（规避重挂载/捕获丢失导致“片段不跟手”）；无拖拽时这些处理器空转。
         PointerMoved += (_, e) =>
         {
-            if (_moveGroup != null || _trimState != null)
+            if (_moveGroup == null && _trimState == null && _marqueeStart == null)
             {
-                OnTimelinePointerMoved(e);
+                return;
             }
+
+            // 左键已松开但交互状态还在 —— 最典型是「指针在窗口外松开」：那种情况 PointerReleased
+            // 根本送不到窗口，状态就留下了。这里主动收敛（走 CancelTimelineDrag → 会重建时间轴，
+            // 把浮到根画布上的片段块收回泳道）。见 CancelTimelineDrag 上方的说明。
+            if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+            {
+                CancelTimelineDrag("左键已松开（多半在窗口外松的手）");
+                return;
+            }
+
+            OnTimelinePointerMoved(e);
         };
         PointerReleased += (_, e) =>
         {
@@ -1007,9 +1019,20 @@ internal sealed class VideoEditorWindow : MyWindow
         // （挡住泳道，点上去只会重新进入拖拽分支）、泳道按下则反复重复捕获框选起点。
         // 用户看到的就是「打开编辑器后轨道点不动、跟卡住一样」，而 **resize 一下就好了**
         // （resize 触发 RefreshTimeline 从模型整体重建，把这些残留视觉状态一并冲掉）。
-        // 这里两处兜底：指针离开窗口、窗口失去激活 —— 都视为拖拽中断，直接收敛状态。
-        PointerExited += (_, _) => CancelTimelineDrag();
-        Deactivated += (_, _) => CancelTimelineDrag();
+        //
+        // ⚠️⚠️ 这里**不能**用 `PointerExited` 当「指针离开窗口」的信号，两种写法都不行：
+        // 无论 `PointerExited += …` 还是 `AddHandler(..., RoutingStrategies.Direct)`，
+        // 它都会在**窗口内部正常移动**时触发 —— 因为指针从 TopLevel 背景移到任何子控件上，
+        // TopLevel 都会抛一次 PointerExited，而且 `e.Source` 就是**窗口自身**
+        // （实测日志：`WINDOW-EXIT src=VideoEditorWindow 是窗口自身=True`，而此时指针坐标
+        //  还在窗口正中）。所以按 source 也没法区分。代价是拖拽/框选被整片打断：
+        // 「按下片段后只走了一步就被取消」「框选一按下就取消」（tools\EditorPlay 实测复现）。
+        //
+        // 「指针在窗口外松开」这个场景靠三条更可靠的机制收敛，不需要 PointerExited：
+        //   ① 窗口失去激活（Alt-Tab / 点了别的窗口）→ Deactivated；
+        //   ② 指针回到窗口内再次移动时，OnTimelinePointerMoved 发现左键已松开 → 主动终止；
+        //   ③ 泳道按下/框选有 PointerCaptureLost 兜底，_timelineRoot 也有。
+        Deactivated += (_, _) => CancelTimelineDrag("窗口 Deactivated");
         // 拖拽诊断：记录时间轴内容区内谁收到了“按下”（未被子控件 Handled 的按下都会冒泡到窗口）。
         // 若一次拖动没有对应的「DRAG 按下」日志，看这里可知是哪个元素拦下了按下（叠层/滚动区等）。
         PointerPressed += (_, e) =>
@@ -1445,7 +1468,7 @@ internal sealed class VideoEditorWindow : MyWindow
         // 片段拖拽/裁剪不在这里挂 PointerMoved/PointerReleased：窗口级处理器已经覆盖
         // （事件从叶子冒泡到窗口），两处都挂会让每个移动事件被处理两遍（日志里成对出现即此）。
         // 只在无法冒泡到窗口的「捕获丢失」上兜底清理拖拽状态。
-        _timelineRoot.PointerCaptureLost += (_, _) => CancelTimelineDrag();
+        _timelineRoot.PointerCaptureLost += (_, _) => CancelTimelineDrag("_timelineRoot 捕获丢失");
         // 视口宽度变化时记录（内层泳道视口宽），供时间轴内容铺满视口（防抖重建）。
         _lanesScroll.SizeChanged += (_, e) =>
         {
@@ -6022,11 +6045,16 @@ internal sealed class VideoEditorWindow : MyWindow
             return;
         }
 
+        // ⚠️ 这里**必须走 CancelTimelineDrag**（它会 RefreshTimeline 整体重建），
+        // 不能只把 _moveGroup 置 null —— 只清状态的话，那些已经被 FloatSelectedBlocks 浮到
+        // _timelineRoot 上的片段块会**永远留在拖拽中途的位置**盖住泳道（它们的 Canvas 坐标还是
+        // 拖拽时的临时值，与模型不一致），点上去只会重新进拖拽分支 → 用户看到的就是
+        // 「轨道点不动、跟卡住一样」；而 resize 会触发 RefreshTimeline 把块收回泳道 → 「resize 一下就好了」。
+        // 触发场景：指针在**窗口外**松开（PointerReleased 送不到窗口），之后回到窗口内移动。
+        // tools\EditorPlay 的 exittest 场景可复现该残留（「移出后 move=True」）。
         if (!e.GetCurrentPoint(_timelineRoot).Properties.IsLeftButtonPressed)
         {
-            EditorLog("DRAG 移动时左键已松开 → 终止拖拽状态");
-            _moveGroup = null;
-            ClearDropHighlight();
+            CancelTimelineDrag("移动时左键已松开");
             return;
         }
 
@@ -6243,15 +6271,26 @@ internal sealed class VideoEditorWindow : MyWindow
     }
 
     /// <summary>
-    /// 拖拽 / 裁剪 / 框选意外中断（指针移出窗口、窗口失去激活、捕获丢失等）：清掉全部交互状态，
-    /// 并重建时间轴把浮到根画布的块收回归位。
+    /// 拖拽 / 裁剪 / 框选意外中断：清掉全部交互状态，并**重建时间轴**把浮到根画布上的片段块收回归位。
     /// <para>
-    /// ⚠️ 必须把 <c>_marqueeStart</c> 一并清掉：框选靠 <c>lane.PointerCaptureLost</c> + <c>PointerReleased</c>
-    /// 结束，指针在窗口外松开时两者都不会来 —— 残留的框选起点会让后续泳道按下持续处于「框选中」，
-    /// 表现为「轨道点不动」（2026-09-30 定位；resize 触发重建能顺手治好，所以用户描述为「resize 一下就好了」）。
+    /// 「必须重建」是这条方法的要点：光把 <c>_moveGroup</c> 置 null 是不够的 ——
+    /// <see cref="FloatSelectedBlocks"/> 已经把被拖的块**移到 _timelineRoot 上**并按拖拽中途的临时
+    /// 坐标设了 Canvas.Left/Top，不重建它们就会一直盖在泳道上层、且与模型位置不一致，
+    /// 点上去只会重新进入拖拽分支。用户描述为「打开编辑器后轨道点不动、跟卡住一样」，
+    /// 而「resize 一下又好了」正是因为 resize 触发了 RefreshTimeline 整体重建。
+    /// （tools\EditorPlay 的 exittest 场景复现了「指针移出窗口松开后 move=True 残留」。）
+    /// </para>
+    /// <para>
+    /// 同理要把 <c>_marqueeStart</c> 清掉：框选靠 <c>lane.PointerCaptureLost</c> + <c>PointerReleased</c>
+    /// 结束，指针在窗口外松开时两者都不会来，框选起点会残留。
+    /// </para>
+    /// <para>
+    /// ⚠️ 触发入口只应是「窗口失去激活」与「左键已松开」这两类**可靠**信号，
+    /// 不要试图用 <c>PointerExited</c> 判「指针离开窗口」—— 它在窗口内部正常移动时也会触发，
+    /// 会把拖拽/框选整片打断（详见构造函数里 PointerMoved 上方的实测说明）。
     /// </para>
     /// </summary>
-    private void CancelTimelineDrag()
+    private void CancelTimelineDrag([System.Runtime.CompilerServices.CallerMemberName] string reason = "?")
     {
         var hadDrag = _trimState != null || _moveGroup != null;
         var hadMarquee = _marqueeStart != null;
@@ -6262,12 +6301,12 @@ internal sealed class VideoEditorWindow : MyWindow
 
         if (hadDrag)
         {
-            EditorLog("DRAG 取消（指针移出窗口 / 失去激活 / 捕获丢失）");
+            EditorLog($"DRAG 取消（原因：{reason}）");
         }
 
         if (hadMarquee)
         {
-            EditorLog("MARQUEE 取消（指针移出窗口 / 失去激活 / 捕获丢失）");
+            EditorLog($"MARQUEE 取消（原因：{reason}）");
             _marqueeStart = null;
             _marqueeMoved = false;
             _marqueeRect.IsVisible = false;

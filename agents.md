@@ -79,6 +79,16 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
 - 现有回归探针（都是独立项目，用 `dotnet run -c Release` 直接跑，**不需要宿主 GUI**）：
   - `tools\AudioProbe`：无参=解音频轨并写 wav（`--play` 顺带测设备输出）；`--project`=工程 v2 格式往返与迁移校验（22 项）；`--vdec <视频> <ffmpeg库目录>`=用插件自己的 `FFmpegVideoDecoder` 完整解一遍视频，用于定位「解码侧」问题（区分「文件/解码坏了」与「渲染侧崩了」）；`--loop`=验证「解到 EOF → Restart → 回到开头」；**`--demux <视频> <ffmpeg目录>`=裸 avformat 逐包读完全文件**（每条流包数 + 结束返回码 + seek 到中段能否解码）。**`--vdec` 的帧数应当等于 `--demux` 视频流包数** —— 不等就是解码链路的问题，别去怀疑素材（见约束 17）。
   - `tools\FFmpegProbe`：`--enc` 生成对照 mp4（尺寸写在 `EncodeTest` 里的 `const int w/h`，排查尺寸相关崩溃时临时改），无参=解若干帧。
+  - `tools\EditorPlay`：**headless 驱动真实视频编辑器**（「假人剪视频」）。`EditorPlay.exe [empty|edit|exittest|thumb]`。
+    它把插件全部源码编译进来（同一程序集 → 能访问 internal 的 `VideoEditorWindow`）、引用**宿主真实的
+    ClassIsland.Core + Avalonia 11.3.17**，在 Avalonia headless 平台上 `Show()` 真的窗口，用
+    `MouseDown/MouseMove/MouseUp/MouseWheel/KeyPress/DragDrop` 模拟真人操作，并用 `CaptureRenderedFrame()`
+    把界面渲染成 PNG（含 `ShotZoom` 局部放大）——**所以沙箱里也能做视觉核查**。
+    两个前置条件必须做，否则 FFmpeg/缩略图/音频全部静默失败（踩过）：
+    ① 引用 Avalonia **11.3.17**（宿主的版本，插件编译期 11.3.6 会 CS1705 冲突）；
+    ② 自己调 `FFmpegRuntime.EnsureLoaded()`（`Initialize` 只探文件齐不齐，不设 `ffmpeg.RootPath`）。
+    写场景的两条纪律：不要跨步骤持有 `VideoClip` 引用（撤销会把片段整体 Clone 替换）；
+    拖动的 `MouseMove` 必须带 `RawInputModifiers.LeftMouseButton`。
   - `tools\RaceProbe`：`RaceProbe.exe [视频] [FFmpeg库目录]` = 「解码线程正在 `ReadFrame` 时另一线程 `Dispose`」的竞态回归（5 轮）。
     守护的是这个坑：**释放解码器必须先 `Join` 播放线程、且 `ReadFrame`/`SeekTo`/`Restart` 与 `Dispose` 共用 `FFmpegVideoDecoder._gate` 互斥**，
     否则 native 上下文被 free 后继续读 → `AccessViolationException`(0xc0000005) 静默击穿宿主进程（点「渲染并应用」第一步 `StopPreview` 就会踩到）。
@@ -353,6 +363,29 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
 - 改这块时的注意事项：**不要因为「删掉了 label」就去删那 70 处赋值** —— 它们是提示语的生产者，
   留着进日志是有价值的排查线索；真要恢复界面提示，应该换成一个**瞬时**呈现（toast/浮层），
   而不是把常驻 label 加回去。
+
+### 19. 时间轴交互状态的「自愈」必须重建时间轴；`PointerExited` 不能用来判「指针离开窗口」
+
+**A. `PointerExited` 是陷阱（2026-10-01 实测，别再用它）**
+- 无论 `PointerExited += …` 还是 `AddHandler(…, RoutingStrategies.Direct)`，它**在窗口内部正常移动时也会触发**：
+  指针从 TopLevel 背景移到任何子控件上，TopLevel 都会抛一次 `PointerExited`，且 `e.Source` 就是**窗口自身**
+  （实测日志 `WINDOW-EXIT src=VideoEditorWindow 是窗口自身=True`，而此时指针坐标还在窗口正中）
+  —— 所以按 source 也区分不出来。
+- 后果：用它做「拖拽中断」兜底 = **拖拽只走一步就被取消、框选一按下就被取消**（整片废掉）。
+- 判「指针真的离开窗口」只能用：① `Deactivated`（Alt-Tab / 点了别的窗口，最常用）；
+  ② 指针回到窗口内再次 `PointerMoved` 时发现左键已松开（见 B）。
+
+**B. 「自愈」不能只清状态，必须 `RefreshTimeline()`**
+- 片段拖拽会被 `FloatSelectedBlocks()` 把块**移到 `_timelineRoot` 上**并按拖拽中途的临时坐标写 `Canvas.Left/Top`。
+  只把 `_moveGroup`/`_trimState`/`_marqueeStart` 置 null 而**不重建**，这些块就永远留在拖拽中途的位置：
+  盖在泳道上层、坐标与模型不一致、点上去只会重新进拖拽分支 —— 即
+  「**打开编辑器后轨道点不动、跟卡住一样**」，而「**resize 一下又好了**」正是因为 resize 触发了
+  `RefreshTimeline()` 整体重建。
+- 所以这条路径统一走 `CancelTimelineDrag(reason)`（它结尾就是 `RefreshTimeline(); FillPropertyPanel();`），
+  不要再各写一份「只清字段」的收尾。`reason` 会写进 `video-editor.log`，排查时先看这行定位是谁触发的。
+
+**C. 验收方式（重要）**：这类问题**必须**用可重复的驱动去验，不能靠肉眼点几下 ——
+见 `tools\EditorPlay`（headless 驱动真实编辑器）。已回归的场景：`empty` / `edit`（11 步断言）/ `exittest`。
 
 ## 预设商店（PresetStore）
 

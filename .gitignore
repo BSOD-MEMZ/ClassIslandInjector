@@ -64,3 +64,7 @@ tools/ffmpeg-dl/
 
 # ===== 分发产物（ffmpeg 精简包等，体积大，不入库）=====
 /dist/
+
+# 沙箱临时产物（EditorPlay 等探针的截图/临时配置），不进仓库；
+# 注意：.workbuddy/ 本体（memory/、issue-*-reply.md）是**故意提交**的，别一起排除。
+.workbuddy/tmp/
