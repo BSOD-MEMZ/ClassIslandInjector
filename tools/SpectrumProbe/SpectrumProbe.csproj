@@ -11,6 +11,7 @@
     <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
     <PackageReference Include="NAudio.WinMM" Version="2.2.1" />
     <Compile Include="..\..\AudioSpectrumCapture.cs" Link="AudioSpectrumCapture.cs" />
+    <Compile Include="..\..\WasapiLoopbackCaptureLite.cs" Link="WasapiLoopbackCaptureLite.cs" />
   </ItemGroup>
 
 </Project>

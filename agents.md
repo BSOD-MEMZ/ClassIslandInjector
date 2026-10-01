@@ -431,6 +431,29 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
 ② 把文本片段拖到最下方那条轨，**必须留在那条轨**（只允许因同轨不堆叠改 StartTime）。
 `empty` 场景断言全新编辑器**只有 1 条轨**。
 
+### 21. NAudio 的 COM「类」不能跨插件共用：频谱捕获必须能退回自带互操作（2026-10-01）
+
+**症状**：用户装了一堆插件后，「动态频谱」一根柱条都没有；日志（`preview-debug.log`）里 `频谱捕获: 启动成功` 一次都没有，77 次启动尝试全是：
+
+```
+InvalidCastException: Unable to cast object of type
+  'NAudio.CoreAudioApi.Interfaces.MMDeviceEnumeratorComObject'
+to type 'NAudio.CoreAudioApi.Interfaces.MMDeviceEnumeratorComObject'.
+```
+
+**根因**：异常里**源类型和目标类型同名**，只有「同一个 COM 类在进程里有两份类型标识」才会这样。NAudio 用 `new MMDeviceEnumeratorComObject()` 按 CLSID 激活组件，而一个 COM 对象在一个进程里只有一份类型标识，**谁先激活就归谁**。ClassIsland 的 `PluginLoadContext` 给每个插件独立 ALC，插件目录里的 NAudio 是各自独立的副本 —— 另一个带 NAudio 的插件（如 `Decibel_Monitor`，引用 NAudio 2.2.1 + CopyLocalLockFileAssemblies）先激活，我们这边就必挂且**每次重试都挂**。同类上游问题：NAudio#421、Flow.Launcher#4258。
+
+**约定**：
+
+- 回环捕获走 `ILoopbackCapture` 抽象（`WasapiLoopbackCaptureLite.cs`）：`NaudioLoopbackCapture`（诊断信息最全）优先，抛异常则自动回退 `WasapiLoopbackCaptureLite`（**自带 COM 互操作**，只声明 `[ComImport]` **接口**，按 IID 走 `CoCreateInstance`/`QueryInterface`，与 COM「类」的类型标识无关）。
+- **不要**把频谱/音频链路改成「直接用 `new WasapiLoopbackCapture()`」——那等于把全家性命押在「我们是第一个激活者」上。
+- NAudio 侧的 `DescribeDefaultRenderDevice()` 也要能回退（`WasapiEndpointInfo.DescribeDefaultRenderDevice()`），否则冲突机器上这条诊断只剩「读取失败」。
+- 诊断日志会打印 `进程内 NAudio 副本 = 名称 版本 @ 路径 | ...`，一眼看出是哪个插件目录带的副本。
+
+**回归探针**：`tools\SpectrumProbe --conflict` —— 把同一份 `NAudio.Wasapi.dll` 再加载进独立 ALC 并抢先激活（复现该异常），再断言捕获仍走通、电平非零且变化。无参模式验证 NAudio 路径本身没被改坏。
+
+**已知遗留**：`VideoAudioPlayer` 的 `WasapiOut`（「播放声音」）仍然直接依赖 NAudio，同冲突下也会失败；彻底解法是宿主把 NAudio 作为共享依赖（像 `PluginLoadContext.WinRTDeps` 那样），需上游配合。
+
 ## 预设商店（PresetStore）
 
 - 数据源与格式沿用此前约定：索引 `https://xxtsoft.top/support/injector/presets/index.json`（schemaVersion 1，camelCase、大小写不敏感），条目字段 = `Defaults/preset-index.sample.json`（id/name/author/school/description/pluginVersion/minPluginVersion/createdAt/downloadUrl(.cizip)/previewUrl(.png)/sizeBytes，可选 downloads 供热门排序）。

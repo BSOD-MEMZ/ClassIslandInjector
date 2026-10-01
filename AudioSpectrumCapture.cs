@@ -35,7 +35,7 @@ public sealed class AudioSpectrumCapture : IDisposable
     private int _windowTotal;
     private int _lastFftPos;
     private float _peak;
-    private WasapiLoopbackCapture? _capture;
+    private ILoopbackCapture? _capture;
     private volatile bool _running;
     private bool _disposed;
     private long _sampleCount;
@@ -72,12 +72,23 @@ public sealed class AudioSpectrumCapture : IDisposable
     public long BlockCount => Interlocked.Read(ref _blockCount);
 
     /// <summary>捕获设备的采样率（诊断用）。</summary>
-    public int SampleRate => _capture?.WaveFormat?.SampleRate ?? 0;
+    public int SampleRate => _capture?.Format.SampleRate ?? 0;
 
     /// <summary>捕获设备的声道数（诊断用）。</summary>
-    public int Channels => _capture?.WaveFormat?.Channels ?? 0;
+    public int Channels => _capture?.Format.Channels ?? 0;
 
-    /// <summary>启动回环捕获。失败不抛异常，但记录诊断信息并写日志。</summary>
+    /// <summary>当前生效的捕获实现（"NAudio" / "自带互操作"），诊断用。</summary>
+    public string CaptureImplementation { get; private set; } = "未启动";
+
+    /// <summary>
+    /// 启动回环捕获。失败不抛异常，但记录诊断信息并写日志。
+    /// <para>
+    /// 先走 NAudio（诊断信息最全）；如果它挂了（典型是「同进程另一份 NAudio 抢占了
+    /// MMDeviceEnumerator 的 COM 类型标识」导致 InvalidCastException，见
+    /// <see cref="WasapiLoopbackCaptureLite"/> 的说明），自动回退到自带 COM 互操作实现。
+    /// 两条路都失败才算真失败。
+    /// </para>
+    /// </summary>
     public void Start()
     {
         if (_running || _disposed)
@@ -85,32 +96,87 @@ public sealed class AudioSpectrumCapture : IDisposable
             return;
         }
 
+        ILoopbackCapture? capture = null;
+        Exception? naudioError = null;
         try
         {
-            var capture = new WasapiLoopbackCapture();
-            capture.DataAvailable += OnDataAvailable;
-            capture.RecordingStopped += OnRecordingStopped;
-            _capture = capture;
-            _running = true;
-            capture.StartRecording();
-            var fmt = capture.WaveFormat;
-            DiagnosticMessage = null;
-            Log(
-                $"频谱捕获: 启动成功。设备采样率={fmt?.SampleRate} 声道={fmt?.Channels} " +
-                $"编码={fmt?.Encoding} 位深={fmt?.BitsPerSample}");
-            // 回环抓的是「默认渲染端点」，不是「正在出声的设备」。把该端点的名字 /
-            // 静音 / 音量写进日志，能一眼区分「设备选错（样本全 0）」和「代码问题」。
-            Log($"频谱捕获: {DescribeDefaultRenderDevice()}");
+            capture = new NaudioLoopbackCapture();
+            Attach(capture);
         }
         catch (Exception ex)
         {
-            // 关键：这里是最常见的「选了动态频谱完全没反应」的落点
-            // （无回环设备 / 音频服务未启动 / 音频独占 / NAudio 依赖缺失）。
-            try { _capture?.Dispose(); } catch { /* 忽略 */ }
+            naudioError = ex;
+            Detach(capture);
+        }
+
+        if (_capture == null)
+        {
+            // 关键落点之一：NAudio 侧的 new WasapiLoopbackCapture() 抛
+            // InvalidCastException（源/目标类型同名 = 进程内有两份 NAudio）。
+            Log($"频谱捕获: NAudio 回环启动失败（{naudioError?.GetType().Name}: {naudioError?.Message}），改用自带互操作实现。");
+            Log($"频谱捕获: 进程内 NAudio 副本 = {NaudioConflictDiagnostics.DescribeLoadedCopies()}");
+            try
+            {
+                var lite = new WasapiLoopbackCaptureLite();
+                Attach(lite);
+            }
+            catch (Exception ex2)
+            {
+                DiagnosticMessage =
+                    $"回环捕获启动失败：{naudioError?.GetType().Name}: {naudioError?.Message}；" +
+                    $"自带互操作实现同样失败：{ex2.GetType().Name}: {ex2.Message}";
+                Log($"频谱捕获: {DiagnosticMessage}");
+                CaptureImplementation = "启动失败";
+                return;
+            }
+        }
+
+        DiagnosticMessage = null;
+        var format = _capture!.Format;
+        Log(
+            $"频谱捕获: 启动成功（实现={CaptureImplementation}）。设备采样率={format.SampleRate} " +
+            $"声道={format.Channels} 位深={format.BitsPerSample} 浮点={format.IsFloat}");
+        // 回环抓的是「默认渲染端点」，不是「正在出声的设备」。把该端点的名字 /
+        // 静音 / 音量写进日志，能一眼区分「设备选错（样本全 0）」和「代码问题」。
+        Log($"频谱捕获: {DescribeDefaultRenderDevice()}");
+    }
+
+    /// <summary>挂上捕获源（订阅事件 → 置位 → 真正 Start），失败时内部已清理。</summary>
+    private void Attach(ILoopbackCapture capture)
+    {
+        _capture = capture;
+        capture.DataAvailable += OnDataAvailable;
+        capture.Stopped += OnCaptureStopped;
+        // 先置位再 Start：捕获线程可能立刻回调，此时 OnDataAvailable 需要 _running 为真。
+        _running = true;
+        try
+        {
+            capture.Start();
+        }
+        catch
+        {
+            Detach(capture);
+            throw;
+        }
+
+        CaptureImplementation = capture.Describe;
+    }
+
+    /// <summary>摘掉捕获源并复位状态（正常停止与启动失败共用）。</summary>
+    private void Detach(ILoopbackCapture? capture)
+    {
+        _running = false;
+        if (capture != null)
+        {
+            try { capture.Stop(); } catch { /* 忽略 */ }
+            capture.DataAvailable -= OnDataAvailable;
+            capture.Stopped -= OnCaptureStopped;
+            try { capture.Dispose(); } catch { /* 忽略 */ }
+        }
+
+        if (ReferenceEquals(_capture, capture))
+        {
             _capture = null;
-            _running = false;
-            DiagnosticMessage = $"回环捕获启动失败：{ex.GetType().Name}: {ex.Message}";
-            Log($"频谱捕获: {DiagnosticMessage}");
         }
     }
 
@@ -170,6 +236,10 @@ public sealed class AudioSpectrumCapture : IDisposable
     /// 这三项是「样本一直有、电平一直是 0」的直接原因：实际出声设备与默认输出设备
     /// 不是同一个（USB 耳机 / 蓝牙 / HDMI / Win11 应用级设备路由）时，回环抓到的
     /// 就是纯静音。写进日志可一眼分辨环境问题与代码问题。
+    /// <para>
+    /// 先走 NAudio（字段最全）；NAudio 侧因同进程副本冲突不可用时，退回自带互操作实现，
+    /// 保证这条诊断在冲突机器上依然有内容，而不是只留一句「读取失败」。
+    /// </para>
     /// </summary>
     public static string DescribeDefaultRenderDevice()
     {
@@ -183,25 +253,21 @@ public sealed class AudioSpectrumCapture : IDisposable
             var level = volume?.MasterVolumeLevelScalar ?? 0f;
             return $"默认输出设备=\"{name}\" {muted} 主音量={level * 100:F0}%";
         }
-        catch (Exception ex)
+        catch
         {
-            // 无默认渲染端点（全部设备被禁用/未插入）时这里就会失败 —— 也是根因之一。
-            return $"默认输出设备读取失败: {ex.GetType().Name}: {ex.Message}";
+            // 例如 InvalidCastException（进程内两份 NAudio 抢 COM 类型标识）→ 走自带实现。
+            return WasapiEndpointInfo.DescribeDefaultRenderDevice();
         }
     }
 
     public void Stop()
     {
-        if (!_running)
+        if (!_running && _capture == null)
         {
             return;
         }
 
-        _running = false;
-        var capture = _capture;
-        _capture = null;
-        try { capture?.StopRecording(); } catch { /* 忽略 */ }
-        try { capture?.Dispose(); } catch { /* 忽略 */ }
+        Detach(_capture);
         lock (_lock)
         {
             Array.Clear(_levels);
@@ -237,7 +303,7 @@ public sealed class AudioSpectrumCapture : IDisposable
         }
     }
 
-    private void OnDataAvailable(object? sender, WaveInEventArgs e)
+    private void OnDataAvailable(object? sender, LoopbackDataEventArgs e)
     {
         if (!_running)
         {
@@ -252,9 +318,9 @@ public sealed class AudioSpectrumCapture : IDisposable
         }
 
         // WASAPI (WAVE_FORMAT_EXTENSIBLE) 的位深可能是 32/24/16，不能写死 float32。
-        var format = _capture?.WaveFormat;
-        var channels = Math.Max(1, format?.Channels ?? 2);
-        var bytesPerSample = Math.Max(1, (format?.BitsPerSample ?? 32) / 8);
+        var format = _capture?.Format ?? new LoopbackFormat(48000, 2, 32, true);
+        var channels = Math.Max(1, format.Channels);
+        var bytesPerSample = Math.Max(1, format.BitsPerSample / 8);
         var frameBytes = bytesPerSample * channels;
         if (frameBytes <= 0)
         {
@@ -271,8 +337,8 @@ public sealed class AudioSpectrumCapture : IDisposable
         if (Interlocked.CompareExchange(ref _dataCallbackLogged, 1, 0) == 0)
         {
             Log(
-                $"频谱捕获: 收到首批音频数据。bytes={bytes} 采样率={format?.SampleRate} " +
-                $"声道={channels} 位深={format?.BitsPerSample} 编码={format?.Encoding}");
+                $"频谱捕获: 收到首批音频数据。bytes={bytes} 采样率={format.SampleRate} " +
+                $"声道={channels} 位深={format.BitsPerSample} 浮点={format.IsFloat}");
         }
 
         for (var f = 0; f < frames; f++)
@@ -281,7 +347,7 @@ public sealed class AudioSpectrumCapture : IDisposable
             var sum = 0f;
             for (var c = 0; c < channels; c++)
             {
-                sum += ReadSample(buffer, offset + c * bytesPerSample, format?.BitsPerSample ?? 32, format?.Encoding);
+                sum += ReadSample(buffer, offset + c * bytesPerSample, format);
             }
 
             // 多声道下混为单声道，避免只取左声道导致部分素材「看起来没反应」。
@@ -292,15 +358,17 @@ public sealed class AudioSpectrumCapture : IDisposable
     }
 
     /// <summary>按当前位深/编码把单个样本解码为 -1..1 的浮点。</summary>
-    private static float ReadSample(byte[] buffer, int offset, int bitsPerSample, WaveFormatEncoding? encoding)
+    private static float ReadSample(byte[] buffer, int offset, LoopbackFormat format)
     {
         if (offset < 0 || offset >= buffer.Length)
         {
             return 0f;
         }
 
+        var bitsPerSample = format.BitsPerSample;
+
         // 浮点编码（WASAPI 混音格式固定为 IEEE float）。
-        if (encoding == WaveFormatEncoding.IeeeFloat || bitsPerSample == 32 && encoding != WaveFormatEncoding.Pcm)
+        if (format.IsFloat)
         {
             if (offset + 4 > buffer.Length)
             {
@@ -394,7 +462,7 @@ public sealed class AudioSpectrumCapture : IDisposable
         var scale = _peak > 1e-6f ? 1f / _peak : 1f;
 
         // 对数频段聚合（约 20Hz - 20kHz）。
-        var sampleRate = _capture?.WaveFormat?.SampleRate ?? 48000;
+        var sampleRate = _capture?.Format.SampleRate ?? 48000;
         var minFreq = 20f;
         var maxFreq = Math.Min(20000f, sampleRate / 2f);
         var minBin = Math.Max(1, (int)(minFreq / sampleRate * FftSize));
@@ -502,17 +570,17 @@ public sealed class AudioSpectrumCapture : IDisposable
         }
     }
 
-    private void OnRecordingStopped(object? sender, StoppedEventArgs e)
+    private void OnCaptureStopped(object? sender, string? reason)
     {
         _running = false;
         // 回环被中断（默认设备切换 / 音频服务重启 / 独占占用）时通知注入器重建捕获，
         // 否则频谱会永久静止且没有任何提示（Issue #6 的「听不见、不会跳」）。
-        var reason = e.Exception != null ? $"{e.Exception.GetType().Name}: {e.Exception.Message}" : "无异常（设备切换或停止）";
-        DiagnosticMessage = $"回环捕获已停止：{reason}";
+        var text = string.IsNullOrEmpty(reason) ? "无异常（设备切换或停止）" : reason;
+        DiagnosticMessage = $"回环捕获已停止：{text}";
         Log($"频谱捕获: {DiagnosticMessage}");
         try
         {
-            RecordingStopped?.Invoke(this, reason);
+            RecordingStopped?.Invoke(this, text);
         }
         catch
         {

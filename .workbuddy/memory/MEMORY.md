@@ -36,6 +36,7 @@
 - **FFmpeg native 上下文（AVCodecContext/SwsContext/AVFormatContext）的释放规则**：①先停线程并 `Join`；②释放要与「可能正在用它做 native 调用的入口」互斥。`FFmpegVideoDecoder` 用 `_gate` 把 `ReadFrame`/`SeekTo`/`Restart` 与 `Dispose` 串起来；持有者（`VideoProjectPlayer`）必须先 Join 再释放各轨 Source。违反任一条 → `sws_scale`/`ReadFrame` 读已释放内存 → `AccessViolationException`(0xc0000005) **静默击穿宿主进程**（无托管异常、无 crash.log，只有事件日志里 `coreclr.dll` + `Application Error`）。回归探针：`tools\RaceProbe`。
 - **排查「静默崩溃」用**：`wevtutil qe Application /c:15 /rd:true /f:text /q:"*[System[Provider[@Name='.NET Runtime']]]"`（给出异常类型 + 完整托管栈，比 Application Error 的单行有用得多）。
 - **FFmpeg 解码输出尺寸必须向上对齐到 16**（H.264 宏块；`FFmpegVideoDecoder.AlignUp16`）。非 16 倍数的尺寸（如 412×68）会让 `sws_scale` 越界写坏托管堆，随后以 `coreclr.dll` + `0xc0000005` **静默击穿进程**，无任何托管异常可抓。详见 `agents.md` 第 9 节。
+- **NAudio 的 COM「类」不跨插件共享**：`new MMDeviceEnumeratorComObject()` 按 CLSID 激活，而一个 COM 对象在进程里只有一份类型标识，**谁先激活谁赢**。宿主给每个插件独立 ALC、插件目录里的 NAudio 各是独立副本 → 另一个带 NAudio 的插件（`Decibel_Monitor` 就是）先激活，我们这边所有 `new WasapiLoopbackCapture()` 必挂且重试也挂，异常是 **`InvalidCastException` 且源/目标类型同名**（`MMDeviceEnumeratorComObject`）——**看到「同名转同名」就按这个查**（NAudio#421、Flow.Launcher#4258）。回环捕获必须走 `ILoopbackCapture`（`WasapiLoopbackCaptureLite.cs`：NAudio 优先、失败自动回退**自带 COM 互操作**——只声明 `[ComImport]` 接口、按 IID 走 QI，免疫）。回归探针：`tools\SpectrumProbe --conflict`（独立 ALC 加载第二份 NAudio 抢先激活，复现该异常并断言回退可用）。**别把频谱改回裸用 `new WasapiLoopbackCapture()`。** 遗留：`VideoAudioPlayer` 的 `WasapiOut` 仍直接吃 NAudio。
 
 ## FFmpeg mp4 封装（音频/双流）
 
