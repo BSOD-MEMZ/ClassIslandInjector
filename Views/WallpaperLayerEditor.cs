@@ -505,7 +505,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                 _ungroupButton,
                 new CommandBarSeparator(),
                 CommandButton("\uE62F", "重置主界面尺寸", "把主界面预览尺寸恢复为 ClassIsland 实际尺寸", ResetIslandSize),
-                CommandButton("\uE92A", "棋盘格配色", "设置画布背景棋盘格：跟随主题自动按深浅色选择，或自定义两种颜色", OpenCheckerboardSettings),
+                CommandButton("\uE92B", "棋盘格配色", "设置画布背景棋盘格：跟随主题自动按深浅色选择，或自定义两种颜色", OpenCheckerboardSettings),
                 exportVideoButton,
                 new CommandBarSeparator(),
                 _hslFilterButton,
@@ -663,8 +663,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     private Control BuildLayerActions()
     {
         var panel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        _newBlankLayerButton = LayerIconButton("\uE010", "新建空白图层（透明，与主界面同尺寸，可用画笔 / 橡皮擦绘制）", AddBlankLayer);
-        _newLayerButton = LayerIconButton("\uE20C", "新建画布图层：铺满整个画布（主界面 + 四周留白），可在眼睛所见的任意位置自由绘制；要放到主界面上需先栅格化为图片", AddCanvasLayer);
+        _newBlankLayerButton = LayerIconButton("\uE011", "新建空白图层（透明，与主界面同尺寸，可用画笔 / 橡皮擦绘制）", AddBlankLayer);
+        _newLayerButton = LayerIconButton("\uE20D", "新建画布图层：铺满整个画布（主界面 + 四周留白），可在眼睛所见的任意位置自由绘制；要放到主界面上需先栅格化为图片", AddCanvasLayer);
         _duplicateButton = LayerIconButton("\uE58B", "复制图层（Ctrl+J）", () => _canvas.DuplicateSelection());
         _deleteButton = LayerIconButton("\uE61D", "删除图层", () =>
         {
@@ -675,7 +675,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             }
         });
         _effectButton = LayerIconButton("\uF42F", "效果选项（只作用于 ClassIsland 背景，需先点击背景行）", OpenBackgroundEffects);
-        _rasterizeButton = LayerIconButton("\uE928", "栅格化图层（Ctrl+Shift+R）：画布图层 → 裁出主界面区域转为图片；形状 / 文本 → 渲染成位图后当作图片图层处理（不可再编辑矢量）", RasterizeSelected);
+        _rasterizeButton = LayerIconButton("\uE929", "栅格化图层（Ctrl+Shift+R）：画布图层 → 裁出主界面区域转为图片；形状 / 文本 → 渲染成位图后当作图片图层处理（不可再编辑矢量）", RasterizeSelected);
         panel.Children.Add(_newBlankLayerButton);
         panel.Children.Add(_newLayerButton);
         panel.Children.Add(_duplicateButton);
@@ -1204,7 +1204,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         panel.Children.Add(ToolButton(WallpaperEditorTool.Text, "\uF1BE", "文本工具（T）：点击插入文本框图层"));
         panel.Children.Add(new Separator { Margin = new Thickness(2, 5) });
         panel.Children.Add(ToolActionButton("\uEBCA", "添加 SMTC 图层", "把当前播放的专辑封面作为新的底图图层（无播放时显示占位封面）", AddSmtcLayer));
-        panel.Children.Add(ToolActionButton("\uE7DC", "添加贴纸", "在线获取 Project Sekai 角色贴纸，插入为新的底图图层", OpenStickerPicker));
+        panel.Children.Add(ToolActionButton("\uE7DD", "添加贴纸", "在线获取 Project Sekai 角色贴纸，插入为新的底图图层", OpenStickerPicker));
         // 逻辑运算按钮：对选中的多个矢量形状做布尔运算（点击弹出原生菜单，菜单项带图标）。
         Button booleanButton = null!;
         booleanButton = ToolActionButton("\uE92F", "逻辑运算",
@@ -1430,18 +1430,18 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
     /// <summary>左侧工具栏各工具的实心/空心图标码点（FluentSystemIcons，filled/regular 成对）。</summary>
     private static readonly Dictionary<WallpaperEditorTool, (string Filled, string Regular)> ToolGlyphs = new()
     {
-        [WallpaperEditorTool.Move] = ("\uE112", "\uE113"),
-        [WallpaperEditorTool.Hand] = ("\uE940", "\uE941"),
-        [WallpaperEditorTool.Select] = ("\uE5BE", "\uE5BF"),
-        [WallpaperEditorTool.RectSelect] = ("\uEF06", "\uEF07"),
-        [WallpaperEditorTool.Lasso] = ("\uEA2A", "\uEA2B"),
-        [WallpaperEditorTool.Zoom] = ("\uF4D0", "\uF4D1"),
-        [WallpaperEditorTool.Shape] = ("\uE774", "\uE775"),
-        [WallpaperEditorTool.Text] = ("\uF1BD", "\uF1BE"),
-        [WallpaperEditorTool.Crop] = ("\uE59A", "\uE59B"),
-        [WallpaperEditorTool.Brush] = ("\uEC49", "\uEC4A"),
-        [WallpaperEditorTool.Eraser] = ("\uE7FE", "\uE7FF"),
-        [WallpaperEditorTool.Eyedropper] = ("\uE81C", "\uE81D")
+        [WallpaperEditorTool.Move] = ("\uE113", "\uE113"),
+        [WallpaperEditorTool.Hand] = ("\uE941", "\uE941"),
+        [WallpaperEditorTool.Select] = ("\uE5BF", "\uE5BF"),
+        [WallpaperEditorTool.RectSelect] = ("\uEF07", "\uEF07"),
+        [WallpaperEditorTool.Lasso] = ("\uEA2B", "\uEA2B"),
+        [WallpaperEditorTool.Zoom] = ("\uF4D1", "\uF4D1"),
+        [WallpaperEditorTool.Shape] = ("\uE775", "\uE775"),
+        [WallpaperEditorTool.Text] = ("\uF1BE", "\uF1BE"),
+        [WallpaperEditorTool.Crop] = ("\uE59B", "\uE59B"),
+        [WallpaperEditorTool.Brush] = ("\uEC4A", "\uEC4A"),
+        [WallpaperEditorTool.Eraser] = ("\uE7FF", "\uE7FF"),
+        [WallpaperEditorTool.Eyedropper] = ("\uE81D", "\uE81D")
     };
 
     private StackPanel BuildInspector()
@@ -1845,7 +1845,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         _brushTipItem = SettingsRow("笔触", _brushTipBox);
         _brushTaperItem = SettingsRow("笔锋", _brushTaperToggle);
         _brushAaItem = SettingsRow("抗锯齿", _brushAaToggle);
-        _brushGroupTitle = GroupSubtitle("\uEC49", "画笔");
+        _brushGroupTitle = GroupSubtitle("\uEC4A", "画笔");
         _brushGroup = new StackPanel
         {
             Spacing = 8,
@@ -1932,7 +1932,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             Spacing = 6,
             Children =
             {
-                GroupSubtitle("\uEF06", "选区"),
+                GroupSubtitle("\uEF07", "选区"),
                 SettingsRow("操作", new StackPanel
                 {
                     Orientation = Orientation.Horizontal,
@@ -1964,7 +1964,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             Spacing = 6,
             Children =
             {
-                GroupSubtitle("\uE20C", "画布图层"),
+                GroupSubtitle("\uE20D", "画布图层"),
                 _rasterizeCanvasButton,
                 new TextBlock
                 {
@@ -2019,9 +2019,9 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
         foreach (var (key, label, glyph) in new[]
         {
             ("general", "图层", "\uE9B2"),
-            ("content", "内容", "\uEA2E"),
+            ("content", "内容", "\uEA2F"),
             ("effect", "效果", "\uF42F"),
-            ("transform", "变换", "\uE0EC")
+            ("transform", "变换", "\uE0ED")
         })
         {
             var item = new TabStripItem();
@@ -2668,8 +2668,8 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
                         : $"{DisplayKind(layer)}{SmtcModeSuffix(layer)}"),
                 IconGlyph = layer.Kind switch
                 {
-                    WallpaperLayerKind.Shape => "\uE774",
-                    WallpaperLayerKind.Text => "\uF1BD",
+                    WallpaperLayerKind.Shape => "\uE775",
+                    WallpaperLayerKind.Text => "\uF1BE",
                     _ => layer.Source == WallpaperSource.SmtcAlbum ? "\uE021" : "\uE9B2"
                 },
                 Visible = layer.Visible,
@@ -3168,7 +3168,7 @@ internal sealed class WallpaperLayerEditorWindow : MyWindow
             var isEyedropper = _canvas.Tool == WallpaperEditorTool.Eyedropper;
             _brushGroupTitle.Text = isEraser ? "橡皮擦" : isEyedropper ? "取色" : "画笔";
             // 图标随工具变化：橡皮擦用橡皮图标，吸管用取色图标，画笔保持笔刷。
-            _brushGroupTitle.Glyph = isEraser ? "\uE7FE" : isEyedropper ? "\uE81D" : "\uEC49";
+            _brushGroupTitle.Glyph = isEraser ? "\uE7FF" : isEyedropper ? "\uE81D" : "\uEC4A";
             _brushColorItem.IsVisible = !isEraser;
             _brushSizeItem.IsVisible = !isEyedropper;
             _brushTipItem.IsVisible = !isEyedropper;

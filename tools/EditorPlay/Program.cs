@@ -134,7 +134,21 @@ internal static class Program
 
     private static int RunEmpty()
     {
+        // 真正的「全新编辑器」：先删掉沙盒里上一轮留下的工程文件（否则会加载到种子工程）。
+        foreach (var f in new[] { VideoProjectStore.DefaultPath, VideoProjectStore.LegacyPath })
+        {
+            if (File.Exists(f))
+            {
+                File.Delete(f);
+            }
+        }
+
         var w = OpenEditor();
+        var lanes = (int)Invoke(w, "TotalLaneCount")!;
+        Console.WriteLine($"全新编辑器泳道数={lanes}（期望 1：只有一条视频轨，没有空的音频轨）");
+        // 目标（待做）：音频并入统一轨道号后，全新编辑器应当只有 1 条轨道。
+        // 当前实现是「视频轨 + 常驻 A1」= 2 条，先只记录不判失败。
+        Console.WriteLine(lanes == 1 ? "    ✓ 只剩一条轨" : "    ! 目前仍是 2 条（视频轨 + 常驻 A1），等统一轨道号后应为 1");
         Dump(w, "空工程-初始");
         Shot(w, "空工程");
         w.Close();
@@ -153,6 +167,19 @@ internal static class Program
         var audioRect = BlockRect(w, FindClip(w, "Audio", -1));
         ShotZoom(w, "01a-音频块放大", new Rect(audioRect.X - 8, audioRect.Y - 10, 460, audioRect.Height + 20), 2);
         ShotZoom(w, "01b-素材库放大", new Rect(12, 84, 300, 250), 2);
+        // 图标核查：顶部工具栏（撤销/重做/复制/粘贴/添加素材/上下移轨道/渲染）、
+        // 时间轴工具条（工具下拉/刀片/删除/画幅/定格）、轨道头三按钮、缩放控件。
+        ShotZoomFields(w, "01c-顶部命令栏左半", 6, 2, "_undoButton", "_redoButton", "_copyButton", "_pasteButton");
+        ShotZoomFields(w, "01d-顶部命令栏右半", 6, 2, "_addAssetButton", "_addToTimelineButton");
+        ShotZoomFields(w, "01e-时间轴工具条", 6, 3, "_timelineToolCombo", "_cutButton", "_deleteButton", "_canvasButton", "_freezeButton");
+        ShotZoomFields(w, "01f-缩放与吸附", 6, 3, "_zoomSlider", "_zoomText");
+        ShotZoomFields(w, "01g-轨道头按钮列", 4, 3, "_trackHeaders");
+        ShotZoomFields(w, "01h-播放控制", 8, 3, "_playButton", "_timeText");
+        ShotZoomFields(w, "01i-复制粘贴-8x", 2, 8, "_copyButton", "_pasteButton");
+        ShotZoomFields(w, "01j-全屏按钮-8x", 2, 8, "_fullscreenButton");
+        // 静音 / 锁定标记核查：V2（锁定轨 + 静音）与 V1（静音）两个块的抬头行。
+        ShotZoomBlock(w, "01k-V2块-静音+锁定标记", FindClip(w, "Image", 1), 6, 5);
+        ShotZoomBlock(w, "01l-V1块-静音标记", FindClip(w, "Video", 0, VideoA), 6, 5);
 
         // ---- ② 单击选中（点单独占一条轨的文本片段，后面拿它做无损实验）----
         Console.WriteLine("\n② 单击 V3 上的文本片段");
@@ -236,13 +263,17 @@ internal static class Program
         Shot(w, "09-缩放");
 
         // ---- ⑩ 删除 + 撤销 ----
-        var countBefore = Field<VideoProject>(w, "_project")!.Clips.Count;
+        var proj = Field<VideoProject>(w, "_project")!;
+        var countBefore = proj.Clips.Count;
         var selCount = SelectedCount(w);
-        Console.WriteLine($"\n⑩ Delete 删除 {selCount} 个选中片段");
+        // 锁定轨上的片段按设计**不可删**（种子里把 V2 设成锁定了）→ 断言必须把它排除，否则误报。
+        var lockedOnTrack = proj.Clips.Count(c => !c.IsAudio && proj.GetTrackState(c.Track) is { Locked: true });
+        var expectedDel = Math.Max(1, selCount - lockedOnTrack);
+        Console.WriteLine($"\n⑩ Delete 删除 {selCount} 个选中片段（其中 {lockedOnTrack} 个在锁定轨上，按设计不可删）");
         PressKey(w, Key.Delete, RawInputModifiers.None);
         var afterDel = Field<VideoProject>(w, "_project")!.Clips.Count;
-        Console.WriteLine($"    片段数 {countBefore} → {afterDel}（期望 {countBefore - selCount}）");
-        Assert(afterDel == countBefore - selCount, "Delete 应删除全部选中片段");
+        Console.WriteLine($"    片段数 {countBefore} → {afterDel}（期望 {countBefore - expectedDel}）");
+        Assert(afterDel == countBefore - expectedDel, "Delete 应删除选中片段（锁定轨除外）");
         Shot(w, "10-删除之后");
 
         Console.WriteLine("\n⑪ Ctrl+Z 撤销删除");
@@ -374,6 +405,12 @@ internal static class Program
             p.TrackStates.Add(new TrackState());
         }
 
+        // 图标核查用：把 V2（图片轨）设为锁定、并把它的片段静音，这样能同时看到
+        // 轨道头的锁定高亮态 + 片段名后面的静音/锁定标记。
+        p.TrackStates[1].Locked = true;
+        p.Clips.First(c => c.Kind == "Image").Muted = true;
+        p.Clips.First(c => c.Kind == "Video").Muted = true;
+
         p.AudioTrackStates.Clear();
         p.AudioTrackStates.Add(new TrackState());
 
@@ -483,6 +520,55 @@ internal static class Program
     /// <summary>
     /// 把当前界面的某个区域**放大若干倍**另存（视觉核查用：手柄/边框/文字这类细节在整图里看不清）。
     /// </summary>
+    /// <summary>
+    /// 按**控件实际位置**取景放大（比手填坐标可靠：窗口尺寸一布局一变，手填坐标立刻偏）。
+    /// 传入若干私有字段名，取它们的并集 + padding 后交给 ShotZoom。
+    /// </summary>
+    /// <summary>按片段块的实际矩形取景放大（核查块内的文字/标记）。</summary>
+    private static void ShotZoomBlock(Views.VideoEditorWindow w, string name, VideoClip clip, double pad, double scale)
+    {
+        var r = BlockRect(w, clip).Inflate(pad);
+        ShotZoom(w, name, r, scale);
+    }
+
+    private static void ShotZoomFields(TopLevel w, string name, double pad, double scale, params string[] fieldNames)
+    {
+        try
+        {
+            Rect? union = null;
+            foreach (var f in fieldNames)
+            {
+                if (Field(w, f) is not Control ctl)
+                {
+                    continue;
+                }
+
+                var tl = ctl.TranslatePoint(new Point(0, 0), w);
+                if (tl == null)
+                {
+                    continue;
+                }
+
+                var r = new Rect(tl.Value, ctl.Bounds.Size);
+                union = union == null ? r : union.Value.Union(r);
+            }
+
+            if (union == null)
+            {
+                Console.WriteLine($"   [放大] {name}: 没取到控件");
+                return;
+            }
+
+            var u = union.Value.Inflate(pad)
+                .Intersect(new Rect(0, 0, w.ClientSize.Width, w.ClientSize.Height));
+            ShotZoom(w, name, u, scale);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"   [放大] {name} 失败: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
     private static void ShotZoom(TopLevel w, string name, Rect region, double scale = 3)
     {
         try

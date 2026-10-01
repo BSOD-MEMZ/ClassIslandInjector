@@ -598,7 +598,7 @@ internal sealed class VideoEditorWindow : MyWindow
     /// <summary>舞台底部传输条：全屏按钮（打开 / 关闭全屏视频预览窗）。</summary>
     private readonly Button _fullscreenButton = new()
     {
-        Content = new IconText { Glyph = "\uE8D0", Text = "" },
+        Content = new IconText { Glyph = "\uE8D1", Text = "" },
         Padding = new Thickness(10, 6),
         MinWidth = 40,
         MinHeight = 36,
@@ -630,7 +630,7 @@ internal sealed class VideoEditorWindow : MyWindow
     /// <summary>时间轴上方工具条：自定义画幅（输出宽高）。</summary>
     private readonly Button _canvasButton = new()
     {
-        Content = new IconText { Glyph = "\uE0EC", Text = "" },
+        Content = new IconText { Glyph = "\uE0ED", Text = "" },
         Padding = new Thickness(9, 6),
         MinWidth = 36,
         MinHeight = 34,
@@ -640,7 +640,7 @@ internal sealed class VideoEditorWindow : MyWindow
     /// <summary>时间轴上方工具条：定格（把播放头处的画面做成图片片段）。仅选中视频片段时可用。</summary>
     private readonly Button _freezeButton = new()
     {
-        Content = new IconText { Glyph = "\uE391", Text = "" },
+        Content = new IconText { Glyph = "\uE392", Text = "" },
         Padding = new Thickness(9, 6),
         MinWidth = 36,
         MinHeight = 34,
@@ -2100,10 +2100,10 @@ internal sealed class VideoEditorWindow : MyWindow
         // AnimatedIconButton display-role；IsKeepingExpanded 跟随 TabStripItem.IsSelected）。
         foreach (var (key, label, glyph) in new[]
         {
-            ("transform", "变换", "\uE0EC"),
-            ("audio", "音频", "\uF00C"),
-            ("overlay", "覆盖层", "\uEA2E"),
-            ("filter", "滤镜", "\uE832")
+            ("transform", "变换", "\uE0ED"),
+            ("audio", "音频", "\uF00D"),
+            ("overlay", "覆盖层", "\uEA2F"),
+            ("filter", "滤镜", "\uE833")
         })
         {
             var item = new TabStripItem();
@@ -4334,12 +4334,12 @@ internal sealed class VideoEditorWindow : MyWindow
                 ? _project.AudioTrackStateOf(audioTrackNo)
                 : _project.TrackStateOf(trackIndex);
             // 轨道头：直接横向排列 锁定 / 隐藏(静音) / 删除 三个按钮（FluentSystemIcons-Resizable 图标）。
-            var btnLock = TrackHeaderButton("\uEAEF", "锁定/解锁该轨道（锁定后该轨片段不可编辑）", state.Locked,
+            var btnLock = TrackHeaderButton("\uEAF0", "锁定/解锁该轨道（锁定后该轨片段不可编辑）", state.Locked,
                 () => { state.Locked = !state.Locked; RefreshTimeline(); ScheduleSave(); });
-            var btnHide = TrackHeaderButton(state.Hidden ? "\uE816" : "\uE812",
+            var btnHide = TrackHeaderButton(state.Hidden ? "\uE817" : "\uE813",
                 audioLane ? "静音该音频轨（不参与混音）" : "隐藏该轨道（编辑半透明，播放/渲染不显示）", state.Hidden,
                 () => { state.Hidden = !state.Hidden; RefreshTimeline(); ScheduleSave(); });
-            var btnDel = TrackHeaderButton("\uE61C", "删除该轨道（该轨全部片段）", false,
+            var btnDel = TrackHeaderButton("\uE61D", "删除该轨道（该轨全部片段）", false,
                 () => DeleteTrack(trackIndex));
             var headerButtons = new StackPanel
             {
@@ -5646,11 +5646,28 @@ internal sealed class VideoEditorWindow : MyWindow
         var muted = clip.Muted && (clip.IsAudio || string.Equals(clip.Kind, "Video", StringComparison.OrdinalIgnoreCase));
         var nameText = new TextBlock
         {
-            Text = ClipDisplayName(clip) + (muted ? " \uF014" : "") + (isLocked ? " \uE72E" : ""),
+            Text = ClipDisplayName(clip),
             FontSize = 11,
             TextTrimming = TextTrimming.CharacterEllipsis,
             VerticalAlignment = VerticalAlignment.Center
         };
+        // 静音 / 锁定标记**必须单独成一个 TextBlock 并显式指定图标字体**：
+        // 原来把 \uF015 / \uEAF0 内联在片段名文本里，而那个 TextBlock 用的是正文字体、
+        // 没有图标字体，PUA 码位在正文字体里没有字形 → 标记实际渲染成空白（用户看不到「已静音/已锁定」）。
+        var markerText = new TextBlock
+        {
+            Text = (muted ? " \uF015" : "") + (isLocked ? " \uEAF0" : ""),
+            FontFamily = AppBase.FluentIconsFontFamily,
+            FontSize = 11,
+            Opacity = 0.9,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var nameRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
+        nameRow.Children.Add(nameText);
+        if (markerText.Text.Length > 0)
+        {
+            nameRow.Children.Add(markerText);
+        }
         var durationText = new TextBlock
         {
             Text = $"{clip.StartTime:0.#}s · {clip.Duration:0.#}s",
@@ -5674,7 +5691,7 @@ internal sealed class VideoEditorWindow : MyWindow
             {
                 Orientation = Orientation.Horizontal,
                 Spacing = 6,
-                Children = { nameText, durationText }
+                Children = { nameRow, durationText }
             };
             Grid.SetRow(info, 0);
             content.Children.Add(info);
@@ -5691,7 +5708,7 @@ internal sealed class VideoEditorWindow : MyWindow
             {
                 VerticalAlignment = VerticalAlignment.Center,
                 Spacing = 2,
-                Children = { nameText, durationText }
+                Children = { nameRow, durationText }
             });
         }
         // 选中时显示左右裁剪手柄（拖左 = 改入点，拖右 = 改出点）。
@@ -7882,13 +7899,13 @@ internal sealed class VideoEditorWindow : MyWindow
             _stageFullscreen = null;
             if (_fullscreenButton.Content is IconText fsIcon)
             {
-                fsIcon.Glyph = "\uE8D0";
+                fsIcon.Glyph = "\uE8D1";
             }
         };
         _stageFullscreen.Show();
         if (_fullscreenButton.Content is IconText icon)
         {
-            icon.Glyph = "\uE8D2";
+            icon.Glyph = "\uE8D3";
         }
 
         // 打开即同步状态；暂停中也刷新一次当前画面（seek 预览帧会经 UpdateStageLayer 镜像）。
