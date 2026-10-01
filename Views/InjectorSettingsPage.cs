@@ -1103,12 +1103,12 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             panel.Children.Add(Setting("\uEF87", "预设商店", "联机浏览社区预设：首页精选轮播、热门排行、搜索与排序，点「获取」即可下载安装（安装前会展示作者等元数据供确认）。", PresetStoreFooter()));
         }
         panel.Children.Add(Setting("\uEEB5", "保存当前为预设", "把插件当前全部设置项保存为一个命名预设（同名覆盖）", PresetSaveFooter()));
-        panel.Children.Add(Setting("\uE105", "套用 / 删除预设", "套用会把全部设置项替换为该预设保存时的状态。", PresetManageFooter()));
-        panel.Children.Add(Setting("\uE0E5", "导出 / 导入预设", "把预设导出为 .cizip 文件分享给别人，或从别人分享的 .cizip 导入预设。", PresetExchangeFooter()));
-        panel.Children.Add(Setting("\uEAB0", "双击安装预设包", "注册 .cizip 文件关联：双击预设包即可启动 ClassIsland 并进入安装确认。", PresetAssociationFooter()));
+        panel.Children.Add(Setting("\uE104", "套用 / 删除预设", "套用会把全部设置项替换为该预设保存时的状态。", PresetManageFooter()));
+        panel.Children.Add(Setting("\uE0E4", "导出 / 导入预设", "把预设导出为 .cizip 文件分享给别人，或从别人分享的 .cizip 导入预设。", PresetExchangeFooter()));
+        panel.Children.Add(Setting("\uEAAF", "双击安装预设包", "注册 .cizip 文件关联：双击预设包即可启动 ClassIsland 并进入安装确认。", PresetAssociationFooter()));
         panel.Children.Add(Setting("\uE0BD", "恢复插件默认", "把全部设置恢复为插件默认（不会修改 Overrides.axaml）", Button("恢复默认", ResetToDefaults)));
 
-        AddSection(panel, "\uE520", "背景");
+        AddSection(panel, "\uE51F", "背景");
         // 「底色填充」在非分体页面＝全局主界面底色；在分体页面＝给勾选分块上色的画笔
         // （分体页面隐藏总开关，条目说明/混值提示由 RefreshBackgroundBrushState 动态更新）。
         _bgColorItem = Item("背景色", BgColorBaseDesc, _backgroundColor);
@@ -1331,7 +1331,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Item("翻页距离", "滑动/上翻类动画的位移距离（像素）。", _carouselAnimationOffset)));
 
         AddSection(panel, "\uE025", "提醒");
-        panel.Children.Add(Setting("\uEFFF", "预览提醒", "一次性预览强调动画、遮罩过渡与 Ripple 效果。", Button("预览提醒", PreviewNotification)));
+        panel.Children.Add(Setting("\uEFFE", "预览提醒", "一次性预览强调动画、遮罩过渡与 Ripple 效果。", Button("预览提醒", PreviewNotification)));
         panel.Children.Add(SwitchableGroup("\uE02B", "提醒强调动画", "选择收到提醒时使用的强调效果。", _emphasisAnimationEnabled,
             Item("动画类型", "选择收到提醒时使用的强调效果。", _emphasisAnimation),
             Item("强调幅度", "控制强调动画的强弱。", _emphasisAmount),
@@ -1727,7 +1727,7 @@ public sealed class InjectorSettingsPage : SettingsPageBase
             Spacing = 6,
             Margin = new Thickness(0, 4, 0, 0)
         };
-        section.Children.Add(new IconText { Glyph = "\uE520", Text = "分体块背景（底色填充画笔）", Margin = new Thickness(0, 4, 0, 0) });
+        section.Children.Add(new IconText { Glyph = "\uE51F", Text = "分体块背景（底色填充画笔）", Margin = new Thickness(0, 4, 0, 0) });
 
         // 顶栏：带图标的 CommandBar（替代原先的文字按钮）。
         section.Children.Add(new CommandBar
