@@ -24,12 +24,14 @@ public sealed class VideoProject
     public List<ProjectAsset> Assets { get; set; } = [];
 
     /// <summary>视频轨数量（最大视频轨号 + 1，至少 1）。音频片段不计入。</summary>
+    /// <summary>轨道数（**画面与音频共用同一套轨道号**，所以这里统计全部片段）。</summary>
     public int TrackCount =>
-        Clips.Where(c => !c.IsAudio).Select(c => c.Track).DefaultIfEmpty(0).Max() + 1;
+        Clips.Select(c => c.Track).DefaultIfEmpty(0).Max() + 1;
 
     /// <summary>音频轨数量（最大音频轨号 + 1，至少 1）。</summary>
+    /// <summary>含音频片段的轨道数（0 = 工程里没有音频）——仅用于统计/提示，轨道号与画面共用 TrackCount。</summary>
     public int AudioTrackCount =>
-        Clips.Where(c => c.IsAudio).Select(c => c.AudioTrack).DefaultIfEmpty(0).Max() + 1;
+        Clips.Any(c => c.IsAudio) ? Clips.Where(c => c.IsAudio).Select(c => c.Track).Distinct().Count() : 0;
 
     /// <summary>每轨状态（按下标 = 视频轨号；长度不足时按需补默认）。</summary>
     public List<TrackState> TrackStates { get; set; } = [];
@@ -53,18 +55,13 @@ public sealed class VideoProject
     }
 
     /// <summary>取音频轨状态（只读；不存在返回 null = 默认行为）。</summary>
-    public TrackState? GetAudioTrackState(int track) =>
-        track >= 0 && track < AudioTrackStates.Count ? AudioTrackStates[track] : null;
+    /// <summary>兼容入口：音频已与画面共用轨道号，直接取统一的轨道状态。</summary>
+    public TrackState? GetAudioTrackState(int track) => GetTrackState(track);
 
     /// <summary>取音频轨状态（按需创建默认，编辑器用）。</summary>
     public TrackState AudioTrackStateOf(int track)
     {
-        while (AudioTrackStates.Count <= track)
-        {
-            AudioTrackStates.Add(new TrackState { IsAudio = true });
-        }
-
-        return AudioTrackStates[track];
+        return TrackStateOf(track);
     }
 
     /// <summary>工程总时长（秒）= 所有片段（含音频）末尾的最大值（多轨取最长）。</summary>
@@ -72,12 +69,12 @@ public sealed class VideoProject
 
     /// <summary>某视频轨的末尾时间（秒，供追加片段定位）。</summary>
     public double TrackEnd(int track) =>
-        Clips.Where(c => !c.IsAudio && c.Track == track).Select(c => c.StartTime + c.Duration)
+        Clips.Where(c => c.Track == track).Select(c => c.StartTime + c.Duration)
              .DefaultIfEmpty(0).Max();
 
     /// <summary>某音频轨的末尾时间（秒）。</summary>
     public double AudioTrackEnd(int track) =>
-        Clips.Where(c => c.IsAudio && c.AudioTrack == track).Select(c => c.StartTime + c.Duration)
+        Clips.Where(c => c.IsAudio && c.Track == track).Select(c => c.StartTime + c.Duration)
              .DefaultIfEmpty(0).Max();
 
     /// <summary>
@@ -114,16 +111,66 @@ public sealed class VideoProject
             }
         }
 
-        // 音频片段一律 Track = -1（音频轨号在 AudioTrack）：**任何按 Track 索引画面的地方都靠这个约定**，
-        // 而历史数据里的 -1 很容易被误用成视频轨号 —— 实测 `DetachAudioFromSelection` 构造时落了
-        // `Track = -1`，分离音频后 `FillPropertyPanel → ShowSelectedClipFrame` 判
-        // `clip.Track < _stageLayers.Count` 成立（-1 < 0 且 < _stageLayers.Count）→ 直接崩 index -1。
-        // 在**读盘这一处**兜住（写盘那边也各自写对），比在每个索引点补判断可靠。
-        foreach (var clip in project.Clips.Where(c => c.IsAudio))
+        // **音频并入统一轨道号**（2026-10-01）：以前音频片段是 `Track = -1` + 独立的 `AudioTrack`，
+        // 编辑器据此划出「视频区 + 音频区」两段泳道 —— 新工程必然多一条只吃音频的轨，
+        // 视频拖上去会被悄悄挪走（用户报「一条轨道似乎是音频专属，拖视频进去不行」）。
+        // 现在所有片段共用 Track，一条轨可以同时放画面与音频、互相都能拖。
+        //
+        // 迁移旧数据时**音频锚定在底部**：音频占最低的几个轨号（旧 A1→0、A2→1…），视频整体上移
+        // 「音频轨数」，于是 LaneOrder（轨号大的在上）给出的顺序仍然是「视频在上、音频在下」，
+        // 与迁移前的观感完全一致。（曾经把音频迁到「视频轨数 + 旧A号」= 最大轨号 → 泳道顺序把它顶到
+        // 时间轴最上面，与迁移前相反。）
+        // 顺带把旧的音频轨状态（静音 / 音量 / 锁定）带进统一的 TrackStates，保住用户已调好的设置。
+        var legacyAudio = project.Clips.Where(c => c.IsAudio && c.Track < 0).ToList();
+        if (legacyAudio.Count > 0)
         {
-            if (clip.Track != -1)
+            var audioTracks = legacyAudio.Select(c => Math.Max(0, c.AudioTrack)).DefaultIfEmpty(0).Max() + 1;
+            // 视频片段整体上移，给底部腾出 audioTracks 条音频轨。
+            foreach (var clip in project.Clips.Where(c => !c.IsAudio))
             {
-                clip.Track = -1;
+                clip.Track += audioTracks;
+            }
+
+            // 轨道状态同步重排：新轨号 = 旧轨号 + audioTracks（缺失的用默认值补）。
+            var shifted = new List<TrackState>();
+            for (var i = 0; i < project.TrackStates.Count + audioTracks; i++)
+            {
+                if (i < audioTracks)
+                {
+                    var legacyState = i < project.AudioTrackStates.Count ? project.AudioTrackStates[i] : null;
+                    var st = new TrackState();
+                    if (legacyState != null)
+                    {
+                        st.Locked = legacyState.Locked;
+                        // 旧版音频泳道的「静音」是存在 Hidden 上的（那条轨不显示画面，所以借用了 Hidden）
+                        // → 折算进 Muted，把用户原来的静音设置保住；Hidden 对音频没有意义，清掉。
+                        st.Muted = legacyState.Muted || legacyState.Hidden;
+                        st.Volume = legacyState.Volume;
+                    }
+
+                    shifted.Add(st);
+                }
+                else
+                {
+                    var old = i - audioTracks < project.TrackStates.Count
+                        ? project.TrackStates[i - audioTracks]
+                        : null;
+                    if (old == null)
+                    {
+                        break;
+                    }
+
+                    shifted.Add(old);
+                }
+            }
+
+            project.TrackStates.Clear();
+            project.TrackStates.AddRange(shifted);
+            project.AudioTrackStates.Clear();
+
+            foreach (var clip in legacyAudio)
+            {
+                clip.Track = Math.Max(0, clip.AudioTrack);
             }
         }
     }

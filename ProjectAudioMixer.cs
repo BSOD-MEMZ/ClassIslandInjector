@@ -561,7 +561,8 @@ internal sealed class ProjectAudioMixer : IDisposable
             return 1;
         }
 
-        var state = project.GetAudioTrackState(clip.AudioTrack);
+        // 音频已与画面共用轨道号 → 直接取该轨的状态（静音 / 音量）。
+        var state = project.GetTrackState(clip.Track);
         if (state == null)
         {
             return 1;

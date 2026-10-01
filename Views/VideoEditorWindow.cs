@@ -335,13 +335,8 @@ internal sealed class VideoEditorWindow : MyWindow
     private readonly Dictionary<int, double> _laneHeights = [];
     private double LaneHeightOf(int lane) => _laneHeights.TryGetValue(lane, out var h) ? h : _laneHeight;
 
-    /// <summary>
-    /// 片段所在泳道号。音频片段的 <c>Track</c> 恒为 -1（工程格式约定），
-    /// 直接拿 <c>clip.Track</c> 取泳道会落到不存在的 -1 上（高度/纵向位置全错），必须按 AudioTrack 换算。
-    /// </summary>
-    private int LaneOfClip(VideoClip clip) => clip.IsAudio
-        ? VideoLaneCount + Math.Max(0, clip.AudioTrack)
-        : clip.Track;
+    /// <summary>片段所在泳道号 == 它的轨道号（画面与音频共用一套轨道号，2026-10-01 起）。</summary>
+    private int LaneOfClip(VideoClip clip) => clip.Track;
 
     /// <summary>片段所在泳道的高度（音频块要按音频泳道高度算，否则调高泳道后块不跟随）。</summary>
     private double LaneHeightOfClip(VideoClip clip) => LaneHeightOf(LaneOfClip(clip));
@@ -363,49 +358,31 @@ internal sealed class VideoEditorWindow : MyWindow
         return _stageLayers[clip.Track];
     }
 
-    // ---- 泳道 ↔ 轨道映射（PR 布局：视频轨在上、音频轨在下）----
-    // 时间轴泳道号沿用现有 _selectedTrack / _headerByTrack / _blockByClip 的语义：
-    //   泳道 0 .. VideoLaneCount-1        → 视频轨 0..n（数字越大越靠上，与原来一致）
-    //   泳道 VideoLaneCount .. 末尾       → 音频轨 A1、A2…（A1 在最下，符合 PR 习惯）
+    // ---- 泳道 ↔ 轨道映射（**画面与音频共用一套轨道号**，2026-10-01 起）----
+    // 泳道号 == 轨道号 == VideoClip.Track：轨号大的在上（与原来「视频轨号大的在上」一致），
+    // 音频片段就是普通的 Track 片段，可以落在任意一条轨上、与画面共存。
+    // 原来那套「视频区 + 音频区」的两段式泳道（IsAudioLane / AudioTrackOfLane / 常驻 A1）已删除：
+    // 它会让新工程凭空多出一条只吃音频的轨，视频拖上去被悄悄挪走，用户看着像 bug。
 
-    /// <summary>视频泳道数（= 音频泳道的起始下标）。</summary>
-    private int VideoLaneCount => Math.Max(1, _project.TrackCount);
-
-    /// <summary>音频泳道数（至少 1，保证总有 A1 可以拖入音频）。</summary>
-    private int AudioLaneCount => Math.Max(1, _project.AudioTrackCount);
-
-    /// <summary>时间轴总泳道数（视频 + 音频）。</summary>
-    private int TotalLaneCount => VideoLaneCount + AudioLaneCount;
-
-    /// <summary>泳道是否为音频轨。</summary>
-    private bool IsAudioLane(int lane) => lane >= VideoLaneCount;
-
-    /// <summary>音频泳道号 → 音频轨号。</summary>
-    private int AudioTrackOfLane(int lane) => Math.Max(0, lane - VideoLaneCount);
+    /// <summary>时间轴泳道数（= 轨道数；至少 1 条空轨供拖入）。</summary>
+    private int TotalLaneCount => Math.Max(1, _project.TrackCount);
 
     /// <summary>
-    /// 泳道视觉顺序（自上而下）的**唯一权威**：视频轨在上（轨号大的在上），音频轨在下（A1 在最底，PR 习惯）。
+    /// 泳道视觉顺序（自上而下）的**唯一权威**：轨号大的在上。
     /// <para>
-    /// ⚠️ 历史 bug：泳道网格用 <c>RowOfTrack(t, TotalLaneCount)</c> 反推行号，会把泳道号最大的音频轨排到**最上面**
-    /// （与轨道头注释、与所有「按 Y 判定」的模型辅助函数都相反）。那些辅助函数（VisualTopOfTrack /
-    /// ResolveDropTarget / ClipAtTimelinePoint）全是按「视频轨区从 y=0 开始」写的，于是每一处 Y 判定都
-    /// 少算一个音频泳道的高度 → 拖拽抓取偏移差 60px（片段与指针差一截）、落点判定错一轨。
+    /// ⚠️ 历史 bug：泳道网格曾经用 <c>RowOfTrack(t, TotalLaneCount)</c> 反推行号，与所有「按 Y 判定」的
+    /// 模型辅助函数（VisualTopOfTrack / ResolveDropTarget / ClipAtTimelinePoint）不一致，于是每一处 Y 判定都
+    /// 差一整个泳道高 → 拖拽抓取偏移差 60px（片段与指针差一截）、落点判定错一轨。
     /// 轨道头列、泳道网格、Y 判定必须统一走这里。
     /// </para>
     /// </summary>
     private int[] LaneOrder()
     {
-        var v = VideoLaneCount;
-        var a = AudioLaneCount;
-        var order = new int[v + a];
-        for (var row = 0; row < v; row++)
+        var n = TotalLaneCount;
+        var order = new int[n];
+        for (var row = 0; row < n; row++)
         {
-            order[row] = v - 1 - row; // 视频：轨号大的在上
-        }
-
-        for (var k = 0; k < a; k++)
-        {
-            order[v + k] = v + (a - 1 - k); // 音频：A 号大的在上，A1 在最底
+            order[row] = n - 1 - row; // 轨号大的在上
         }
 
         return order;
@@ -2734,22 +2711,15 @@ internal sealed class VideoEditorWindow : MyWindow
         }
     }
 
-    /// <summary>删除空轨道并把轨道号压缩为连续 0..n-1（用户要求：无内容的轨道自动删除）。</summary>
     /// <summary>
-    /// 删除空轨并把视频轨号压缩为连续（0..n-1），同时按新轨号重排 <c>TrackStates</c>。
+    /// 删除空轨并把轨道号压缩为连续（0..n-1），同时按新轨号重排 <c>TrackStates</c>。
     /// <para>
-    /// ⚠️ **音频片段必须整体排除**。音频片段的 <c>Track</c> 恒为 -1（轨号在 <c>AudioTrack</c>），
-    /// 若把它一并纳入重映射：<c>used</c> 会包含 -1，于是 -1 被映射到 0、真正的视频轨 0 被映射到 1
-    /// —— 音频片段的 <c>Track</c> 被写成 0（一个**伪造的视频轨号**），视频片段则被顶高一轨，
-    /// <c>TrackCount</c>（只看非音频片段）随之 +1，凭空多出一条没有任何视频片段的空泳道，
-    /// 并且每做一次「拖到轨道边界新建轨道」就再涨一轨。
-    /// 实测症状：添加/移动素材后「莫名其妙出现一个新的空轨道」（2026-09-30 定位）。
+    /// 画面与音频共用同一套轨道号，所以这里统计**全部片段**的 Track（音频片段也占轨、也参与压缩）。
     /// </para>
     /// </summary>
     private void CompactTracks()
     {
-        // 视频轨号只由非音频片段决定：音频片段不占视频轨，也不参与压缩。
-        var used = _project.Clips.Where(c => !c.IsAudio)
+        var used = _project.Clips
             .Select(c => c.Track)
             .Distinct()
             .OrderBy(t => t)
@@ -2769,11 +2739,7 @@ internal sealed class VideoEditorWindow : MyWindow
 
         foreach (var clip in _project.Clips)
         {
-            // 音频片段保持 Track = -1（约定值），不重映射。
-            if (!clip.IsAudio)
-            {
-                clip.Track = map[clip.Track];
-            }
+            clip.Track = map[clip.Track];
         }
 
         // 轨道状态随轨道号压缩重排（缺失用默认，空轨状态丢弃）。
@@ -3032,22 +2998,23 @@ internal sealed class VideoEditorWindow : MyWindow
         if (isAudio)
         {
             var duration = ProbeAudioDuration(path);
+            var audioLength = duration > 0.5 ? duration : 10;
             clip = new VideoClip
             {
                 Kind = "Audio",
                 SourcePath = path,
-                Track = -1,
-                AudioTrack = FindAudioTrackFor(start, duration > 0.5 ? duration : 10),
+                // 音频是普通片段：与画面共用轨道号，找一条放得下的轨（都没有就新开一条在末尾）。
+                Track = FindTrackForAudio(start, audioLength),
                 StartTime = start,
                 InPoint = 0,
-                OutPoint = duration > 0.5 ? duration : 10,
+                OutPoint = audioLength,
                 SourceDuration = duration
             };
             _project.Clips.Add(clip);
-            if (!FitsOnAudioTrack(clip.AudioTrack, clip.StartTime, clip.Duration, clip))
+            if (!FitsOnTrack(clip.Track, clip.StartTime, clip.Duration, clip))
             {
-                clip.StartTime = FitToAudioTrack(clip, clip.StartTime, clip.AudioTrack);
-                _statusText.Text = "该音频轨此处已被占用，已自动放到最近空位。";
+                clip.StartTime = FitToTrack(clip, clip.StartTime, clip.Track);
+                _statusText.Text = "该轨道此处已被占用，已自动放到最近空位。";
             }
         }
         else
@@ -3057,8 +3024,7 @@ internal sealed class VideoEditorWindow : MyWindow
             {
                 Kind = isImage ? "Image" : "Video",
                 SourcePath = path,
-                // 当前选中的是音频泳道时落到视频轨 0，避免把画面片段放到音频泳道号上。
-                Track = IsAudioLane(_selectedTrack) ? 0 : Math.Max(0, _selectedTrack),
+                Track = Math.Max(0, _selectedTrack),
                 StartTime = start,
                 InPoint = 0,
                 OutPoint = isImage ? 5 : duration > 0.5 ? duration : 10,
@@ -3085,7 +3051,7 @@ internal sealed class VideoEditorWindow : MyWindow
         if (string.IsNullOrEmpty(_statusText.Text) || !_statusText.Text.Contains("自动放到最近空位"))
         {
             _statusText.Text = isAudio
-                ? $"已添加音频到 A{clip.AudioTrack + 1}（{clip.Duration:0.#}s，可拖动/裁剪）。"
+                ? $"已添加音频到轨道 {clip.Track + 1}（{clip.Duration:0.#}s，可拖动/裁剪）。"
                 : $"已添加{(isImage ? "图片" : "视频")}片段（{clip.Duration:0.#}s，可拖动/裁剪）。";
         }
 
@@ -3518,26 +3484,24 @@ internal sealed class VideoEditorWindow : MyWindow
         VideoClip clip;
         if (VideoTranscoder.IsAudioFile(path))
         {
-            // 音频素材：落到音频轨（A1…）。当前选中的是音频泳道就用它，否则用 A1。
-            // Track 固定 -1：音频片段不进视频轨，也让所有按 Track 筛选的视频逻辑天然忽略它。
-            var audioTrack = IsAudioLane(_selectedTrack) ? AudioTrackOfLane(_selectedTrack) : 0;
+            // 音频素材：与画面一样是普通片段 —— 落到当前选中的轨上（追加到该轨末尾）。
             var audioDuration = ProbeAudioDuration(path);
+            var audioLength = audioDuration > 0.5 ? audioDuration : 10;
+            var audioTrack = Math.Max(0, _selectedTrack);
             clip = new VideoClip
             {
                 Kind = "Audio",
                 SourcePath = path,
-                Track = -1,
-                AudioTrack = audioTrack,
-                StartTime = _project.AudioTrackEnd(audioTrack),
+                Track = audioTrack,
+                StartTime = _project.TrackEnd(audioTrack),
                 InPoint = 0,
-                OutPoint = audioDuration > 0.5 ? audioDuration : 10,
+                OutPoint = audioLength,
                 SourceDuration = audioDuration
             };
         }
         else
         {
-            // 画面素材：当前若选中音频泳道，落到视频轨 0，避免把片段放到音频泳道号上。
-            var videoTrack = IsAudioLane(_selectedTrack) ? 0 : _selectedTrack;
+            var videoTrack = Math.Max(0, _selectedTrack);
             var duration = isImage ? 5 : GetAssetDuration(path);
             clip = new VideoClip
             {
@@ -4275,7 +4239,7 @@ internal sealed class VideoEditorWindow : MyWindow
         // 片段增删/拖拽/撤销后同步预览播放器：它若仍按构造时的片段快照调度，
         // 已删除的片段会继续出现在预览里（即使时间轴已不显示）。
         _player?.RefreshClips();
-        // 泳道总数 = 视频轨 + 音频轨（音频轨排在视频轨下方，见 VideoLaneCount 注释）。
+        // 泳道总数 = 轨道数（画面与音频共用轨道号）。
         var trackCount = TotalLaneCount;
         _lanes.Clear();
         // 保留纵向滚动偏移：轨道头与泳道已通过 ScrollChanged 同步平移（不会错位），
@@ -4327,18 +4291,22 @@ internal sealed class VideoEditorWindow : MyWindow
                     e.Handled = true;
                 }
             };
-            // 音频泳道取音频轨状态（锁定 / 静音），视频泳道取视频轨状态。
-            var audioLane = IsAudioLane(trackIndex);
-            var audioTrackNo = AudioTrackOfLane(trackIndex);
-            var state = audioLane
-                ? _project.AudioTrackStateOf(audioTrackNo)
-                : _project.TrackStateOf(trackIndex);
+            // 画面与音频共用一条轨，所以一条轨可能同时有两者 → 按本轨内容决定第二个按钮的含义：
+            // 纯音频轨 = 静音（不参与混音），含画面的轨 = 隐藏画面（播放/渲染不显示）。
+            // 92px 的轨道头列只够放三个按钮，不拆成两个按钮；单个片段的静音仍可在右侧属性面板做。
+            var laneClips = _project.Clips.Where(c => c.Track == trackIndex).ToList();
+            var audioOnlyLane = laneClips.Count > 0 && laneClips.All(c => c.IsAudio);
+            var state = _project.TrackStateOf(trackIndex);
             // 轨道头：直接横向排列 锁定 / 隐藏(静音) / 删除 三个按钮（FluentSystemIcons-Resizable 图标）。
             var btnLock = TrackHeaderButton("\uEAF0", "锁定/解锁该轨道（锁定后该轨片段不可编辑）", state.Locked,
                 () => { state.Locked = !state.Locked; RefreshTimeline(); ScheduleSave(); });
-            var btnHide = TrackHeaderButton(state.Hidden ? "\uE817" : "\uE813",
-                audioLane ? "静音该音频轨（不参与混音）" : "隐藏该轨道（编辑半透明，播放/渲染不显示）", state.Hidden,
-                () => { state.Hidden = !state.Hidden; RefreshTimeline(); ScheduleSave(); });
+            var btnHide = audioOnlyLane
+                ? TrackHeaderButton(state.Muted ? "\uF015" : "\uF00D",
+                    "静音该轨道（该轨音频不参与混音）", state.Muted,
+                    () => { state.Muted = !state.Muted; RefreshTimeline(); ScheduleSave(); })
+                : TrackHeaderButton(state.Hidden ? "\uE817" : "\uE813",
+                    "隐藏该轨道画面（编辑半透明，播放/渲染不显示）", state.Hidden,
+                    () => { state.Hidden = !state.Hidden; RefreshTimeline(); ScheduleSave(); });
             var btnDel = TrackHeaderButton("\uE61D", "删除该轨道（该轨全部片段）", false,
                 () => DeleteTrack(trackIndex));
             var headerButtons = new StackPanel
@@ -4509,11 +4477,8 @@ internal sealed class VideoEditorWindow : MyWindow
                 }
             };
 
-            // 音频泳道筛音频片段（按 AudioTrack）；视频泳道筛画面类片段
-            // （音频片段的 Track 固定为 -1，因此不会被视频泳道挑中）。
-            var laneClips = IsAudioLane(trackIndex)
-                ? _project.Clips.Where(c => c.IsAudio && c.AudioTrack == AudioTrackOfLane(trackIndex))
-                : _project.Clips.Where(c => !c.IsAudio && c.Track == trackIndex);
+            // 一条泳道 = 一个轨道号，画面与音频共用（音频就是普通片段）。
+            var laneClips = _project.Clips.Where(c => c.Track == trackIndex);
             foreach (var clip in laneClips.OrderBy(c => c.StartTime))
             {
                 canvas.Children.Add(BuildClipBlock(clip));
@@ -5021,32 +4986,10 @@ internal sealed class VideoEditorWindow : MyWindow
         return b;
     }
 
-    /// <summary>删除整个泳道（该轨/该音频轨全部片段），视频轨号压缩。锁定轨不可删。
-    /// 参数是<b>泳道号</b>（轨道头的删除按钮传的就是它）；音频泳道必须按 AudioTrack 删，
-    /// 否则会去删「Track == 泳道号」的视频片段（删错东西）。</summary>
+    /// <summary>删除整个泳道（该轨全部片段），轨道号压缩。锁定轨不可删。
+    /// 参数是<b>泳道号</b>，而泳道号 == 轨道号，所以直接按 Track 删（画面与音频一视同仁）。</summary>
     private void DeleteTrack(int lane)
     {
-        if (IsAudioLane(lane))
-        {
-            var audioTrack = AudioTrackOfLane(lane);
-            if (_project.AudioTrackStateOf(audioTrack).Locked)
-            {
-                _statusText.Text = $"音频轨 A{audioTrack + 1} 已锁定，无法删除。";
-                return;
-            }
-
-            PushUndo();
-            var audioRemoved = _project.Clips.RemoveAll(c => c.IsAudio && c.AudioTrack == audioTrack);
-            _selected = null;
-            RefreshTimeline();
-            ClearSelection();
-            ScheduleSave();
-            _statusText.Text = audioRemoved > 0
-                ? $"已删除音频轨 A{audioTrack + 1}（{audioRemoved} 个片段）。"
-                : $"音频轨 A{audioTrack + 1} 已删除（无片段）。";
-            return;
-        }
-
         var name = TrackName(lane, _project.TrackCount); // 删完轨道数会变，名字先取好
         if (_project.GetTrackState(lane) is { Locked: true })
         {
@@ -5055,7 +4998,7 @@ internal sealed class VideoEditorWindow : MyWindow
         }
 
         PushUndo();
-        var removed = _project.Clips.RemoveAll(c => !c.IsAudio && c.Track == lane);
+        var removed = _project.Clips.RemoveAll(c => c.Track == lane);
         _selected = null;
         CompactTracks();
         RefreshTimeline();
@@ -5068,46 +5011,6 @@ internal sealed class VideoEditorWindow : MyWindow
     }
 
     /// <summary>把片段放到指定轨道上不与任何同轨片段重叠的最近可用位置（优先向后，其次向前）。</summary>
-    /// <summary>音频轨上目标区间是否空闲（音频片段之间同样不允许同轨堆叠）。</summary>
-    private bool FitsOnAudioTrack(int audioTrack, double start, double duration, VideoClip? exclude = null) =>
-        !_project.Clips.Any(c => c.IsAudio && !ReferenceEquals(c, exclude) &&
-                                 c.AudioTrack == audioTrack &&
-                                 start < c.StartTime + c.Duration - 0.001 &&
-                                 c.StartTime < start + duration - 0.001);
-
-    /// <summary>在音频轨上把片段挪到最近可用位置（沿时间轴往后找空位）。</summary>
-    private double FitToAudioTrack(VideoClip clip, double desired, int audioTrack)
-    {
-        var start = Math.Max(0, desired);
-        for (var guard = 0; guard < 512; guard++)
-        {
-            if (FitsOnAudioTrack(audioTrack, start, clip.Duration, clip))
-            {
-                return start;
-            }
-
-            var nextStarts = _project.Clips
-                .Where(c => c.IsAudio && !ReferenceEquals(c, clip) && c.AudioTrack == audioTrack &&
-                            c.StartTime + c.Duration > start)
-                .Select(c => c.StartTime + c.Duration)
-                .ToList();
-            if (nextStarts.Count == 0)
-            {
-                return start;
-            }
-
-            var next = nextStarts.Min();
-            if (next <= start + 0.0005)
-            {
-                return start;
-            }
-
-            start = next;
-        }
-
-        return start;
-    }
-
     private double FitToTrack(VideoClip clip, double desired, int track)
     {
         var duration = clip.Duration;
@@ -5358,10 +5261,8 @@ internal sealed class VideoEditorWindow : MyWindow
         return acc;
     }
 
-    /// <summary>泳道显示名：视频轨「轨道 N」（轨号大的在上 = 轨道 1），音频轨「A1…An」。</summary>
-    private string LaneDisplayName(int lane) => IsAudioLane(lane)
-        ? $"A{AudioTrackOfLane(lane) + 1}"
-        : TrackName(lane, _project.TrackCount);
+    /// <summary>泳道显示名：轨号大的在上（轨道 1 在最上面）。画面与音频共用轨道号，所以不再区分 A/V。</summary>
+    private string LaneDisplayName(int lane) => TrackName(lane, _project.TrackCount);
 
     /// <summary>拖拽反馈：insertPosition &gt;= 0 = 在两轨之间插入（显示水平插入指示线），否则高亮目标泳道。
     /// overlap = 目标位置被同轨素材占用，标签变红提示「释放后自动腾位」。
@@ -5535,7 +5436,7 @@ internal sealed class VideoEditorWindow : MyWindow
         return clip.AudioGainAt(local) * AudioTrackGainOf(clip);
     }
 
-    /// <summary>音频片段所在音频轨的增益（静音 = 0）；视频片段的自带原声不叠轨增益。</summary>
+    /// <summary>音频片段所在轨道的增益（静音 = 0）；视频片段的自带原声不叠轨增益。</summary>
     private double AudioTrackGainOf(VideoClip clip)
     {
         if (!clip.IsAudio)
@@ -5543,7 +5444,7 @@ internal sealed class VideoEditorWindow : MyWindow
             return 1;
         }
 
-        var state = _project.GetAudioTrackState(clip.AudioTrack);
+        var state = _project.GetTrackState(clip.Track);
         if (state == null)
         {
             return 1;
@@ -5635,10 +5536,7 @@ internal sealed class VideoEditorWindow : MyWindow
     private Border BuildClipBlock(VideoClip clip)
     {
         var isSelected = _selectedClips.Contains(clip);
-        // 音频片段取音频轨状态：它的 Track 固定 -1，按 Track 取会误拿到视频轨 0 的锁定 / 隐藏状态。
-        var trackState = clip.IsAudio
-            ? _project.GetAudioTrackState(clip.AudioTrack)
-            : _project.GetTrackState(clip.Track);
+        var trackState = _project.GetTrackState(clip.Track);
         var isLocked = trackState is { Locked: true };
         var isHiddenTrack = trackState is { Hidden: true };
         // 静音标记：视频片段被「分离音频」或手动静音后，块上直接显示喇叭静音图标，
@@ -5833,9 +5731,7 @@ internal sealed class VideoEditorWindow : MyWindow
                 UpdateStageHandles();
             }
 
-            var trackLocked = clip.IsAudio
-                ? _project.GetAudioTrackState(clip.AudioTrack) is { Locked: true }
-                : _project.GetTrackState(clip.Track) is { Locked: true };
+            var trackLocked = _project.GetTrackState(clip.Track) is { Locked: true };
             var count = Math.Max(1, _selectedClips.Count);
             var many = count > 1;
             var suffix = many ? $"（{count} 个）" : "";
@@ -6217,9 +6113,7 @@ internal sealed class VideoEditorWindow : MyWindow
                 var n = trackCount;
                 foreach (var c in _project.Clips)
                 {
-                    // ⚠️ 同 HandleTimelineDrop：音频片段（Track = -1）不占视频轨，排除掉；
-                    // 否则 -1 会被 +1 写成伪造的视频轨号（详见 CompactTracks 注释）。
-                    if (c.IsAudio || md.Tracks.ContainsKey(c) || c.Track <= n - 1 - insertPos)
+                    if (md.Tracks.ContainsKey(c) || c.Track <= n - 1 - insertPos)
                     {
                         continue;
                     }
@@ -6230,18 +6124,13 @@ internal sealed class VideoEditorWindow : MyWindow
                 var newTrack = n - insertPos;
                 foreach (var (c, _) in md.Tracks)
                 {
-                    // 音频片段在音频泳道里拖：它不占视频轨，保持 Track = -1。
-                    if (!c.IsAudio)
-                    {
-                        c.Track = newTrack;
-                    }
-
+                    c.Track = newTrack;
                     if (_snapEnabled)
                     {
                         c.StartTime = SnapTime(c.StartTime);
                     }
 
-                    if (!c.IsAudio && !FitsOnTrack(c.Track, c.StartTime, c.Duration, c))
+                    if (!FitsOnTrack(c.Track, c.StartTime, c.Duration, c))
                     {
                         c.StartTime = FitToTrack(c, c.StartTime, c.Track);
                     }
@@ -6255,18 +6144,13 @@ internal sealed class VideoEditorWindow : MyWindow
                 var trackDelta = Math.Clamp(targetTrack, 0, 32) - grabTrack;
                 foreach (var (c, origTrack) in md.Tracks)
                 {
-                    // 音频片段保持 Track = -1（它的泳道由 AudioTrack 决定）。
-                    if (!c.IsAudio)
-                    {
-                        c.Track = Math.Clamp(origTrack + trackDelta, 0, 32);
-                    }
-
+                    c.Track = Math.Clamp(origTrack + trackDelta, 0, 32);
                     if (_snapEnabled)
                     {
                         c.StartTime = SnapTime(c.StartTime);
                     }
 
-                    if (!c.IsAudio && !FitsOnTrack(c.Track, c.StartTime, c.Duration, c))
+                    if (!FitsOnTrack(c.Track, c.StartTime, c.Duration, c))
                     {
                         c.StartTime = FitToTrack(c, c.StartTime, c.Track);
                     }
@@ -6575,10 +6459,7 @@ internal sealed class VideoEditorWindow : MyWindow
         var rawX = pointer.X - (isMove ? _dragOffsetX : 0);
         var rawStart = Math.Max(0, rawX / _pxPerSecond);
         var startTime = _snapEnabled ? SnapTime(rawStart) : rawStart;
-        // 泳道数含音频轨：落点解析要按总泳道算，否则拖到音频轨会被算成超出范围。
-        // laneSpace=true：按泳道视觉顺序解析（视频在上、音频在下），返回值是泳道号（下方用
-        // IsAudioLane/AudioTrackOfLane 判定），不能按「视频轨数反推行号」——音频泳道在下、
-        // 行序相同但泳道号不连续，反推会把最后一行算成音频轨之外。
+        // laneSpace=true：按泳道视觉顺序解析（轨号大的在上），返回值就是泳道号 == 轨道号。
         var trackCount = TotalLaneCount;
         var (dropTrack, insertPos) = ResolveDropTarget(pointer.Y, trackCount, laneSpace: true);
 
@@ -6654,14 +6535,12 @@ internal sealed class VideoEditorWindow : MyWindow
             // 图片 → Kind=Image 覆盖层（固定 5 秒）；音频 → 音频轨片段；视频 → 按素材时长。
             if (VideoTranscoder.IsAudioFile(text))
             {
-                var audioTrack = IsAudioLane(dropTrack) ? AudioTrackOfLane(dropTrack) : 0;
                 var audioDuration = ProbeAudioDuration(text);
                 clip = new VideoClip
                 {
                     Kind = "Audio",
                     SourcePath = text,
-                    Track = -1,
-                    AudioTrack = audioTrack,
+                    Track = Math.Max(0, dropTrack),
                     StartTime = startTime,
                     InPoint = 0,
                     OutPoint = audioDuration > 0.5 ? audioDuration : 10,
@@ -6688,11 +6567,7 @@ internal sealed class VideoEditorWindow : MyWindow
 
         if (clip != null)
         {
-            if (clip.IsAudio)
-            {
-                // 音频片段落在音频轨（上面已按落点泳道写进 AudioTrack），不参与视频轨的插入 / 挪动。
-            }
-            else if (isFilter)
+            if (isFilter)
             {
                 // 滤镜始终放最高新轨道，不参与插入。
                 clip.Track = _project.TrackCount;
@@ -6707,9 +6582,7 @@ internal sealed class VideoEditorWindow : MyWindow
                 var insertAt = Math.Clamp(insertPos, 0, n);
                 foreach (var c in _project.Clips)
                 {
-                    // ⚠️ 音频片段（Track = -1）不占视频轨，**绝不能**参与这个搬移：
-                    // -1 被 +1 会变成 0，即一个伪造的视频轨号，之后 TrackCount 会凭空多一轨。
-                    if (ReferenceEquals(c, clip) || c.IsAudio)
+                    if (ReferenceEquals(c, clip))
                     {
                         continue;
                     }
@@ -6724,28 +6597,19 @@ internal sealed class VideoEditorWindow : MyWindow
             }
             else
             {
-                // 视频/图片/形状/文字只有视频轨可用：落点若在音频泳道（用泳道号解析，可能 ≥ 视频轨数），
-                // 归到最下面的视频轨（离音频区最近），不要凭空新建一条视频轨。
-                clip.Track = IsAudioLane(dropTrack) ? 0 : Math.Max(0, dropTrack);
+                // 落到鼠标所在的那条泳道（泳道号 == 轨道号）：任何类型都能放到任意轨上，
+                // 不再有「音频专属轨」，也不会把片段悄悄挪到别的轨。
+                clip.Track = Math.Max(0, dropTrack);
             }
 
             clip.StartTime = startTime;
             // 同轨不允许堆叠：落点被占时自动挪到最近空位（音频按音频轨判定，它与视频轨互不干扰）。
             var overlapped = false;
-            if (clip.IsAudio)
-            {
-                if (!FitsOnAudioTrack(clip.AudioTrack, clip.StartTime, clip.Duration, clip))
-                {
-                    clip.StartTime = FitToAudioTrack(clip, clip.StartTime, clip.AudioTrack);
-                    overlapped = true;
-                    _statusText.Text = "目标位置与同轨音频重叠，已自动放到最近空位（音频不会堆叠）。";
-                }
-            }
-            else if (!FitsOnTrack(clip.Track, clip.StartTime, clip.Duration, clip))
+            if (!FitsOnTrack(clip.Track, clip.StartTime, clip.Duration, clip))
             {
                 clip.StartTime = FitToTrack(clip, clip.StartTime, clip.Track);
                 overlapped = true;
-                _statusText.Text = "目标位置与同轨素材重叠，已自动放到最近空位（素材不会堆叠）。";
+                _statusText.Text = "目标位置与同轨片段重叠，已自动放到最近空位（同轨不堆叠）。";
             }
 
             _selected = clip;
@@ -7241,8 +7105,7 @@ internal sealed class VideoEditorWindow : MyWindow
         {
             Kind = "Audio",
             SourcePath = video.SourcePath,
-            Track = -1,
-            AudioTrack = FindAudioTrackFor(video.StartTime, video.Duration),
+            Track = FindTrackForAudio(video.StartTime, video.Duration),
             StartTime = video.StartTime,
             InPoint = video.InPoint,
             OutPoint = video.OutPoint,
@@ -7266,28 +7129,30 @@ internal sealed class VideoEditorWindow : MyWindow
         EnsureClipsVisible([video, detached]);
         var extra = copySilentVolume ? "（原片段音量是 0%，已按 100% 分离）" : "";
         _statusText.Text =
-            $"已分离音频到 A{detached.AudioTrack + 1}（{detached.Duration:0.#}s），原视频片段已静音。{extra}";
-        EditorLog($"DETACH 分离音频 {Path.GetFileName(video.SourcePath)} → A{detached.AudioTrack + 1} " +
+            $"已分离音频到轨道 {detached.Track + 1}（{detached.Duration:0.#}s），原视频片段已静音。{extra}";
+        EditorLog($"DETACH 分离音频 {Path.GetFileName(video.SourcePath)} → 轨道 {detached.Track + 1} " +
                   $"start={detached.StartTime:0.###}s dur={detached.Duration:0.###}s");
     }
 
-    /// <summary>给分离出来的音频片段找一条音频轨：优先已有轨（同时刻放得下且未被静音），都满了就新开一条。</summary>
-    private int FindAudioTrackFor(double start, double duration)
+    /// <summary>给分离出来的音频片段找一条轨：优先已有的含音频的轨（同时刻放得下且未被静音），都满了就新开一条。</summary>
+    private int FindTrackForAudio(double start, double duration)
     {
-        for (var track = 0; track < _project.AudioTrackCount; track++)
+        // 优先放进已有的「含音频」的轨（跳过静音的轨），都放不下就新开一条（在末尾，即最下方）。
+        foreach (var track in _project.Clips.Where(c => c.IsAudio)
+                     .Select(c => c.Track).Distinct().OrderBy(t => t))
         {
-            if (_project.GetAudioTrackState(track) is { Muted: true })
+            if (_project.GetTrackState(track) is { Muted: true })
             {
-                continue; // 静音的轨不往里放
+                continue;
             }
 
-            if (FitsOnAudioTrack(track, start, duration))
+            if (FitsOnTrack(track, start, duration))
             {
                 return track;
             }
         }
 
-        return _project.AudioTrackCount; // 新开一条 A(n+1)
+        return _project.TrackCount;
     }
 
     private void ApplyPropertyEdits()

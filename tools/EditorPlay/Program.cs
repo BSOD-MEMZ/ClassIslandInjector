@@ -162,9 +162,14 @@ internal static class Program
         SeedProject();
         var w = OpenEditor();
         Dump(w, "① 打开已有工程");
+        // 迁移验收：种子用的是**旧格式**（音频片段 Track = -1 + AudioTrack = 0），
+        // 打开时应当被 Normalize 迁到统一轨道号「视频轨数 + 0」= 3，而不是留在 -1。
+        var migrated = FindAudio(w);
+        Console.WriteLine($"    迁移检查：音频片段 Track={migrated.Track}（期望 0 —— 音频锚定在底部）");
+        Assert(migrated.Track == 0, "旧格式音频片段应被迁到统一轨道号的底部（与原来音频泳道在下方一致）");
         Shot(w, "01-打开工程");
         // 视觉核查用放大图：音频块（看文字是否被波形挤掉）、素材库 tab 行与卡片、时间轴整体。
-        var audioRect = BlockRect(w, FindClip(w, "Audio", -1));
+        var audioRect = BlockRect(w, FindAudio(w));
         ShotZoom(w, "01a-音频块放大", new Rect(audioRect.X - 8, audioRect.Y - 10, 460, audioRect.Height + 20), 2);
         ShotZoom(w, "01b-素材库放大", new Rect(12, 84, 300, 250), 2);
         // 图标核查：顶部工具栏（撤销/重做/复制/粘贴/添加素材/上下移轨道/渲染）、
@@ -178,25 +183,25 @@ internal static class Program
         ShotZoomFields(w, "01i-复制粘贴-8x", 2, 8, "_copyButton", "_pasteButton");
         ShotZoomFields(w, "01j-全屏按钮-8x", 2, 8, "_fullscreenButton");
         // 静音 / 锁定标记核查：V2（锁定轨 + 静音）与 V1（静音）两个块的抬头行。
-        ShotZoomBlock(w, "01k-V2块-静音+锁定标记", FindClip(w, "Image", 1), 6, 5);
-        ShotZoomBlock(w, "01l-V1块-静音标记", FindClip(w, "Video", 0, VideoA), 6, 5);
+        ShotZoomBlock(w, "01k-V2块-静音+锁定标记", FindClip(w, "Image"), 6, 5);
+        ShotZoomBlock(w, "01l-V1块-静音标记", FindClip(w, "Video", VideoA), 6, 5);
 
         // ---- ② 单击选中（点单独占一条轨的文本片段，后面拿它做无损实验）----
         Console.WriteLine("\n② 单击 V3 上的文本片段");
-        Click(w, Center(BlockRect(w, FindClip(w, "Text", 2))));
+        Click(w, Center(BlockRect(w, FindClip(w, "Text"))));
         Console.WriteLine($"    选中数={SelectedCount(w)}（期望 1）");
         Assert(SelectedCount(w) == 1, "单击应恰好选中 1 个片段");
         Shot(w, "02-单击选中");
-        var br = BlockRect(w, FindClip(w, "Text", 2));
+        var br = BlockRect(w, FindClip(w, "Text"));
         ShotZoom(w, "02b-选中块放大-裁剪手柄", new Rect(br.X - 30, br.Y - 16, br.Width + 60, br.Height + 32));
 
         // ---- ③ 向右拖 3s（该轨只有它自己，不会被「不堆叠」规则挪走）----
         Console.WriteLine("\n③ 把文本片段向右拖 3s");
-        var startBefore = FindClip(w, "Text", 2).StartTime;
+        var startBefore = FindClip(w, "Text").StartTime;
         var px = Field<double>(w, "_pxPerSecond");
-        Drag(w, Center(BlockRect(w, FindClip(w, "Text", 2))),
-            Shift(Center(BlockRect(w, FindClip(w, "Text", 2))), 3.0 * px, 0));
-        var text2 = FindClip(w, "Text", 2);
+        Drag(w, Center(BlockRect(w, FindClip(w, "Text"))),
+            Shift(Center(BlockRect(w, FindClip(w, "Text"))), 3.0 * px, 0));
+        var text2 = FindClip(w, "Text");
         Console.WriteLine($"    start {startBefore:0.###} → {text2.StartTime:0.###}（期望 {startBefore + 3:0.###}）");
         Assert(Math.Abs(text2.StartTime - (startBefore + 3)) < 0.08, "拖动应把 StartTime 精确右移 3s");
         Shot(w, "03-拖动之后");
@@ -204,18 +209,18 @@ internal static class Program
         // ---- ④ 撤销 ----
         Console.WriteLine("\n④ Ctrl+Z 撤销");
         PressKey(w, Key.Z, RawInputModifiers.Control);
-        Console.WriteLine($"    start → {FindClip(w, "Text", 2).StartTime:0.###}（期望回到 {startBefore:0.###}）");
-        Assert(Math.Abs(FindClip(w, "Text", 2).StartTime - startBefore) < 0.08, "撤销应还原拖动");
+        Console.WriteLine($"    start → {FindClip(w, "Text").StartTime:0.###}（期望回到 {startBefore:0.###}）");
+        Assert(Math.Abs(FindClip(w, "Text").StartTime - startBefore) < 0.08, "撤销应还原拖动");
         Shot(w, "04-撤销之后");
 
         // ---- ⑤ 拖右边缘裁剪 2s ----
         Console.WriteLine("\n⑤ 选中文本片段并把右边缘向左拖 2s（裁剪）");
-        Click(w, Center(BlockRect(w, FindClip(w, "Text", 2))));
-        var durBefore = FindClip(w, "Text", 2).Duration;
-        var r = BlockRect(w, FindClip(w, "Text", 2));
+        Click(w, Center(BlockRect(w, FindClip(w, "Text"))));
+        var durBefore = FindClip(w, "Text").Duration;
+        var r = BlockRect(w, FindClip(w, "Text"));
         var edge = new Point(r.X + r.Width - 6, r.Y + r.Height / 2);
         Drag(w, edge, new Point(edge.X - 2.0 * px, edge.Y));
-        var durAfter = FindClip(w, "Text", 2).Duration;
+        var durAfter = FindClip(w, "Text").Duration;
         Console.WriteLine($"    duration {durBefore:0.###} → {durAfter:0.###}（期望 {durBefore - 2:0.###}）");
         Assert(Math.Abs(durAfter - (durBefore - 2)) < 0.08, "拖右边缘应把时长缩短 2s");
         Shot(w, "05-裁剪之后");
@@ -223,19 +228,19 @@ internal static class Program
         // ---- ⑥ 撤销裁剪 ----
         Console.WriteLine("\n⑥ Ctrl+Z 撤销裁剪");
         PressKey(w, Key.Z, RawInputModifiers.Control);
-        var durUndo = FindClip(w, "Text", 2).Duration;
+        var durUndo = FindClip(w, "Text").Duration;
         Console.WriteLine($"    duration → {durUndo:0.###}（期望 {durBefore:0.###}）");
         Assert(Math.Abs(durUndo - durBefore) < 0.08, "撤销应还原裁剪");
         Shot(w, "06-撤销裁剪");
 
         // ---- ⑦ 「不堆叠」规则 ----
         Console.WriteLine("\n⑦ 把 V1 首个视频拖进同轨另一片段的时间区间（应被自动挪走，不堆叠）");
-        Click(w, Center(BlockRect(w, FindClip(w, "Video", 0, VideoA))));
-        Drag(w, Center(BlockRect(w, FindClip(w, "Video", 0, VideoA))),
-            Shift(Center(BlockRect(w, FindClip(w, "Video", 0, VideoA))), 3.0 * px, 0));
-        var v1 = FindClip(w, "Video", 0, VideoA);
+        Click(w, Center(BlockRect(w, FindClip(w, "Video", VideoA))));
+        Drag(w, Center(BlockRect(w, FindClip(w, "Video", VideoA))),
+            Shift(Center(BlockRect(w, FindClip(w, "Video", VideoA))), 3.0 * px, 0));
+        var v1 = FindClip(w, "Video", VideoA);
         var overlaps = Field<VideoProject>(w, "_project")!.Clips
-            .Where(c => !c.IsAudio && c.Track == 0 && !ReferenceEquals(c, v1))
+            .Where(c => !c.IsAudio && c.Track == v1.Track && !ReferenceEquals(c, v1))
             .Any(o => v1.StartTime < o.StartTime + o.Duration - 0.001 &&
                       v1.StartTime + v1.Duration > o.StartTime + 0.001);
         Console.WriteLine($"    start={v1.StartTime:0.###}（原 0）与同轨片段重叠={overlaps}");
@@ -284,6 +289,26 @@ internal static class Program
         Dump(w, "⑪ 撤销删除之后");
         Shot(w, "11-撤销删除");
 
+
+        // ⑫ 用户原始诉求的验收：把画面片段拖到「最下面那条轨」——
+        // 迁移后它放的是音频片段，也就是原来那条「音频专属轨」。
+        // 要求它**留在那条轨**（只允许因「同轨不堆叠」改 StartTime，不允许换轨）。
+        Console.WriteLine($"\n⑫ 把文本片段拖到最下方那条轨（原来是音频专属轨）");
+        var moving = FindClip(w, "Text");
+        var laneH = (double)Invoke(w, "LaneHeightOf", moving.Track)!;
+        var before = moving.Track;
+        var from = Center(BlockRect(w, moving));
+        // 目标：最下面那条轨（泳道行 = TotalLaneCount-1）。
+        var bottomTop = (double)Invoke(w, "LaneVisualTop", 0)!;
+        var rootOrigin = Translate(w, "_timelineRoot", new Point(0, bottomTop + laneH / 2));
+        Drag(w, from, new Point(from.X, rootOrigin.Y));
+        var after = FindClip(w, "Text");
+        Console.WriteLine($"    轨道 {before + 1} → {after.Track + 1}（期望 1 = 最下面那条），" +
+                          $"start={after.StartTime:0.###}s");
+        Assert(after.Track == 0, "画面片段拖到最下方的轨必须留在那条轨，不能被挤到别的轨");
+        Assert(after.Track == FindAudio(w).Track, "应当与音频片段落在同一条轨上（那条轨不再是音频专属）");
+        Shot(w, "12-拖到最下方轨道");
+
         w.Close();
         Pump();
         return 0;
@@ -299,13 +324,13 @@ internal static class Program
         var w = OpenEditor();
 
         Console.WriteLine("\n[A] 窗口内拖动（跨控件）");
-        var c = Center(BlockRect(w, FindClip(w, "Text", 2)));
+        var c = Center(BlockRect(w, FindClip(w, "Text")));
         Drag(w, c, Shift(c, 40, 6), steps: 4);
-        Console.WriteLine($"    拖拽状态={DragState(w)}  start={FindClip(w, "Text", 2).StartTime:0.###}");
+        Console.WriteLine($"    拖拽状态={DragState(w)}  start={FindClip(w, "Text").StartTime:0.###}");
         Assert(DragState(w) == "move=False trim=False marquee=False", "正常拖完后不应残留交互状态");
 
         Console.WriteLine("\n[B] 拖到窗口外再松开，然后回到窗口内移动一下");
-        var c2 = Center(BlockRect(w, FindClip(w, "Text", 2)));
+        var c2 = Center(BlockRect(w, FindClip(w, "Text")));
         w.MouseDown(c2, MouseButton.Left);
         Pump(2);
         w.MouseMove(new Point(c2.X + 20, c2.Y), RawInputModifiers.LeftMouseButton);
@@ -612,7 +637,7 @@ internal static class Program
         foreach (var c in p.Clips.OrderBy(c => c.Track).ThenBy(c => c.StartTime))
         {
             var lane = (int)Invoke(w, "LaneOfClip", c)!;
-            Console.WriteLine($"    lane={lane} {(c.IsAudio ? $"A{c.AudioTrack + 1}" : $"V{c.Track + 1}")} " +
+            Console.WriteLine($"    lane={lane} 轨道{c.Track + 1}{""} {(c.IsAudio ? "[音频]" : "")} " +
                               $"「{c.Kind}」start={c.StartTime:0.###} dur={c.Duration:0.###} " +
                               $"in={c.InPoint:0.##} out={c.OutPoint:0.##}" +
                               (c.IsAudio ? "" : $" muted={c.Muted}") +
@@ -650,11 +675,21 @@ internal static class Program
 
     // ============ 反射 / 几何 ============
 
-    /// <summary>从**当前**工程里按条件解析片段（不要跨步骤持有引用，见类注释第 1 条）。</summary>
-    private static VideoClip FindClip(object w, string kind, int track, string? sourceContains = null)
+    /// <summary>取工程里的第一个音频片段（音频已与画面共用轨道号，不能再按 Track = -1 找）。</summary>
+    private static VideoClip FindAudio(object w)
     {
         var p = Field<VideoProject>(w, "_project")!;
-        return p.Clips.First(c => c.Kind == kind && c.Track == track &&
+        return p.Clips.First(c => c.IsAudio);
+    }
+
+    /// <summary>从**当前**工程里按条件解析片段（不要跨步骤持有引用，见类注释第 1 条）。</summary>
+    private static VideoClip FindClip(object w, string kind, string? sourceContains = null, int track = -1)
+    {
+        var p = Field<VideoProject>(w, "_project")!;
+        // track < 0 = 不限定轨道：音频已与画面共用轨道号，且迁移会整体平移视频轨号，
+        // 场景里硬编码轨号会失配（同类镜头在工程里唯一，按 Kind 找即可）。
+        return p.Clips.First(c => c.Kind == kind &&
+                                  (track < 0 || c.Track == track) &&
                                   (sourceContains == null || c.SourcePath.Contains(sourceContains)));
     }
 

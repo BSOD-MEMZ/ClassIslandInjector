@@ -37,10 +37,11 @@
 `video-project.ciproj`（JSON）：`Version` / `Name` / `Sequence{ OutputWidth, OutputHeight, VideoTracks[], AudioTracks[] }` / `Clips[]` / `Assets[]`。
 
 - v1 旧格式（`video-project.json`，顶层 `OutputWidth` + `Clips`）读取时自动迁移；**迁移过来的视频片段显式 `Muted=true`** —— 它们在支持音频之前本来就不出声，静音可避免升级后突然发声。
-- **音频片段约定**：`Kind="Audio"`、`Track=-1`（不进视频轨，让所有按 `Track` 筛选的画面逻辑天然忽略它）、`AudioTrack` 独立编号（A1 从 0 起）。视频片段的自带原声由同一个 `VideoClip` 的 `Volume / AudioFadeIn / AudioFadeOut / Muted` 控制。
-- 时间轴泳道映射：`VideoLaneCount = max(1, TrackCount)`，音频泳道紧随其后（`IsAudioLane(lane)` 判定），视频在上、音频在下；`_selectedTrack` / `_headerByTrack` 用的都是泳道号。
-- **行号/顶部坐标的唯一权威是 `VideoEditorWindow.LaneOrder()` / `LaneAtRow(row)` / `RowOfLane(lane)` / `LaneVisualTop(lane)`**（视频轨在上 = 轨号大的在上，音频轨在下 = A1 最底）。凡按 Y 判定（拖拽落点、命中测试、框选、落点标签、自动滚动）都必须经这四个方法，**不要**再用 `TrackCount/TotalLaneCount` 反推行号——曾因两处各算一套，音频泳道被排到视频泳道上方，导致拖拽抓取偏移差一个泳道高（片段与指针差一截）+ 落点错一轨。
-- 音频片段的 `Track` 恒为 -1（历史数据里也可能残留被拖拽写成视频轨号的脏值），取所在泳道一律用 `LaneOfClip(clip)`。
+- **音频片段 = 普通片段（2026-10-01 起）**：`Kind="Audio"`，**和画面共用同一套轨道号 `Track`**，一条轨可以同时放画面与音频、互相都能拖。视频片段的自带原声由同一个 `VideoClip` 的 `Volume / AudioFadeIn / AudioFadeOut / Muted` 控制。
+  - 旧格式（`Track=-1` + `AudioTrack` 独立编号 + 「视频区/音频区」两段式泳道）**已废弃**，读盘时由 `VideoProject.Normalize` 一次性迁移，见下方「音频轨统一」一节。
+- 时间轴泳道映射：**泳道号 == 轨道号 == `VideoClip.Track`**，`TotalLaneCount = max(1, TrackCount)`（`TrackCount` 统计全部片段，画面与音频共用）。旧的 `VideoLaneCount` / `AudioLaneCount` / `IsAudioLane` / `AudioTrackOfLane` **已删除**，不要再引入类似的两段式概念。
+- **行号/顶部坐标的唯一权威是 `VideoEditorWindow.LaneOrder()` / `LaneAtRow(row)` / `RowOfLane(lane)` / `LaneVisualTop(lane)`**（轨号大的在上）。凡按 Y 判定（拖拽落点、命中测试、框选、落点标签、自动滚动）都必须经这四个方法，**不要**再用 `TrackCount/TotalLaneCount` 反推行号——曾因两处各算一套，音频泳道被排到视频泳道上方，导致拖拽抓取偏移差一个泳道高（片段与指针差一截）+ 落点错一轨。
+- 取片段所在泳道一律用 `LaneOfClip(clip)`（它现在就是 `clip.Track`，音频与画面一视同仁）。
 - 拖拽跟手的三条铁律：①抓取偏移用 `TranslatePoint` 量**块的真实位置**，不用模型推算；②`SnapTime` 必须排除被拖片段自身（否则吸回自己、永远落后 8px）；③边缘自动滚动的跟随回调 `_dragScrollFollow` 里要用**实际**滚动量重算内容坐标（指针在边缘不动时内容仍在滚）。
 - 工程背景生效路径：`MainWindowStyleInjector.ResolveVideoProjectPath()` —— 设置项 `VideoProjectPath` 从无写入点，「使用编辑工程」开关只切 `VideoProjectEnabled`，因此**必须回退到默认工程路径**，否则工程背景永不生效。
 
@@ -302,7 +303,10 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
 - `VideoAudioPlayer.SetSuspended` 的拦截点在 `DecoderWaveProvider.Read`（吐静音、**不推进解码器**，
   位置保留）：WASAPI 的拉取是它主动发起的，在调用方挡不住。
 
-### 15. 视频轨号重映射必须排除音频片段（`Track = -1`）
+### 15.（已作废）视频轨号重映射曾需排除音频片段（`Track = -1`）
+
+> ⚠️ 2026-10-01 音频并入统一轨道号后，这条约束**不再适用**：音频片段也是普通片段、也占轨、也参与轨号重映射（`CompactTracks` / 插入新轨 / 组拖搬移全部对全部片段一视同仁）。
+> 下面是历史记录，仅用于理解旧代码。
 
 - 凡「把某些轨号 +1 给新轨腾位」或「把轨号压缩成连续」的循环，**必须 `if (c.IsAudio) continue;`**。
   音频片段的 `Track` 恒为 -1（占位约定，真实轨号在 `AudioTrack`），参与整数运算会把 -1 变成 0
@@ -399,6 +403,33 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
 
 **C. 验收方式（重要）**：这类问题**必须**用可重复的驱动去验，不能靠肉眼点几下 ——
 见 `tools\EditorPlay`（headless 驱动真实编辑器）。已回归的场景：`empty` / `edit`（11 步断言）/ `exittest`。
+
+### 20. 音频并入统一轨道号（2026-10-01，用户要求「把音频当作普通片段」）
+
+
+**背景**：用户报「启动编辑器有两条轨道，其中一条似乎是音频专属，拖拽视频片段在那个轨道上不行（会被挤到其它轨道）」。根因是旧模型把泳道分成两段：`VideoLaneCount` 条视频轨 + `Math.Max(1, AudioTrackCount)` 条音频轨（**恒 ≥1**，所以新工程必然多一条空的 A1），而 `HandleTimelineDrop` 对落到音频泳道的画面片段做 `clip.Track = 0`（悄悄换轨）。
+
+
+**现在的模型**（改动面：3 个文件 / 63 处）：
+
+- 所有片段共用 `VideoClip.Track`；`TrackCount` = 全部片段的最大轨号 + 1；`TotalLaneCount` = `Math.Max(1, TrackCount)`；泳道号 == 轨道号。
+- 删干净了 `VideoLaneCount` / `AudioLaneCount` / `IsAudioLane` / `AudioTrackOfLane` / `FitsOnAudioTrack` / `FitToAudioTrack`（同轨不堆叠统一走 `FitsOnTrack` / `FitToTrack`，它们本来就不过滤 `IsAudio`）。
+- 混音侧只改一行：`ProjectAudioMixer` 用 `GetTrackState(clip.Track)` 取轨增益（`GetAudioTrackState` 现在也委托给它，仅为兼容保留）。
+- 轨道头的第二个按钮按**本轨内容**决定含义：纯音频轨 = 静音（`TrackState.Muted`，喇叭图标），含画面的轨 = 隐藏画面（`TrackState.Hidden`，眼睛图标）。92px 列宽只够三个按钮，不拆。
+
+**迁移旧数据（`VideoProject.Normalize`，只在音频片段 `Track < 0` 时跑）**：
+- **音频锚定在底部**：旧 A1→轨号 0、A2→1…，视频片段整体上移「音频轨数」。
+  这样 `LaneOrder`（轨号大的在上）给出的顺序仍是「视频在上、音频在下」，与迁移前**观感一致**。
+  - 曾经把音频迁到「视频轨数 + 旧A号」= 最大轨号 → 泳道顺序把它顶到时间轴**最上面**，与迁移前相反（已修）。
+- 旧的音频轨状态一并折算进 `TrackStates`：**旧音频泳道的「静音」存在 `Hidden` 上**（那条轨不显示画面，所以借用了 Hidden）→ 迁移时 `Muted = 旧Muted || 旧Hidden` 并清掉 `Hidden`，否则用户原来的静音设置会丢。
+- 没有音频的工程完全不受影响（不进迁移分支）。
+
+**已知取舍**：新创建出来的轨道出现在**最上方**（`LaneOrder` 是轨号大的在上，而新建轨取末尾轨号），视频「插入新轨」本来就是这个行为。拖放素材则落在**你放的那条泳道**上（不再重定向）。
+
+**回归探针**：`tools\EditorPlay` 的 `edit` 场景含两条验收断言——
+① 旧格式种子工程打开后音频片段 `Track == 0`（迁移到统一轨号底部）；
+② 把文本片段拖到最下方那条轨，**必须留在那条轨**（只允许因同轨不堆叠改 StartTime）。
+`empty` 场景断言全新编辑器**只有 1 条轨**。
 
 ## 预设商店（PresetStore）
 

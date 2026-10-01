@@ -246,7 +246,8 @@ internal static class Program
 
         var text = File.ReadAllText(roundTripPath);
         Check(text.Contains("\"Version\": 2") && text.Contains("\"Sequence\""), "写出 v2 分层结构（Version / Sequence）");
-        Check(text.Contains("\"VideoTracks\"") && text.Contains("\"AudioTracks\""), "序列内区分视频轨与音频轨");
+        // 文件里仍保留 VideoTracks / AudioTracks 两个字段（读旧文件的兼容面），但轨号已经统一。
+        Check(text.Contains("\"VideoTracks\"") && text.Contains("\"AudioTracks\""), "序列内保留 VideoTracks / AudioTracks 字段（兼容旧文件）");
         Check(text.Contains("\"Assets\""), "工程含素材库字段");
 
         var loaded = VideoProjectStore.Load(roundTripPath);
@@ -256,9 +257,14 @@ internal static class Program
         Check(audio != null && audio.AudioTrack == 1 && Math.Abs(audio.Volume - 1.5) < 0.001 &&
               Math.Abs(audio.AudioFadeIn - 1) < 0.001 && Math.Abs(audio.AudioFadeOut - 2) < 0.001,
             "音频片段音量 / 淡入 / 淡出往返");
-        Check(audio is { Track: -1 }, "音频片段 Track = -1（不进视频轨）");
-        Check(loaded.TrackCount == 1, "视频轨数只数画面片段");
-        Check(loaded.AudioTrackCount == 2, "音频轨数按 AudioTrack 计算");
+        // 2026-10-01 起音频并入统一轨道号：旧的 Track = -1 + AudioTrack 独立编号会被 Normalize 迁移。
+        // 迁移采用「音频锚定在底部」：旧 A(n) → 轨号 n，画面片段整体上移「音频轨数」。
+        // 本工程的音频 AudioTrack = 1 → 音频轨数 2 → 音频落在轨号 1、视频从 0 上移到 2。
+        Check(audio is { Track: 1 }, "旧格式音频片段迁移到统一轨道号（锚定在底部的第 2 条）");
+        Check(loaded.Clips.Any(c => c.Kind == "Video" && c.Track == 2),
+            "画面片段迁移时整体上移「音频轨数」");
+        Check(loaded.TrackCount == 3, "轨道数统计全部片段（画面与音频共用轨道号）");
+        Check(loaded.AudioTrackCount == 1, "AudioTrackCount = 含音频片段的轨道数");
         Check(loaded.HasAudioContent, "识别到可出声内容");
 
         if (audio != null)
