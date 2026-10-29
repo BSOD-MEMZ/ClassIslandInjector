@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.IO.Compression;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 
 namespace ClassIslandInjector;
@@ -43,8 +45,78 @@ internal static class PresetExchange
     private const string ResourcesDirName = "resources";
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
+    /// <summary>
+    /// 解包后资源总字节上限：包体大小（远程下发 50MB）只限制压缩后的字节，高压缩比的 zip 解开后可以撑满教室电脑的磁盘。
+    /// 按实际写出的字节计（不信 zip 头里声明的长度），超出即中止并删掉已解出的目录。
+    /// </summary>
+    public const long MaxExtractedBytes = 256L * 1024 * 1024;
+
+    /// <summary>资源条目数上限（幻灯片文件夹图层可能有很多图，但不会上万）。</summary>
+    public const int MaxResourceEntries = 4096;
+
+    /// <summary>
+    /// preset.json / metadata.json 解压后的字节上限：它们在解包资源之前就被整体读进内存反序列化，
+    /// 高压缩比的超大 JSON 会在资源上限生效前耗尽内存 / CPU。正常预设只有几十 KB。
+    /// </summary>
+    public const int MaxJsonBytes = 16 * 1024 * 1024;
+
+    /// <summary>
+    /// 已解包、但还没装进预设列表的导入目录（全路径，不区分大小写）。
+    /// 用户取消安装时目录会一直留在这里，直到宿主重启——那之后它不再受保护，下次清理时按「无引用」删除。
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, byte> PendingImportDirectories = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 导入解析出的预设 → 它的解包目录。<see cref="CompleteImport"/> 按这份对应关系释放「导入中」登记，
+    /// 而不是看设置有没有引用目录里的文件：包里可以带没被引用的资源，按引用判断会让目录永远挂着「导入中」、清理不掉。
+    /// </summary>
+    private static readonly ConditionalWeakTable<UserPreset, string> ImportDirectories = new();
+
     /// <summary>操作结果；导入成功时 <see cref="Preset"/> 为解析出的用户预设，<see cref="Metadata"/> 为元数据。</summary>
     public sealed record Result(bool Success, string Message, UserPreset? Preset = null, PresetMetadata? Metadata = null);
+
+    /// <summary>导入目录是否仍在「已解包、未装进预设列表」的过程中（清理导入目录时必须跳过）。</summary>
+    public static bool IsImportPending(string directory) =>
+        PendingImportDirectories.ContainsKey(Path.GetFullPath(directory));
+
+    /// <summary>预设已装进列表：释放这次导入的解包目录，此后由「是否被引用」决定去留（没被引用的资源随下次清理删除）。</summary>
+    public static void CompleteImport(UserPreset preset)
+    {
+        if (ImportDirectories.TryGetValue(preset, out var directory))
+        {
+            PendingImportDirectories.TryRemove(directory, out _);
+            ImportDirectories.Remove(preset);
+        }
+    }
+
+    /// <summary>设置里引用了本地静态资源的路径（与导出/导入改写的范围一致：自定义样式表 + 图层底图）。</summary>
+    public static IEnumerable<string> EnumerateResourcePaths(InjectorSettings settings)
+    {
+        if (!string.IsNullOrWhiteSpace(settings.StyleSheetPath))
+        {
+            yield return settings.StyleSheetPath;
+        }
+
+        foreach (var layer in settings.WallpaperLayers.Where(l => !string.IsNullOrWhiteSpace(l.Path)))
+        {
+            yield return layer.Path;
+        }
+    }
+
+    /// <summary><paramref name="path"/> 是否就是 <paramref name="directory"/>（全路径）或位于其下。</summary>
+    public static bool IsPathWithin(string path, string directory)
+    {
+        try
+        {
+            var full = Path.GetFullPath(path);
+            return full.Equals(directory, StringComparison.OrdinalIgnoreCase) ||
+                   full.StartsWith(directory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     /// <summary>
     /// 导出用户预设到 zip（含引用的本地静态资源：自定义样式表 / 底图 / 图层图片）。
@@ -120,8 +192,9 @@ internal static class PresetExchange
     /// <summary>
     /// 从 zip 导入预设：解包 resources/ 到 <paramref name="importRootDirectory"/>（按预设名建子目录），
     /// 并把 settings 里的 resources/ 相对引用重写为解包后的本地绝对路径。
+    /// 解包总量受 <paramref name="maxExtractedBytes"/> 与 <see cref="MaxResourceEntries"/> 限制（防 zip 炸弹）。
     /// </summary>
-    public static Result Import(string zipPath, string importRootDirectory)
+    public static Result Import(string zipPath, string importRootDirectory, long maxExtractedBytes = MaxExtractedBytes)
     {
         try
         {
@@ -134,12 +207,12 @@ internal static class PresetExchange
                 return new Result(false, "不是有效的预设包：缺少 preset.json。");
             }
 
-            UserPreset? preset;
-            using (var reader = new StreamReader(presetEntry.Open()))
+            if (ReadBoundedText(presetEntry) is not { } presetJson)
             {
-                preset = JsonSerializer.Deserialize<UserPreset>(reader.ReadToEnd());
+                return new Result(false, $"预设包的 preset.json 解压后超过 {MaxJsonBytes / (1024 * 1024)}MB，已拒绝导入。");
             }
 
+            var preset = JsonSerializer.Deserialize<UserPreset>(presetJson);
             if (preset == null || string.IsNullOrWhiteSpace(preset.Name))
             {
                 return new Result(false, "预设包内容无效。");
@@ -152,8 +225,10 @@ internal static class PresetExchange
             {
                 try
                 {
-                    using var reader = new StreamReader(metadataEntry.Open());
-                    metadata = JsonSerializer.Deserialize<PresetMetadata>(reader.ReadToEnd());
+                    // 超限的元数据按「没有元数据」处理（不影响安装）。
+                    metadata = ReadBoundedText(metadataEntry) is { } metadataJson
+                        ? JsonSerializer.Deserialize<PresetMetadata>(metadataJson)
+                        : null;
                 }
                 catch
                 {
@@ -162,20 +237,48 @@ internal static class PresetExchange
             }
 
 
-            // 解包资源：每次导入独立目录（预设名 + 时间戳），避免覆盖已有导入。
-            var importDir = Path.Combine(importRootDirectory, $"{Sanitize(preset.Name)}_{DateTime.Now:yyyyMMddHHmmss}");
-            Directory.CreateDirectory(importDir);
-            var extracted = 0;
-            foreach (var entry in archive.Entries)
+            // 解包资源：每次导入独立目录（预设名 + 时间戳 + 随机后缀），避免覆盖已有导入；
+            // 同一秒内导入两个同名包（如远程连点两次下发）也不会解进同一个目录、互相抢文件。
+            var importDir = Path.GetFullPath(Path.Combine(importRootDirectory,
+                $"{Sanitize(preset.Name)}_{DateTime.Now:yyyyMMddHHmmss}_{Guid.NewGuid().ToString("N")[..6]}"));
+            // 先登记为「导入中」再解包：从解包到装进预设列表之间（安装确认对话框、远程下发切回 UI 线程）
+            // 这个目录还没有任何预设引用，清理导入目录时必须跳过它。
+            var resourceEntries = archive.Entries
+                .Where(e => e.FullName.StartsWith($"{ResourcesDirName}/", StringComparison.OrdinalIgnoreCase) &&
+                            !e.FullName.EndsWith("/"))
+                .ToList();
+            if (resourceEntries.Count > MaxResourceEntries)
             {
-                if (entry.FullName.StartsWith($"{ResourcesDirName}/", StringComparison.OrdinalIgnoreCase) &&
-                    !entry.FullName.EndsWith("/"))
+                return new Result(false, $"预设包资源文件过多（{resourceEntries.Count} 个，上限 {MaxResourceEntries}），已拒绝导入。");
+            }
+
+            PendingImportDirectories.TryAdd(importDir, 0);
+            var extracted = 0;
+            var budget = maxExtractedBytes;
+            foreach (var entry in resourceEntries)
+            {
+                if (ExtractEntry(entry, importDir, ref budget))
                 {
-                    if (ExtractEntry(entry, importDir))
-                    {
-                        extracted++;
-                    }
+                    extracted++;
                 }
+
+                if (budget < 0)
+                {
+                    // 超出解包上限：已解出的部分整体删掉，不留半截目录。
+                    PendingImportDirectories.TryRemove(importDir, out _);
+                    TryDeleteDirectory(importDir);
+                    return new Result(false, $"预设包资源解包后超过 {maxExtractedBytes / (1024 * 1024)}MB，已中止导入。");
+                }
+            }
+
+            if (extracted == 0)
+            {
+                // 没有资源就不会建目录，也就无需保护。
+                PendingImportDirectories.TryRemove(importDir, out _);
+            }
+            else
+            {
+                ImportDirectories.AddOrUpdate(preset, importDir);
             }
 
             // 重写 resources/ 相对引用为本地绝对路径；其余残留路径（不应出现）清空。
@@ -235,8 +338,11 @@ internal static class PresetExchange
         return false;
     }
 
-    /// <summary>把 zip 条目解压到 importDir（防路径穿越），返回是否成功。</summary>
-    private static bool ExtractEntry(ZipArchiveEntry entry, string importDir)
+    /// <summary>
+    /// 把 zip 条目解压到 importDir（防路径穿越），返回是否成功。按实际写出的字节扣减 <paramref name="budget"/>，
+    /// 扣到负数即停止写入（调用方据此中止整个导入）。
+    /// </summary>
+    private static bool ExtractEntry(ZipArchiveEntry entry, string importDir, ref long budget)
     {
         var rel = entry.FullName.Replace('/', Path.DirectorySeparatorChar);
         var target = Path.GetFullPath(Path.Combine(importDir, rel));
@@ -251,12 +357,61 @@ internal static class PresetExchange
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
             using var input = entry.Open();
             using var output = File.Create(target);
-            input.CopyTo(output);
+            var buffer = new byte[81920];
+            int read;
+            while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                budget -= read;
+                if (budget < 0)
+                {
+                    return false;
+                }
+
+                output.Write(buffer, 0, read);
+            }
+
             return true;
         }
         catch
         {
             return false;
+        }
+    }
+
+    /// <summary>读出 zip 条目的文本，按实际解压字节限制在 <see cref="MaxJsonBytes"/> 以内；超出返回 null。</summary>
+    private static string? ReadBoundedText(ZipArchiveEntry entry)
+    {
+        using var input = entry.Open();
+        using var buffer = new MemoryStream();
+        var chunk = new byte[81920];
+        int read;
+        while ((read = input.Read(chunk, 0, chunk.Length)) > 0)
+        {
+            if (buffer.Length + read > MaxJsonBytes)
+            {
+                return null;
+            }
+
+            buffer.Write(chunk, 0, read);
+        }
+
+        buffer.Position = 0;
+        using var reader = new StreamReader(buffer);
+        return reader.ReadToEnd();
+    }
+
+    private static void TryDeleteDirectory(string directory)
+    {
+        try
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, true);
+            }
+        }
+        catch
+        {
+            // 删不掉不影响结果：目录不再登记为导入中，之后的导入资源清理会按「无引用」删除。
         }
     }
 

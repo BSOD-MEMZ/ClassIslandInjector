@@ -28,6 +28,8 @@
 | `PresetStoreService.cs`                                                                          | 预设商店联机服务：索引抓取（15min 磁盘缓存 + 离线回退）、预览图缓存、.cizip 下载（进度）、已安装记录（installed.json）、版本兼容检查 |
 | `Views/PresetStoreWindow.cs` + `Views/PresetStoreCard.cs`                                        | 预设商店窗口（1:1 仿新版微软商店）：自定义标题栏 + 左窄导航（首页/全部/热门/我的）+ Banner 轮播 + 横向卡行 + 网格浏览 + 详情页 || `Views/InjectorSettingsPage.cs`                                                                 | 设置页 UI（FluentAvalonia`SettingsExpander`/`InfoBar`/`ContentDialog`）             |
 | `Views/InjectorSettingsPage.cs`                                                                 | 设置页 UI（FluentAvalonia`SettingsExpander`/`InfoBar`/`ContentDialog`）             |
+| `RemoteControl/*.cs`                                                                             | RemoteCI 远程管理（可选）：WebUI「扩展插件 → 样式注入器」设置页（`InjectorRemoteLayout` 1:1 复刻本机设置页的分区/卡片/联动）+ 3 个远程功能（套用预设 / 下发样式包 / 恢复默认）+ 远程锁定。**只有 `RemoteCiIntegration.cs` 引用 RemoteCI 类型**，其余经 `RemoteCiBridge` 隔离，见约束 22 |
+| `SettingChoices.cs`                                                                              | 设置页各下拉框的候选项与显示名（设置页与远程设置页共用，纯数据） |
 | `CountdownArrowOverlay.cs` / `IslandRippleOverlay.cs` / `SuppressingTopmostEffectPlayer.cs` | 覆盖层效果组件                                                                            |
 | `Defaults/Overrides.axaml`                                                                      | 默认覆盖样式表（首次运行复制到配置目录，用户可热重载编辑）                                |
 | `manifest.yml`                                                                                  | 插件清单                                                                                  |
@@ -108,6 +110,7 @@ Copy-Item "bin\Release\net8.0-windows10.0.19041.0\*" "D:\Dev\ClassIsland\data\Pl
    加 3 个 AboveNormal 忙线程模拟「开着浏览器」，用 `UiSimulator` 把 UI 代价放在**另一条线程**上
    （压在播放线程里就测错东西了）。卡顿类问题先跑它，别靠肉眼。
    另有 `RaceProbe.exe --audio [视频] [FFmpeg库目录] [输出目录]` = 「渲染带音频」端到端回归（探针自己合成 1kHz 正弦当音源，跑真实 `VideoProjectRenderer` 后从 mp4 里解回音频量化）：断言音频时长 == 工程时长、片段起点前静音、片段区间内有声、**变速下频率正确**（2× 保持音调仍 1kHz、2× 变调 2kHz），以及关掉「包含音频」时产物确实没有音轨。守护的是**复用器 `stream_index`** 这个坑（见约束 10）。
+  - `tools\RemoteProbe`：RemoteCI 远程管理映射回归（无需宿主 / RemoteCI 运行）：用 **RemoteCI 自己的 `ExtensionFieldValidator`**（`libs\RemoteCI\RemoteCI.Shared.dll`）校验上报字段与当前值、布局（目录全覆盖 / 分区顺序 == 设置页 / 卡片连续 / 联动条件合法）、部分更新、卡片总开关语义、颜色规范化、非法值整体拒绝、圆角自动切形状（含班级页整页提交）、锁定不被预设解锁、全部字段一次写入、数值字段的声明范围覆盖 setter 能存下的全部值（否则班级页整页提交被拒）、本机专属设置（FFmpeg 下载源）不开放、本机路径字段拒绝网络路径 / 网址（含 `\/host`、`\??\UNC\` 与 FFmpeg 协议写法）、样式包消毒、整数 .5 远离零舍入。**新增/修改设置项、`InjectorSettingCatalog` 或设置页结构后跑一遍。**
   - 探针跑通 **不等于** 宿主里不出问题——很多崩溃只在「解码帧进 Avalonia 渲染层」之后才发生（见约束 9 的 16 对齐）。
 
 ### 3. Avalonia 派生控件必须覆写 `StyleKeyOverride`
@@ -453,6 +456,39 @@ to type 'NAudio.CoreAudioApi.Interfaces.MMDeviceEnumeratorComObject'.
 **回归探针**：`tools\SpectrumProbe --conflict` —— 把同一份 `NAudio.Wasapi.dll` 再加载进独立 ALC 并抢先激活（复现该异常），再断言捕获仍走通、电平非零且变化。无参模式验证 NAudio 路径本身没被改坏。
 
 **已知遗留**：`VideoAudioPlayer` 的 `WasapiOut`（「播放声音」）仍然直接依赖 NAudio，同冲突下也会失败；彻底解法是宿主把 NAudio 作为共享依赖（像 `PluginLoadContext.WinRTDeps` 那样），需上游配合。
+
+### 22. RemoteCI 远程管理：可选依赖 + 类型隔离（2026-10-10）
+
+**目的**：学校在 RemoteCI WebUI 里统一控制各班课表（主界面）样式。走 RemoteCI **公开的通用扩展接口**（`IRemoteCiExtensionRegistry` / `IRemoteCiExtensionGroup` / `ApplyExtensionSettings`）；为了让 WebUI 与本机设置页结构一致，在 RemoteCI 侧加的也是**通用**字段元数据（分区 / 卡片 / 联动 / 颜色，任何插件可用），不是为本插件写的特例。WebUI 入口：侧边栏「扩展插件 → 样式注入器」（设置页，可按班级/分组批量下发）；控制页 / 批量控制页的「样式注入器」分组下有三个功能。
+
+**加载模型（最容易踩坑）**：
+- `RemoteCI.Plugin.dll` / `RemoteCI.Shared.dll` 放在 `libs\RemoteCI\`，csproj 里 `Private=false` **只做编译期引用**，不进输出、不进 cipx。
+- **不在 `manifest.yml` 声明对 RemoteCI 的依赖**（2026-10-11 撤掉）：宿主 `PluginLoadContext.Load` 会把**任何**程序集名先委托给依赖插件的上下文，NAudio 等共有依赖也会改用 RemoteCI 那份（我们 2.2.1 → RemoteCI 2.3.0），等于改动了插件原有的音频链路。
+- 改为 `RemoteCiBridge.EnsureAssemblyResolver()`：在本插件 ALC 的 `Resolving` 事件里**只把 `RemoteCI.*`** 重定向到 RemoteCI 插件的 ALC（按 `ClassIsland.PluginLoadContext[remoteci.plugin]` 名称找，找不到就找「谁加载了 RemoteCI.Plugin」）。原理：`RemoteCI.*` 不在本插件目录，`Load` 与默认上下文都解析不到才会落到 `Resolving`，其它程序集的解析路径不变。必须在第一次 JIT `RemoteCiIntegration` **之前**装好（`TryAttach` 里先装再调 `AttachCore`）。**重定向失效 = 类型来自两份程序集 → `InvalidCastException` / 注册表取不到。**
+- 未安装 RemoteCI：引用解析不到，JIT 编译 `RemoteCiIntegration` 任意方法即抛 `FileNotFoundException`（在调用方 try 之前）。所以：**只有 `RemoteControl/RemoteCiIntegration.cs` 可以引用 RemoteCI 类型**，入口只经 `RemoteCiBridge.AttachCore/DetachCore`（`NoInlining`）+ try/catch，且先查 `IPluginService.LoadedPlugins` 里 RemoteCI 是否 `Loaded`。别在设置页 / 运行时里直接 `using RemoteCI...`。
+- 因此两个插件的 NAudio 仍是各自一份，约束 21 的「两份 NAudio 抢 COM 类」在它们之间依然可能发生（频谱已有自带互操作回退）。
+
+**字段映射**（`InjectorRemoteSettings` + `InjectorRemoteLayout`，纯代码不引用 RemoteCI）：
+- **WebUI 设置页 = 本机设置页的 1:1 复刻**（2026-10-10 起）：`RemoteControl/InjectorRemoteLayout.cs` 按 `InjectorSettingsPage.BuildPage` 的顺序逐项声明 分区（`AddSection`）→ 卡片（`Group`/`SwitchableGroup` 的标题与说明）→ 条目（`Item` 的名称与说明、Spinner/Slider 的范围与步长）；卡片总开关放在卡片标题行；`ControlledBy`/`EnabledWhenManualColor`/`WireTextColorModeVisibility` 译成 `EnabledWhen`，`VisibleWhen`/`VisibleWhenNotAny`/`VisibleWhenEnabledAnd` 译成 `VisibleWhen`。**改设置页的结构、文案、范围或新增设置项时，同步改这份布局**（RemoteProbe 会校验目录里的每个设置项都出现在布局里、分区顺序与页面一致、联动条件引用合法）。
+- 分区/卡片/联动/颜色是 RemoteCI 新增的**通用**字段元数据（`ExtensionParameter.Section/Card/CardDescription/CardToggle/Step/Slider/VisibleWhen/EnabledWhen` + `ExtensionParameterType.Color`），在 RemoteCI 仓库实现，不是本插件专用。旧版 RemoteCI（3.3.1.4 之前）没有这些成员：`RemoteCiIntegration.LayoutSupported` 反射探测，不支持时退回平铺（标签「卡片 · 名称」、颜色按文本），**不要直接给这些属性赋值**（旧版下 JIT 即抛 `MissingMethodException`，布局赋值只放在 NoInlining 的 `ApplyLayout` 里）。
+- 下拉候选项与显示名统一在 `SettingChoices.cs`：设置页与远程布局都直接引用这一份，**不要再另写一份**（自动化目录 `InjectorSettingCatalog` 目前仍有自己的一份选项与显示名）。
+- 页面专用的「卡片总开关」（底纹纹理 / 主界面显示动画 / 提醒强调动画 / 提醒遮罩动画 / 提醒 Ripple / 即将上课样式——关闭即写 None）没有设置属性，远程用虚拟 Key `toggle.属性名`（`RemoteEnumToggle`）。写入顺序同 SaveAndApply：先写类型、再按开关处理（关 → None；开且仍为 None → 选第一项 = AutoSelectOnEnable）；只下发类型也会开启。这些类型下拉不含「无」，值为 None 时上报为空（WebUI 显示「未选择」），提交空下拉 = 保持原值。
+- 字段 Key = `InjectorSettings` 属性名，**发布后不要改名**（WebUI 批量下发按 Key 部分更新）。颜色写入规范为 `#AARRGGBB`。不开放：页面上的纯操作按钮（预设管理、打开编辑器、预览、删除数据……由远程功能覆盖或只能本机操作）与分体块独立配色（按教室端组件 GUID 存储，各班不同）。`StyleSheetPath`/`VideoFillPath` 是教室端本机路径，照样开放（统一部署的学校可直接下发），但布局里用 `b.LocalPath(...)` 声明（`RemoteField.LocalPathOnly`）：远程写入**只接受盘符路径与相对路径**（`InjectorRemoteSettings.IsNetworkPath`：任意两个分隔符开头——含系统同样当 UNC 的 `\/host`、`/\host`，以及 `\\?\`、`\\.\` 设备路径——、NT 前缀 `\??\`、任何带冒号的协议写法（含 FFmpeg 认的 `http:host/x`、`tcp:host:port`）一律拒绝；别退回「只查 `\\` / `//` 开头 + `://`」的前缀黑名单，`\/host/share` 就能绕过），否则 WebUI 能让教室电脑访问任意 SMB 主机（顺带发起 Windows 身份认证）或加载外部样式表；与当前值相同的原样回传放行（本机自己设的网络路径会出现在 WebUI 预填里，整页提交不能因此被拒）。
+- **本机专属设置任何远程来源都不能改**（`InjectorRemoteSettings.LocalOnlySettings`：`CustomFfmpegDownloadUrl` 自定义 FFmpeg 下载源、`VideoProjectPath`）：FFmpeg 下载源排在下载源第一位，下载到的 DLL 会被加载进宿主进程，开放给远程等于让 WebUI 账号能往教室电脑下发任意原生代码。字段表里不声明它们；下发样式包时由 `SanitizeRemoteSettings` 恢复为教室端现值（见下方「远程功能」）。
+  - 撤回已开放的字段**没法做成「静默忽略」**：RemoteCI 的 `ExtensionCommandRouter` 先用 `ExtensionFieldValidator.ValidateSettings` 按最新声明校验，未声明的键（含离线期间排队、按旧字段表生成的提交）直接「设置项不存在」整批拒绝，根本到不了插件（曾经的 `RetiredKeys` 因此是死代码，已删）。插件侧 `Apply` 也同样整体拒绝。
+- 整数字段取整用 `MidpointRounding.AwayFromZero`（`Math.Round` 默认是银行家舍入，2.5 → 2）。
+- 写入在 UI 线程、`BeginUpdate/EndUpdate` 一次应用；任一字段非法**整体不写**；改了圆角而形状仍为 HostDefault 时自动切圆角矩形（同设置页，约束 6）——「形状」只有这次值真的变了才算显式选择，**班级设置页是整页提交**（`ExtensionFieldInput.ToValues` 不带 onlyApplied），每次都原样带上形状；远程改了「双击安装预设包」立即 `EnsureFileAssociation()`（预设套用 / 恢复默认在 `InjectorRuntime.ApplyPreset` 里同样同步）。
+- 数值字段的 Min/Max 必须覆盖 setter 钳制范围内的全部值：RemoteCI 按声明范围严格校验，教室端（自动化 / 预设）存着声明范围外的值时，班级页整页提交会整批被拒——字段若被 `VisibleWhen` 隐藏，管理员连改哪一项都看不到。因此这类字段的声明范围可以比设置页滑块宽（如屏幕涟漪晃动幅度 / 模糊半径：远程 80 / 60，设置页滑块 60 / 40）。
+- 本机任何来源改了设置（`InjectorRuntime.SettingsSaved`，**不要**订阅 `Settings.Changed`——「删除所有数据」会替换实例）→ 防抖 1 秒 `NotifySettingsChanged`，WebUI 预填 / 各班级当前值保持真实。
+- 远程写入后发 `InjectorRuntime.SettingsChangedRemotely`，设置页据此 `LoadFromSettings`——否则用户下一次本地操作会把整页旧值写回，覆盖远程修改。`LoadFromSettings` 回填结束时会作废分体画笔排队中的分块提交（`_pendingBrushProps` / `_pendingTextureCommit` / `_splitCommitTimer`）：回填改动画笔控件，分体页面下会被当成「刷画笔」，200ms 后把全局值写进各块专属配置。
+
+**远程锁定**：`remote.lockLocalEditing` 字段 → `RemoteManagementState`（`remote-management.json`，**刻意不放进 `InjectorSettings`**：预设套用 / 恢复默认 / 自动化恢复都会整体 CopyFrom，放进去会被悄悄解锁）。锁定时设置页顶部 InfoBar + 其余子项禁用。**禁用方式是以 `BindingPriority.Animation` 压一层 `IsEnabled=false`（`_remoteLockOverrides`），解锁时 Dispose 这些覆盖**，不要改回「记快照 → 直接写本地 `IsEnabled` → 解锁还原」：页面里很多逻辑会写顶层分组自己的 `IsEnabled`（`RefreshBackgroundBrushState` / `RefreshBackgroundTextureState` 写底色与底纹两个分组，且远程每改一次设置就会 `LoadFromSettings` 走到它们），直接写本地值的锁会被它们当场「解开」（2026-10 实测踩过），解锁时还会把过期快照写回去。覆盖层与本地值分开，本地逻辑照常运行，锁定期间不生效、解锁后自然回到最新状态。判断锁定是否生效统一用 `RemoteCiBridge.IsLocalEditingLocked`。只锁设置页；自动化与远程管理不受影响。**锁定仅在 `RemoteCiBridge.IsAttached` 时生效**——学校卸载 RemoteCI 后自动失效，避免本机被永久锁死。
+
+**不连接 RemoteCI（本机开关）**：设置页「调试」与「关于」之间的「连接器」分区，`RemoteManagementState.DisconnectRemoteCi`（同样存 `remote-management.json`，理由同上；另外它**不开放给远程**——不在 `InjectorSettings`/`InjectorRemoteLayout` 里，WebUI 看不到）。开启 → `RemoteCiBridge.SetDisconnected(true)` 立即 `Detach` 并且启动时 `TryAttach` 直接跳过；关闭 → 立即重新 `TryAttach`，不必重启。`Detach` 只用于这里：**宿主退出时不注销**——注销会让 RemoteCI 把不含本分组的列表同步给服务端、整体替换该班的快照，教室电脑关机期间 WebUI 就没有本插件的设置页，学校也没法给离线班级排队下发。远程锁定时整页（含此开关）禁用，所以不能用它绕过学校的锁定（说明文字已写明）。唯一例外是「关于」分区（`_remoteLockExempt`，只有展示信息与链接），锁定时仍可用。
+
+**远程功能**：「套用样式预设」（名称）/「下发样式包」（http(s) 下载 .cizip → `PresetExchange.Import` → **按远程写入的同一套规矩消毒**（`InjectorRemoteSettings.SanitizeRemoteSettings`：本机专属设置保持教室端原值、本机路径字段是网络路径时恢复原值、图层网络路径清空，回执列出被忽略的设置；预设套用走 `CopyFrom` 整体覆盖，不消毒的话样式包就是绕过字段校验的后门）→ `ImportOrReplaceUserPreset` **同名覆盖**（反复下发不堆副本；覆盖/套用后清理不再被引用的导入资源：引用 = 当前设置 + 任何用户预设 + 自动化行动待恢复的快照 `InjectorActionStateStore.Snapshots`；**还在导入流程中的目录**（已解包、正等安装确认对话框或远程下发切回 UI 线程，尚未装进预设列表）由 `PresetExchange` 登记为 pending 并跳过，装进列表时 `PresetExchange.CompleteImport` 按「这次导入解出的目录」释放（`ImportDirectories`，不看设置是否引用目录里的文件——包里可以带没被引用的资源，按引用判断会让目录永远挂着 pending、清理不掉），用户取消安装的目录到宿主重启前都受保护；导入目录名带随机后缀，同一秒内导入同名包不会解进同一个目录）→ 可选套用；包体上限 50MB，**解包另有上限**（`PresetExchange.MaxExtractedBytes` 256MB 按实际写出字节计、`MaxResourceEntries` 4096 条，超出即中止并删掉已解出的目录；`preset.json` / `metadata.json` 在解包资源前就整体读进内存，单独限制解压后 `MaxJsonBytes` 16MB——50MB 只限压缩后字节，高压缩比的包能撑满磁盘；本地双击 / 拖放 / 商店导入同样受限）；RemoteCI 回执上限 15 秒，等 12 秒拿不到结果就转后台继续并如实回执；**安装按下发顺序排队**（`RemotePresetPackage.InstallGate`：回执一发出 RemoteCI 就放开单飞，不排队会出现先发、后下完的旧包覆盖学校改正后重发的新包））/「恢复默认样式」。审计日志：配置目录 `remote-control.log`（`DiagnosticLog.WriteAudit`，带日期，**不受「输出诊断日志」开关控制**——那个开关本身可被远程修改）。远程锁定时设置页的预设包拖放同样被拦截。
+
+**更新 libs 里的 RemoteCI 引用**：从 RemoteCI 构建产物（`plugin\RemoteCI.Plugin\bin\<cfg>\net8.0\`）复制这两个 dll；只依赖接口与 `RemoteCiExtensionGroupBase`/`RemoteCiExtensionBase`/`ExtensionParameter`/`CommandResult`，RemoteCI 保持这些接口兼容即可。
 
 ## 预设商店（PresetStore）
 

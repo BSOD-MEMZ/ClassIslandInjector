@@ -67,6 +67,9 @@
     <Reference Include="ClassIsland.Shared"><HintPath>$(HostDir)ClassIsland.Shared.dll</HintPath></Reference>
     <Reference Include="ClassIsland.Shared.IPC"><HintPath>$(HostDir)ClassIsland.Shared.IPC.dll</HintPath></Reference>
     <Reference Include="ClassIsland.Platforms.Abstractions"><HintPath>$(HostDir)ClassIsland.Platforms.Abstractions.dll</HintPath></Reference>
+    <!-- 插件源码里的 RemoteControl\RemoteCiIntegration.cs 引用 RemoteCI 接口（编译期即可，探针不会走到）。 -->
+    <Reference Include="RemoteCI.Plugin"><HintPath>..\..\libs\RemoteCI\RemoteCI.Plugin.dll</HintPath></Reference>
+    <Reference Include="RemoteCI.Shared"><HintPath>..\..\libs\RemoteCI\RemoteCI.Shared.dll</HintPath></Reference>
   </ItemGroup>
 
   <!-- 宿主程序集不在 NuGet 里：把宿主目录全部 DLL 拷到输出，供运行期解析。 -->
