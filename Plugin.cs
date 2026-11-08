@@ -4,6 +4,7 @@ using ClassIsland.Core.Attributes;
 using ClassIsland.Core.Extensions.Registry;
 using ClassIsland.Core.Models.Plugin;
 using ClassIslandInjector.Automation;
+using ClassIslandInjector.RemoteControl;
 using ClassIslandInjector.Views;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -34,5 +35,7 @@ public sealed class Plugin : PluginBase
         InjectorRuntime.ScheduleStartupNavigation();
         // 确保 .cizip 文件关联按开关生效，并注册「双击预设包安装」的 Uri 处理器。
         InjectorRuntime.OnAppStarted();
+        // 可选：接入 RemoteCI 远程管理（未安装 RemoteCI 时静默跳过）。
+        RemoteCiBridge.TryAttach();
     }
 }

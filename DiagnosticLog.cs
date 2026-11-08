@@ -10,6 +10,7 @@ namespace ClassIslandInjector;
 ///   由设置项「输出诊断日志」驱动，经 <see cref="InjectorRuntime"/> 同步。
 /// - 崩溃兜底 <see cref="WriteCrash"/> 始终尝试写入（不受开关影响）——
 ///   漏网异常是最需要记录的故障，不应被开关屏蔽。
+/// - 审计日志 <see cref="WriteAudit"/>（如远程管理记录）同样不受开关影响。
 /// - 所有写入 try/catch 静默吞掉：日志本身绝不抛异常、绝不弹窗、绝不影响功能。
 /// </summary>
 internal static class DiagnosticLog
@@ -28,21 +29,9 @@ internal static class DiagnosticLog
     /// </summary>
     public static void Write(string? path, string message)
     {
-        if (!Enabled || string.IsNullOrEmpty(path))
+        if (Enabled)
         {
-            return;
-        }
-
-        try
-        {
-            lock (Sync)
-            {
-                File.AppendAllText(path, $"[{DateTime.Now:HH:mm:ss.fff}] {message}{Environment.NewLine}");
-            }
-        }
-        catch
-        {
-            // 日志失败不影响功能。
+            Append(path, $"[{DateTime.Now:HH:mm:ss.fff}] {message}");
         }
     }
 
@@ -50,9 +39,19 @@ internal static class DiagnosticLog
     /// 崩溃兜底日志（crash.log）：即使常规日志被关闭也照常写入。
     /// 时间戳带日期，方便跨天排查。
     /// </summary>
-    public static void WriteCrash(string message)
+    public static void WriteCrash(string message) =>
+        Append(CrashLogPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}");
+
+    /// <summary>
+    /// 审计日志：与崩溃日志一样不受 <see cref="Enabled"/> 控制（记录的是「谁改了什么」，不能随诊断开关一起关掉）。
+    /// 时间戳带日期。
+    /// </summary>
+    public static void WriteAudit(string? path, string message) =>
+        Append(path, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}");
+
+    /// <summary>追加一行；路径为空直接返回，文件级失败静默忽略。带锁保证并发写入不交错。</summary>
+    private static void Append(string? path, string line)
     {
-        var path = CrashLogPath;
         if (string.IsNullOrEmpty(path))
         {
             return;
@@ -62,7 +61,7 @@ internal static class DiagnosticLog
         {
             lock (Sync)
             {
-                File.AppendAllText(path, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}{Environment.NewLine}");
+                File.AppendAllText(path, line + Environment.NewLine);
             }
         }
         catch

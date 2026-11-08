@@ -122,6 +122,9 @@ internal static class InjectorActionStateStore
 {
     private static readonly ConcurrentDictionary<string, object?> Values = new();
 
+    /// <summary>当前仍待「恢复」的全部设置快照（清理导入资源时要把它们引用的文件也视为在用）。</summary>
+    public static IReadOnlyList<InjectorSettings> Snapshots => Values.Values.OfType<InjectorSettings>().ToList();
+
     /// <summary>
     /// 保存某个行动触发前的完整设置快照。
     /// </summary>

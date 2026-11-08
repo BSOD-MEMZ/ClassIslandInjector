@@ -25,6 +25,23 @@
   </ItemGroup>
 
   <!--
+    RemoteCI 远程管理（可选）：只做编译期引用，Private=false 不复制到输出、不进 cipx。
+    运行时由 RemoteControl\RemoteCiBridge 在本插件加载上下文的 Resolving 里把 RemoteCI.* 重定向到 RemoteCI 插件自己加载的那一份，
+    否则类型来自两份程序集、接口对不上。刻意不在 manifest.yml 声明依赖：那会让宿主把所有程序集（含 NAudio）都委托给 RemoteCI。
+    未安装 RemoteCI 时相关代码由 RemoteCiBridge 隔离兜底。
+  -->
+  <ItemGroup>
+    <Reference Include="RemoteCI.Plugin">
+      <HintPath>libs\RemoteCI\RemoteCI.Plugin.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="RemoteCI.Shared">
+      <HintPath>libs\RemoteCI\RemoteCI.Shared.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!--
     cipx 包体优化：宿主 ClassIsland 自带 Microsoft.Windows.SDK.NET.dll / WinRT.Runtime.dll，
     且 PluginLoadContext 强制使用宿主版本（拒绝从插件目录加载）——这两个 DLL 打进插件包
     是纯冗余（约 24.8MB）。调试符号 pdb 也无需随包分发。

@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    RemoteCI 远程管理映射回归探针：不需要宿主、不需要 RemoteCI 运行，`dotnet run -c Release` 直接跑。
+    用 RemoteCI 自己的 ExtensionFieldValidator（RemoteCI.Shared.dll）校验本插件上报的字段与当前值，
+    保证 WebUI 预填值、服务端预检、本插件写入三方口径一致。
+    只链接纯源码文件 + Program.cs 里的 InjectorRuntime 桩（同 RaceProbe 的做法）。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>ClassIslandInjector</RootNamespace>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\InjectorSettings.cs" Link="InjectorSettings.cs" />
+    <Compile Include="..\..\InjectorPresets.cs" Link="InjectorPresets.cs" />
+    <Compile Include="..\..\Automation\InjectorSettingCatalog.cs" Link="InjectorSettingCatalog.cs" />
+    <Compile Include="..\..\SettingChoices.cs" Link="SettingChoices.cs" />
+    <Compile Include="..\..\RemoteControl\InjectorRemoteLayout.cs" Link="InjectorRemoteLayout.cs" />
+    <Compile Include="..\..\RemoteControl\InjectorRemoteSettings.cs" Link="InjectorRemoteSettings.cs" />
+    <Compile Include="..\..\RemoteControl\RemoteManagementState.cs" Link="RemoteManagementState.cs" />
+    <Compile Include="..\..\PresetExchange.cs" Link="PresetExchange.cs" />
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- InjectorSettings.cs 用到 Avalonia.Point（图层路径编码）。 -->
+    <PackageReference Include="Avalonia" Version="11.3.6" />
+    <Reference Include="RemoteCI.Shared"><HintPath>..\..\libs\RemoteCI\RemoteCI.Shared.dll</HintPath></Reference>
+  </ItemGroup>
+</Project>

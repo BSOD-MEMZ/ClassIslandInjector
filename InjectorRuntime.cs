@@ -26,6 +26,24 @@ internal static class InjectorRuntime
     /// </summary>
     public static event EventHandler? PresetsChanged;
 
+    /// <summary>
+    /// 设置写盘后触发（任意来源：设置页 / 自动化 / 预设 / 远程管理）。远程管理据此把最新值同步给 WebUI。
+    /// 不订阅 <see cref="InjectorSettings.Changed"/>，是因为「删除所有数据」会整体替换 <see cref="Settings"/> 实例。
+    /// </summary>
+    public static event EventHandler? SettingsSaved;
+
+    /// <summary>
+    /// 设置被远程管理（RemoteCI WebUI）修改后触发（UI 线程）。打开着的设置页据此重新加载控件，
+    /// 否则用户下一次本地操作会把整页旧值写回、覆盖掉远程修改。
+    /// </summary>
+    public static event EventHandler? SettingsChangedRemotely;
+
+    /// <summary>通知设置已被远程修改（由远程管理在写入设置后调用）。</summary>
+    public static void NotifySettingsChangedRemotely()
+    {
+        SettingsChangedRemotely?.Invoke(null, EventArgs.Empty);
+    }
+
     public static void Initialize(string configDirectory, string pluginDirectory)
     {
         ConfigDirectory = configDirectory;
@@ -299,6 +317,7 @@ internal static class InjectorRuntime
             GetInjector().Apply();
             UpdateSmtcWatcher();
         });
+        SettingsSaved?.Invoke(null, EventArgs.Empty);
     }
 
     /// <summary>
@@ -420,12 +439,15 @@ internal static class InjectorRuntime
     /// <returns>预设是否存在并成功套用。</returns>
     public static bool ApplyPreset(string name)
     {
+        var associationBefore = Settings.PresetFileAssociationEnabled;
+
         // 内置「无预设」：把全部设置重置为中性默认（类似清除插件数据后的全新状态），
         // 不注入任何内容；保留 StyleSheetPath 与 WatchStyleSheet。
         if (string.Equals(name, InjectorPresetStore.NoPresetName, StringComparison.OrdinalIgnoreCase))
         {
             Settings.ResetToDefaults();
             SaveAndApply();
+            SyncFileAssociation(associationBefore);
             return true;
         }
 
@@ -439,7 +461,20 @@ internal static class InjectorRuntime
         Settings.CopyFrom(preset.Settings);
         Settings.EndUpdate();
         SaveAndApply();
+        SyncFileAssociation(associationBefore);
         return true;
+    }
+
+    /// <summary>
+    /// 预设 / 恢复默认会整体覆盖设置，「双击安装预设包」开关可能随之翻转：注册表里的 .cizip 关联要同步跟上
+    /// （同设置页开关与远程逐字段写入），否则开关显示与实际关联不一致，直到下次启动才纠正。
+    /// </summary>
+    private static void SyncFileAssociation(bool before)
+    {
+        if (Settings.PresetFileAssociationEnabled != before)
+        {
+            EnsureFileAssociation();
+        }
     }
 
     /// <summary>
@@ -533,7 +568,82 @@ internal static class InjectorRuntime
         name = MakeUniquePresetName(name);
         _presets.Add(new UserPreset { Name = name, Settings = preset.Settings });
         SavePresets();
+        PresetExchange.CompleteImport(preset);
         return name;
+    }
+
+    /// <summary>
+    /// 导入用户预设，同名（不区分大小写）时直接覆盖。供远程管理「下发样式包」使用：
+    /// 学校反复下发同一套样式时应更新同一个预设，而不是每次堆出一个带随机后缀的副本。
+    /// </summary>
+    /// <returns>实际写入的预设名。</returns>
+    public static string ImportOrReplaceUserPreset(UserPreset preset)
+    {
+        var name = preset.Name.Trim();
+        if (name.Length == 0 ||
+            string.Equals(name, InjectorPresetStore.NoPresetName, StringComparison.OrdinalIgnoreCase))
+        {
+            name = "学校统一样式";
+        }
+
+        var existing = _presets.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (existing != null)
+        {
+            existing.Settings = preset.Settings;
+            name = existing.Name;
+        }
+        else
+        {
+            _presets.Add(new UserPreset { Name = name, Settings = preset.Settings });
+        }
+
+        SavePresets();
+        PresetExchange.CompleteImport(preset);
+        CleanupUnreferencedImportedResources();
+        return name;
+    }
+
+    /// <summary>
+    /// 清理不再被引用的导入目录。「引用」包括：当前设置、任何用户预设、自动化行动保存的「恢复」快照；
+    /// 另外跳过还在导入流程中的目录（已解包、正等安装确认或远程下发切回 UI 线程，尚未装进预设列表）。
+    /// </summary>
+    public static void CleanupUnreferencedImportedResources()
+    {
+        try
+        {
+            var importRoot = Path.GetFullPath(Path.Combine(ConfigDirectory, "imported"));
+            if (!Directory.Exists(importRoot))
+            {
+                return;
+            }
+
+            var referenced = _presets.Select(p => p.Settings)
+                .Append(Settings)
+                .Concat(Automation.InjectorActionStateStore.Snapshots)
+                .SelectMany(PresetExchange.EnumerateResourcePaths)
+                .ToList();
+            foreach (var directory in Directory.EnumerateDirectories(importRoot))
+            {
+                if (PresetExchange.IsImportPending(directory) ||
+                    referenced.Any(p => PresetExchange.IsPathWithin(p, directory)))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    Directory.Delete(directory, true);
+                }
+                catch
+                {
+                    // 清理失败不影响已完成的预设替换。
+                }
+            }
+        }
+        catch
+        {
+            // 历史配置里的非法路径只跳过清理，不影响预设导入。
+        }
     }
 
     /// <summary>生成不与现有预设冲突的名称：冲突时追加短 GUID 后缀，直到唯一。</summary>
@@ -697,14 +807,23 @@ internal static class InjectorRuntime
         }
 
         // 4. 内存设置重置为全新默认；下次启动时配置目录为空会重新生成默认文件。
+        //    新实例要重新挂上变更订阅：设置页 / 自动化 / 远程管理都靠 Changed → SaveAndApply 落盘生效，
+        //    不挂的话之后的修改只改内存（远程管理还会回执「已更新」）。
+        Settings.Changed -= OnSettingsChanged;
         Settings = new InjectorSettings
         {
             StyleSheetPath = Path.Combine(ConfigDirectory, "Overrides.axaml")
         };
+        Settings.Changed += OnSettingsChanged;
 
         // 5. 清空内存中的用户预设（presets.json 已在第 3 步被删除）。
         _presets = [];
         PresetsChanged?.Invoke(null, EventArgs.Empty);
+
+        // 6. 远程管理状态（remote-management.json 已在第 3 步被删除）：回到全新安装的「未锁定、连接 RemoteCI」。
+        //    之前选过「不连接 RemoteCI」时桥是断开的，这里按新状态重新接入，免得开关显示「连接」实际却没接入。
+        RemoteControl.RemoteManagementState.Reset();
+        RemoteControl.RemoteCiBridge.TryAttach();
     }
 
     private static void TryDeleteFile(string file)
